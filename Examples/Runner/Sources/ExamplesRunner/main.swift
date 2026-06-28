@@ -332,7 +332,7 @@ func example5() async throws {
         enableRepairRetry: true
     ))
 
-    agent.state.setValue("ayman@example.com", forKey: "user:email")
+    agent.state.setValue("alex@example.com", forKey: "user:email")
     agent.register(LookupAccountTool())
     agent.register(CheckOrdersTool())
 

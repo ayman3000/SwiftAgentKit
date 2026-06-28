@@ -151,7 +151,7 @@ func statefulAgentExample() async throws {
     ))
 
     // Pre-set the email in state so the agent knows who to look up
-    agent.state.setValue("ayman@example.com", forKey: "user:email")
+    agent.state.setValue("alex@example.com", forKey: "user:email")
 
     agent.register(LookupAccountTool())
     agent.register(CheckOrdersTool())
@@ -170,7 +170,7 @@ func statefulAgentExample() async throws {
     }
 
     // The agent will:
-    // Turn 1: call lookup_account("ayman@example.com") → stores name/tier/id in state
+    // Turn 1: call lookup_account("alex@example.com") → stores name/tier/id in state
     // Turn 2: call check_orders() → reads user:id from state, returns order history
     // Turn 3: call file_ticket() → reads user:name, user:id, user:order_count from state
     // Turn 4: no more tool calls → returns a summary
