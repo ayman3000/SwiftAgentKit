@@ -36,7 +36,7 @@ struct LookupAccountTool: AgentTool {
 
         // Simulate a database lookup
         let mockCustomers: [String: [String: String]] = [
-            "ayman@example.com": ["name": "Ayman", "tier": "pro", "id": "CUST-001"],
+            "alex@example.com": ["name": "Alex", "tier": "pro", "id": "CUST-001"],
             "sara@example.com": ["name": "Sara", "tier": "free", "id": "CUST-002"],
         ]
 

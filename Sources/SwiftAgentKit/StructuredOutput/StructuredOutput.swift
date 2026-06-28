@@ -2,7 +2,7 @@
 //  StructuredOutput.swift
 //  SwiftAgentKit
 //
-//  Structured output extraction — from WhiteboardPro's tolerant JSON parsing pattern.
+//  Structured output extraction — generalized from tolerant JSON parsing patterns.
 //
 //  Many models don't support native structured outputs / function calling.
 //  This module provides a robust "parse JSON from model output" utility that

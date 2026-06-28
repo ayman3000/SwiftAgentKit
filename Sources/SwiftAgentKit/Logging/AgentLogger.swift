@@ -3,7 +3,7 @@
 //  SwiftAgentKit
 //
 //  A simple logging facility for agent events.
-//  Inspired by ViduGen's `onLogMessage` callback pattern.
+//  Inspired by lightweight UI logging callback patterns.
 //
 
 import Foundation

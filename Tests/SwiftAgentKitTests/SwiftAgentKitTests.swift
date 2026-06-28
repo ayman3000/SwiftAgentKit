@@ -587,13 +587,13 @@ struct StatefulTool: AgentTool {
 
     let call = AgentToolCall(
         name: "save_value",
-        parameters: ["key": AnyCodable("user:name"), "value": AnyCodable("Ayman")]
+        parameters: ["key": AnyCodable("user:name"), "value": AnyCodable("Alex")]
     )
     let results = await dispatcher.dispatch(calls: [call], state: state, observer: nil)
 
     #expect(results.count == 1)
     #expect(!results[0].isError)
-    #expect(state.string(forKey: "user:name") == "Ayman")
+    #expect(state.string(forKey: "user:name") == "Alex")
 }
 
 // MARK: - Parallel Tool Execution Tests

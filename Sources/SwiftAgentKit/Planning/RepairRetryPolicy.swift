@@ -2,7 +2,7 @@
 //  RepairRetryPolicy.swift
 //  SwiftAgentKit
 //
-//  Extracted from Kommanda's `RepairRetryPolicy` — pure, testable decision logic
+//  Repair retry policy — pure, testable decision logic
 //  for when to nudge the model to fix a failed tool call instead of accepting
 //  its narration of "success".
 //
@@ -11,7 +11,7 @@ import Foundation
 
 /// Policy for when to repair-retry after a tool error.
 ///
-/// In Kommanda, when a tool fails but the model tries to narrate success and
+/// When a tool fails but the model tries to narrate success and
 /// end the turn, the loop forces a "fix and retry" nudge instead of accepting
 /// the false success. This prevents the "model claims success after a failed
 /// command" failure mode.
@@ -70,7 +70,7 @@ public struct RepairRetryPolicy: @unchecked Sendable {
 
 /// Policy for when to nudge the model to continue the plan.
 ///
-/// In Kommanda, if the plan isn't complete but the model stops calling tools,
+/// If the plan isn't complete but the model stops calling tools,
 /// the loop nudges it (up to N times) with the pending step list.
 ///
 public struct PlanContinuationPolicy: Sendable {

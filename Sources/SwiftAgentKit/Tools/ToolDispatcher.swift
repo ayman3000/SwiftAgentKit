@@ -3,8 +3,8 @@
 //  SwiftAgentKit
 //
 //  Handles tool-call dispatch with:
-//  - Per-turn deduplication (from Kommanda)
-//  - Confirmation gating (from Kommanda)
+//  - Per-turn deduplication
+//  - Confirmation gating
 //  - Parameter normalization
 //  - Error handling
 //

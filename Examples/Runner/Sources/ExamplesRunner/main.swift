@@ -284,7 +284,7 @@ func example5() async throws {
         func execute(context: ToolContext) async throws -> AgentToolResult {
             let email = context.parameters["email"] as? String ?? ""
             let mockCustomers: [String: [String: String]] = [
-                "ayman@example.com": ["name": "Ayman", "tier": "pro", "id": "CUST-001"],
+                "alex@example.com": ["name": "Alex", "tier": "pro", "id": "CUST-001"],
                 "sara@example.com": ["name": "Sara", "tier": "free", "id": "CUST-002"],
             ]
             guard let customer = mockCustomers[email] else {
@@ -589,7 +589,7 @@ func example9() async throws {
 
     // Have a conversation
     print("💬 Having a conversation...")
-    _ = try await agent.run("My name is Ayman and I'm building a Swift agent kit.")
+    _ = try await agent.run("My name is Alex and I'm building a Swift agent kit.")
     _ = try await agent.run("What's my name?")
 
     // Save the session

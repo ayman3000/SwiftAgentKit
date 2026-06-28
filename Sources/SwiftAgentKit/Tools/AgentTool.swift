@@ -2,10 +2,10 @@
 //  AgentTool.swift
 //  SwiftAgentKit
 //
-//  The universal tool protocol — extracted from Kommanda's `AITool` and
-//  generalized for any Swift AI app.
+//  The universal tool protocol — generalized from production agent tool
+//  implementations.
 //
-//  Design inspired by Kommanda's proven pattern:
+//  Design inspired by production-proven tool patterns:
 //  - Protocol-defined tools with JSON-Schema parameters
 //  - `toJSON()` serializes to OpenAI-compatible function schema
 //  - `execute()` returns a `ToolResult` with success/error

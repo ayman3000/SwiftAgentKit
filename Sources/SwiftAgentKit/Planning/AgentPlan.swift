@@ -2,9 +2,9 @@
 //  AgentPlan.swift
 //  SwiftAgentKit
 //
-//  Planning module — extracted from Kommanda's `AIExecutionPlanner`.
+//  Planning module — generalized from planner/executor agent patterns.
 //
-//  Kommanda's planner makes a separate LLM call (without tools) to generate
+//  The planner makes a separate LLM call (without tools) to generate
 //  a structured plan, then tracks progress as the ReAct loop executes tools.
 //  This generalizes that pattern.
 //
@@ -96,7 +96,7 @@ public protocol AgentPlanner: Sendable {
 
 /// A planner that uses an LLM call to generate a structured plan.
 ///
-/// This is the pattern proven in Kommanda: make a separate LLM call
+/// This uses a planner/executor pattern: make a separate LLM call
 /// (without tools) asking the model to return JSON `{"steps": [...]}`,
 /// then parse it into an `AgentPlan`.
 ///
@@ -165,7 +165,7 @@ public final class LLMPlanner: AgentPlanner, @unchecked Sendable {
 
     // MARK: - Parsing
 
-    /// Parse plan steps from LLM output (tolerant JSON extraction, from Kommanda).
+    /// Parse plan steps from LLM output with tolerant JSON extraction.
     public static func parsePlanSteps(from text: String) throws -> [String] {
         // Try to extract JSON object with "steps" array
         let jsonStr = extractJSONObject(from: text) ?? text
@@ -201,7 +201,7 @@ public final class LLMPlanner: AgentPlanner, @unchecked Sendable {
 
     /// Extract the first complete JSON object from a string (brace matching).
     /// Handles markdown code fences and surrounding prose.
-    /// (From Kommanda's `MindMapPlan.parse` / `CanvasScene.parse` pattern)
+    /// Generalized from tolerant structured-output parsing patterns.
     public static func extractJSONObject(from raw: String) -> String? {
         // Strip markdown code fences
         var text = raw

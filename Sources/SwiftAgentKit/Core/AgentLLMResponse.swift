@@ -144,7 +144,7 @@ public struct AgentTokenUsage: Sendable, Equatable {
 ///    [{"name": "tool_name", "parameters": {"param": "value"}}]
 ///    ```
 ///
-/// This is extracted from Kommanda's proven tool-call parsing logic.
+/// This is generalized from production-proven tool-call parsing logic.
 ///
 public enum ToolCallParser {
 

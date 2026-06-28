@@ -2,8 +2,8 @@
 //  AgentEvent.swift
 //  SwiftAgentKit
 //
-//  Agent observability — inspired by ViduGen's `onLogMessage` callback
-//  and Kommanda's `RequestSummary` tracking.
+//  Agent observability — generalized from lightweight UI logging callbacks
+//  and request-summary tracking.
 //
 
 import Foundation

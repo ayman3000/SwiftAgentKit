@@ -2,12 +2,12 @@
 //  Conversation.swift
 //  SwiftAgentKit
 //
-//  The conversation/memory abstraction — inspired by Kommanda's `AIHistoryManager`
-//  and ViduGen's state-as-memory pattern.
+//  The conversation/memory abstraction — generalized from production conversation-history
+//  and state-as-memory patterns.
 //
 //  Every app needs some form of conversation state. This provides:
 //  - A message store with append/trim operations
-//  - Token-aware context window management (from Kommanda)
+//  - Token-aware context window management
 //  - Configurable trimming strategies
 //
 
@@ -18,7 +18,7 @@ import Foundation
 /// This is the universal memory layer for agents. It stores messages,
 /// estimates token usage, and trims history to fit the model's context window.
 ///
-/// **Strategies** (from Kommanda's proven `AIHistoryManager`):
+/// **Strategies**:
 /// - Message-count trimming (keep last N messages)
 /// - Token-budget trimming (estimate tokens, trim oldest until under budget)
 /// - Per-turn context fit (trim before each LLM call to stay at ~80% capacity)
@@ -160,7 +160,7 @@ public class Conversation: @unchecked Sendable {
 
     // MARK: - Private trimming
 
-    /// Trim to fit within 80% of the context window (per-turn fit, from Kommanda).
+    /// Trim to fit within 80% of the context window.
     private func ensureContextWindowFits(messages: [AgentMessage]) -> [AgentMessage] {
         let budget = Int(Double(contextWindow - outputReserve) * 0.8)
         var trimmed = messages
