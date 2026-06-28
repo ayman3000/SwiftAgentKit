@@ -2,7 +2,7 @@
 //  AgentMessage.swift
 //  SwiftAgentKit
 //
-//  Created by SwiftAgentKit — extracted from Kommanda, AgentDeckNative, WhiteboardPro, ViduGen
+//  Created by SwiftAgentKit — generalized from production app agent patterns.
 //
 
 import Foundation
@@ -81,10 +81,37 @@ public struct AgentMessage: Identifiable, @unchecked Sendable, Codable {
 
     // MARK: - Conversion to LLMProviderKit
 
-    /// Convert to `LLMMessage` for the LLM provider layer.
-    /// Tool calls and results are serialized into the content string
-    /// for providers that don't have native tool-calling support,
-    /// or carried as structured data for providers that do.
+    /// Convert to one or more `LLMMessage` values for the LLM provider layer.
+    ///
+    /// Most agent messages map to exactly one provider message. Tool-result
+    /// messages are the exception: strict providers require one provider message
+    /// per original tool call ID, so a single `.tool(results:)` agent message fans
+    /// out into multiple `LLMMessage.tool` messages.
+    public func toLLMMessages() -> [LLMMessage] {
+        switch role {
+        case .tool:
+            guard let toolResults, !toolResults.isEmpty else {
+                return [.user(content)]
+            }
+
+            return toolResults.map { result in
+                let status = result.isError ? "ERROR" : "OK"
+                let toolName = result.toolName ?? "unknown"
+                let content = "[Tool: \(toolName)] \(status)\n\(result.result)"
+                return .tool(content, toolCallId: result.toolCallId)
+            }
+
+        default:
+            return [toLLMMessage()]
+        }
+    }
+
+    /// Convert to a single `LLMMessage` for the LLM provider layer.
+    ///
+    /// Prefer `toLLMMessages()` when building provider requests from conversation
+    /// history because tool-result messages may need to fan out. This method is
+    /// kept for source compatibility and for contexts that explicitly require a
+    /// single provider message.
     public func toLLMMessage() -> LLMMessage {
         switch role {
         case .system:
@@ -111,12 +138,8 @@ public struct AgentMessage: Identifiable, @unchecked Sendable, Codable {
             return .assistant(content)
 
         case .tool:
-            if let toolResults, !toolResults.isEmpty {
-                let combinedResult = toolResults.map { result in
-                    "[Tool: \(result.toolName ?? "unknown")] \(result.isError ? "ERROR" : "OK")\n\(result.result)"
-                }.joined(separator: "\n\n")
-                let firstCallId = toolResults.first?.toolCallId ?? ""
-                return .tool(combinedResult, toolCallId: firstCallId)
+            if let first = toLLMMessages().first {
+                return first
             }
             return .user(content)
         }
@@ -207,7 +230,7 @@ public struct AgentToolResult: Sendable, Identifiable, Equatable, Codable {
 /// Tool parameters come back from LLMs as arbitrary JSON (bool/int/double/string/array/dict/null).
 /// `AnyCodable` safely decodes and re-encodes any JSON value without losing type information.
 ///
-/// This is the same pattern used in Kommanda's `AnyCodable` — proven in production.
+/// This mirrors a production-proven pattern for heterogeneous JSON values.
 ///
 public struct AnyCodable: @unchecked Sendable, Codable {
 

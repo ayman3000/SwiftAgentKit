@@ -120,6 +120,70 @@ struct FailingTool: AgentTool {
     #expect(!results[0].isError)
 }
 
+@Test func testToolDispatcherStampsToolCallIdAndName() async {
+    let registry = ToolRegistry()
+    await registry.register(EchoTool())
+    let dispatcher = ToolDispatcher(registry: registry)
+    let state = AgentState()
+
+    let call = AgentToolCall(
+        id: "call_strict_provider_1",
+        name: "echo",
+        parameters: ["message": AnyCodable("strict correlation")]
+    )
+
+    let results = await dispatcher.dispatch(calls: [call], state: state, observer: nil)
+
+    #expect(results.count == 1)
+    #expect(results[0].toolCallId == "call_strict_provider_1")
+    #expect(results[0].toolName == "echo")
+    #expect(results[0].result == "strict correlation")
+}
+
+@Test func testToolDispatcherStampsCallbackInterceptedResult() async {
+    let registry = ToolRegistry()
+    await registry.register(EchoTool())
+    let dispatcher = ToolDispatcher(registry: registry)
+    let state = AgentState()
+    let call = AgentToolCall(id: "call_intercepted", name: "echo", parameters: [:])
+
+    var callbacks = AgentCallbacks()
+    callbacks.beforeTool = { _, _ in
+        .success(toolCallId: "", toolName: nil, result: "intercepted")
+    }
+
+    let results = await dispatcher.dispatch(
+        calls: [call],
+        state: state,
+        callbacks: callbacks,
+        observer: nil
+    )
+
+    #expect(results.count == 1)
+    #expect(results[0].toolCallId == "call_intercepted")
+    #expect(results[0].toolName == "echo")
+    #expect(results[0].result == "intercepted")
+}
+
+@Test func testToolResultsFanOutToSeparateLLMMessages() {
+    let message = AgentMessage.tool(results: [
+        .success(toolCallId: "call_1", toolName: "first_tool", result: "first result"),
+        .success(toolCallId: "call_2", toolName: "second_tool", result: "second result")
+    ])
+
+    let llmMessages = message.toLLMMessages()
+
+    #expect(llmMessages.count == 2)
+    #expect(llmMessages[0].role == .tool)
+    #expect(llmMessages[0].toolCallId == "call_1")
+    #expect(llmMessages[0].content.contains("first_tool"))
+    #expect(llmMessages[0].content.contains("first result"))
+    #expect(llmMessages[1].role == .tool)
+    #expect(llmMessages[1].toolCallId == "call_2")
+    #expect(llmMessages[1].content.contains("second_tool"))
+    #expect(llmMessages[1].content.contains("second result"))
+}
+
 @Test func testToolDispatcherNotFound() async {
     let registry = ToolRegistry()
     let dispatcher = ToolDispatcher(registry: registry)
@@ -477,7 +541,7 @@ struct TestScene: Codable, Equatable {
 // MARK: - AgentCallbacks Tests
 
 @Test func testAgentCallbacksCreation() {
-    var callbacks = AgentCallbacks()
+    let callbacks = AgentCallbacks()
     #expect(callbacks.beforeAgent == nil)
     #expect(callbacks.afterAgent == nil)
     #expect(callbacks.beforeModel == nil)

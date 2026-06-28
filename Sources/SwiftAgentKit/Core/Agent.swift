@@ -6,10 +6,10 @@
 //  and the agent loop.
 //
 //  This is the universal agent that supports multiple agent philosophies:
-//  - Single-shot (WhiteboardPro pattern): one LLM call, no loop
-//  - Multi-turn chat (ViduGen pattern): request/response with conversation history
-//  - ReAct with tools (Kommanda pattern): loop with tool calls, repair-retry, plan continuation
-//  - Planner + ReAct (Kommanda pattern): separate planning call, then ReAct loop
+//  - Single-shot: one LLM call, no loop
+//  - Multi-turn chat: request/response with conversation history
+//  - ReAct with tools: loop with tool calls, repair-retry, plan continuation
+//  - Planner + ReAct: separate planning call, then ReAct loop
 //
 
 import Foundation
@@ -102,18 +102,14 @@ public struct AgentConfig: Sendable {
 /// The agent supports multiple philosophies via configuration:
 ///
 /// 1. **Single-shot** (`maxTurns: 0`): One LLM call, no loop.
-///    (WhiteboardPro pattern — classify → generate → parse)
 ///
 /// 2. **Multi-turn chat** (`maxTurns: 1`, no tools): Request/response with history.
-///    (ViduGen pattern — state injected into each fresh prompt)
 ///
 /// 3. **ReAct with tools** (`maxTurns > 0`, with tools): The loop calls the LLM,
 ///    executes tool calls, feeds results back, repeats until done or max turns.
-///    (Kommanda pattern — the full agent loop)
 ///
 /// 4. **Planner + ReAct** (`enablePlanning: true`): Separate planning LLM call,
 ///    then ReAct loop with plan tracking and continuation.
-///    (Kommanda pattern — planner-executor split)
 ///
 /// ## Usage
 ///
@@ -455,11 +451,11 @@ public final class Agent: @unchecked Sendable {
                 }
 
                 // Build LLM request (with state-templated system prompt)
-                let llmMessages = messagesForLLM.map { msg -> LLMMessage in
+                let llmMessages = messagesForLLM.flatMap { msg -> [LLMMessage] in
                     if msg.role == .system {
-                        return .system(state.template(msg.content))
+                        return [.system(state.template(msg.content))]
                     }
-                    return msg.toLLMMessage()
+                    return msg.toLLMMessages()
                 }
                 let request = LLMRequest(
                     model: config.model ?? config.provider.configuration.defaultModel ?? "",
@@ -628,11 +624,11 @@ public final class Agent: @unchecked Sendable {
         } else {
             // Single-shot or multi-turn chat (no tools)
             let messagesForLLM = conversation.messagesForLLMCall()
-            let llmMessages = messagesForLLM.map { msg -> LLMMessage in
+            let llmMessages = messagesForLLM.flatMap { msg -> [LLMMessage] in
                 if msg.role == .system {
-                    return .system(state.template(msg.content))
+                    return [.system(state.template(msg.content))]
                 }
-                return msg.toLLMMessage()
+                return msg.toLLMMessages()
             }
             let request = LLMRequest(
                 model: config.model ?? config.provider.configuration.defaultModel ?? "",
@@ -746,11 +742,11 @@ public final class Agent: @unchecked Sendable {
 
         conversation.append(.user(query))
         let messagesForLLM = conversation.messagesForLLMCall()
-        let llmMessages = messagesForLLM.map { msg -> LLMMessage in
+        let llmMessages = messagesForLLM.flatMap { msg -> [LLMMessage] in
             if msg.role == .system {
-                return .system(state.template(msg.content))
+                return [.system(state.template(msg.content))]
             }
-            return msg.toLLMMessage()
+            return msg.toLLMMessages()
         }
 
         let request = LLMRequest(

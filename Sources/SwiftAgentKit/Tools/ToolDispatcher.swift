@@ -234,8 +234,9 @@ public actor ToolDispatcher {
         // beforeTool callback — can intercept
         if let beforeTool = callbacks?.beforeTool {
             if let intercepted = await beforeTool(call, context) {
-                observer?.onEvent(.toolExecutionFinished(call: call, result: intercepted))
-                return intercepted
+                let stamped = stamp(intercepted, for: call)
+                observer?.onEvent(.toolExecutionFinished(call: call, result: stamped))
+                return stamped
             }
         }
 
@@ -248,18 +249,18 @@ public actor ToolDispatcher {
             // afterTool callback — can modify
             if let afterTool = callbacks?.afterTool {
                 if let modified = await afterTool(call, raw, context) {
-                    result = modified
+                    result = stamp(modified, for: call)
                 } else {
-                    result = raw
+                    result = stamp(raw, for: call)
                 }
             } else {
-                result = raw
+                result = stamp(raw, for: call)
             }
         } catch {
             // onToolError callback — can recover
             if let onToolError = callbacks?.onToolError {
                 if let recovered = await onToolError(call, error, context) {
-                    result = recovered
+                    result = stamp(recovered, for: call)
                 } else {
                     result = AgentToolResult.error(
                         toolCallId: call.id, toolName: call.name,
@@ -276,6 +277,24 @@ public actor ToolDispatcher {
 
         observer?.onEvent(.toolExecutionFinished(call: call, result: result))
         return result
+    }
+
+    /// Force tool results to carry the model-provided call identity.
+    ///
+    /// Individual tools may return placeholder IDs (many examples use an empty
+    /// string because the call ID belongs to the dispatcher, not the tool). Strict
+    /// providers such as OpenAI and Anthropic require tool-result messages to
+    /// correlate exactly with the original call ID, so the dispatcher canonicalizes
+    /// every successful/intercepted/recovered result before it enters conversation
+    /// memory.
+    private func stamp(_ result: AgentToolResult, for call: AgentToolCall) -> AgentToolResult {
+        AgentToolResult(
+            id: result.id,
+            toolCallId: call.id,
+            toolName: result.toolName ?? call.name,
+            result: result.result,
+            isError: result.isError
+        )
     }
 
     // MARK: - Parameter Normalization
