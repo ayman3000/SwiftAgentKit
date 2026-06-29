@@ -1,235 +1,295 @@
-# SwiftAgentKit
+<p align="center">
+  <h1 align="center">SwiftAgentKit</h1>
+  <p align="center"><strong>Build AI agents in native Swift.</strong></p>
+  <p align="center">Tools · Memory · Planning · Sessions · Callbacks · Events · Multi-provider</p>
+  <p align="center">Powered by <a href="https://github.com/ayman3000/LLMProviderKit">LLMProviderKit</a></p>
+</p>
 
-**SwiftAgentKit** is a protocol-oriented Swift package for building tool-using AI agents in Swift apps.
+<p align="center">
+  <img src="https://img.shields.io/badge/Swift-5.9%2B-orange" alt="Swift 5.9+">
+  <img src="https://img.shields.io/badge/platforms-macOS%2013%2B%20%7C%20iOS%2016%2B%20%7C%20tvOS%2016%2B%20%7C%20watchOS%209%2B%20%7C%20visionOS%201%2B-blue" alt="Platforms">
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT">
+  <img src="https://img.shields.io/badge/release-0.1.0--alpha-yellow" alt="Alpha">
+</p>
 
-It gives Swift developers a reusable agent runtime: conversation memory, tool calling, state, planning, structured output, callbacks, event observability, session persistence, and a ReAct-style loop — all built on top of [`LLMProviderKit`](https://github.com/ayman3000/LLMProviderKit), the multi-provider LLM abstraction for Swift.
+---
 
-> **Status:** `0.1.0-alpha` candidate. The core loop is working and dogfooded with local and cloud providers, but APIs may still evolve.
+> **LLMProviderKit talks to models. SwiftAgentKit lets models act.**
+
+A modern AI agent framework built specifically for Swift developers. Native tool calling, conversation memory, planning, state, callbacks, session persistence, and a ReAct-style loop — all protocol-oriented, all Swift, zero UI dependencies.
+
+Works with **Ollama**, **OpenAI**, **Google Gemini**, and **Anthropic** through [LLMProviderKit](https://github.com/ayman3000/LLMProviderKit).
+
+---
+
+## Table of Contents
+
+- [Why SwiftAgentKit?](#why-swiftagentkit)
+- [30-Second Example](#30-second-example)
+- [Features](#features)
+- [Architecture](#architecture)
+- [SwiftAgentKit + LLMProviderKit](#swiftagentkit--llmproviderkit)
+- [Quick Start](#quick-start)
+- [Examples](#examples)
+- [Comparison](#comparison)
+- [Design Principles](#design-principles)
+- [Roadmap](#roadmap)
+- [Why Another Agent Framework?](#why-another-agent-framework)
+- [Contributing](#contributing)
+- [Support](#support)
+- [License](#license)
 
 ---
 
 ## Why SwiftAgentKit?
 
-Calling an LLM is not the same as building an agent.
+Python has LangGraph, Google ADK, OpenAI Agents SDK, PydanticAI — dozens of mature agent frameworks.
 
-A normal LLM call is:
+**Swift had nothing native.**
 
-```text
-User prompt → Model response
-```
+Existing Swift AI libraries are mostly thin OpenAI wrappers. They talk to models, but they don't let models *act* — no tool loop, no memory, no planning, no state, no sessions.
 
-An agent loop is:
+SwiftAgentKit fills that gap:
 
-```text
-User prompt
-→ Model decides what to do
-→ Model requests tools
-→ Swift code executes those tools
-→ Tool results are sent back to the model
-→ Model continues or produces a final answer
-```
-
-`LLMProviderKit` handles the provider layer:
-
-```text
-Ollama / OpenAI / Gemini / Anthropic / compatible providers
-```
-
-`SwiftAgentKit` handles the agent layer:
-
-```text
-Tools, memory, state, planning, repair, callbacks, events, sessions
-```
-
-Together they let you build real Swift AI apps where the model can act through your app’s capabilities instead of only generating text.
-
----
-
-## Who is this for?
-
-SwiftAgentKit is for Swift developers building AI-powered apps such as:
-
-- SwiftUI chat assistants
-- local-first Ollama apps
-- productivity assistants
-- coding assistants
-- file or project automation tools
-- data/query assistants
-- app copilots
-- agentic macOS utilities
-- educational AI apps
-- prototypes that need to switch between local and cloud models
-
-It is especially useful when your app needs the model to call Swift code safely:
-
-```text
-read a document
-query app state
-search local data
-call an API
-run a calculation
-create or modify files
-remember context
-perform multi-step workflows
-```
-
----
-
-## What the package provides
-
-### Core capabilities
-
-| Capability | What it does |
+| The problem | The solution |
 |---|---|
-| **Agent loop** | Runs the model → tools → results → model loop until completion. |
-| **Tool system** | Define Swift tools with JSON-Schema parameters. The model can call them natively. |
-| **Conversation memory** | Maintains chat history and trims it to fit the context window. |
-| **Agent state** | Shared key-value state across turns and tools, with `{key}` prompt templating. |
-| **Planning** | Optional planning step before execution for complex tasks. |
-| **Repair retry** | Nudges the model when tool errors happen instead of accepting false success. |
-| **Plan continuation** | Nudges the model if it stops before completing a plan. |
-| **Structured output** | Parses JSON from imperfect model responses. |
-| **Lifecycle callbacks** | Intercept or replace agent/model/tool behavior for guardrails. |
-| **Event stream** | Observe starts, LLM calls, tool calls, tool results, retries, and finish summaries. |
-| **Session persistence** | Save and restore conversations through a `SessionStore`. |
-| **Streaming** | Stream simple non-tool responses token-by-token. |
+| Calling an LLM ≠ building an agent | A full agent loop: model → tools → results → model, until done |
+| Python frameworks can't run in Swift apps | Pure Swift, protocol-oriented, async/await, zero UI deps |
+| OpenAI-only wrappers lock you in | Any provider: Ollama, OpenAI, Gemini, Anthropic — swap with one line |
+| No memory between turns | Token-aware conversation history with automatic trimming |
+| No way to share state across tools | `AgentState` — cross-turn KV store with `{key}` prompt templating |
+| No multi-step task support | Optional planner + plan continuation + repair-retry |
 
 ---
 
-## Architecture
-
-```text
-┌───────────────────────────────────────────────┐
-│                Your Swift App                 │
-│        SwiftUI / AppKit / CLI / Server         │
-├───────────────────────────────────────────────┤
-│                SwiftAgentKit                   │
-│  Agent loop · Tools · Memory · State · Events  │
-│  Planning · Callbacks · Sessions · JSON output │
-├───────────────────────────────────────────────┤
-│                LLMProviderKit                  │
-│  Ollama · OpenAI · Gemini · Anthropic · more   │
-├───────────────────────────────────────────────┤
-│              Foundation / URLSession           │
-└───────────────────────────────────────────────┘
-```
-
-SwiftAgentKit does **not** implement provider networking itself. It depends on `LLMProviderKit`’s `LLMProvider` protocol, so the same agent can run on local or cloud models.
-
----
-
-## Current alpha validation
-
-The package has been dogfooded in a real SwiftUI client with:
-
-- Ollama local model tool-calling loop
-- Gemini tool-calling loop
-- runtime tool selection
-- event timeline debugging
-- provider/model switching
-- multi-turn transcript context
-- tool execution and result loop closure
-
-Validated behaviors include:
-
-```text
-User prompt
-→ LLM call
-→ tool calls received
-→ Swift tools execute
-→ tool results sent back
-→ second LLM call
-→ final answer
-→ finished with 0 errors
-```
-
-This is enough for an alpha release. It is not yet a stable v1 API.
-
----
-
-## Requirements
-
-- Swift 5.9+
-- macOS 13+
-- iOS 16+
-- tvOS 16+
-- watchOS 9+
-- visionOS 1+
-- [`LLMProviderKit`](https://github.com/ayman3000/LLMProviderKit)
-
-SwiftAgentKit itself is Foundation-based and does not depend on SwiftUI, UIKit, or AppKit.
-
----
-
-## Installation
-
-### Local package dependency
-
-If you are developing both packages locally:
-
-```swift
-// Package.swift
-let package = Package(
-    name: "YourApp",
-    platforms: [
-        .macOS(.v13),
-        .iOS(.v16)
-    ],
-    dependencies: [
-        .package(path: "../SwiftAgentKit"),
-        .package(path: "../LLMProviderKit")
-    ],
-    targets: [
-        .target(
-            name: "YourApp",
-            dependencies: [
-                .product(name: "SwiftAgentKit", package: "SwiftAgentKit"),
-                .product(name: "LLMProviderKit", package: "LLMProviderKit"),
-                .product(name: "LLMProviderKitOllama", package: "LLMProviderKit")
-            ]
-        )
-    ]
-)
-```
-
-### Xcode
-
-1. Open your app project in Xcode.
-2. Go to **File ▸ Add Package Dependencies…**.
-3. Add the local `SwiftAgentKit` package path.
-4. Add `LLMProviderKit` and the provider products your app needs.
-5. Link the products to your app target.
-
-For example, an Ollama app usually needs:
-
-```text
-SwiftAgentKit
-LLMProviderKit
-LLMProviderKitOllama
-```
-
-A Gemini app usually needs:
-
-```text
-SwiftAgentKit
-LLMProviderKit
-LLMProviderKitGemini
-```
-
----
-
-## Quick start: simple chat
-
-Use SwiftAgentKit as a normal chat agent with memory.
+## 30-Second Example
 
 ```swift
 import SwiftAgentKit
 import LLMProviderKit
 import LLMProviderKitOllama
 
-let provider = OllamaProvider(
-    configuration: OllamaProvider.local(model: "llama3.2")
-)
+// 1. Pick any provider
+let provider = OllamaProvider(configuration: .local(model: "llama3.2"))
+
+// 2. Create an agent with tools
+let agent = Agent(config: AgentConfig(
+    provider: provider,
+    systemPrompt: "You are a helpful assistant. Use tools when needed.",
+    maxTurns: 6
+))
+
+// 3. Define a tool — any Swift struct conforming to AgentTool
+struct CurrentTimeTool: AgentTool {
+    let name = "current_time"
+    let description = "Return the current date and time."
+    let parameters = ToolParameters.empty
+
+    func execute(parameters: [String: Any]) async throws -> AgentToolResult {
+        .success(toolCallId: "", toolName: name,
+                 result: Date().formatted(date: .complete, time: .standard))
+    }
+}
+
+agent.register(CurrentTimeTool())
+
+// 4. Run — the model decides to call the tool, Swift executes it, results go back
+let response = try await agent.run("What time is it? Use the tool.")
+print(response)
+```
+
+That's a real agent. Not a chat wrapper — a tool-using loop where the model acts through your Swift code.
+
+---
+
+## Features
+
+| Feature | Description |
+|---|---|
+| 🔧 **Tool system** | Define Swift tools with JSON-Schema parameters. Models call them natively. Parallel dispatch + dedup. |
+| 🧠 **Conversation memory** | Token-aware history that trims to fit the context window automatically. |
+| 📋 **Planning** | Optional planning step before execution for complex multi-step tasks. |
+| 🔄 **Repair retry** | Nudges the model when tools fail instead of accepting false success. |
+| 📊 **Plan continuation** | Nudges the model if it stops before completing a plan. |
+| 🗂️ **Agent state** | Cross-turn key-value store with `{key}` prompt templating. |
+| 📡 **Lifecycle callbacks** | 8 intercept-able hooks: beforeAgent, afterAgent, beforeModel, afterModel, beforeTool, afterTool, onModelError, onToolError. |
+| 📡 **Event stream** | Observe starts, LLM calls, tool calls, tool results, retries, finish summaries. |
+| 💾 **Session persistence** | Save/restore conversations via `SessionStore` protocol + `FileSessionStore`. |
+| 📝 **Structured output** | Tolerant JSON extraction from imperfect model responses. |
+| 🎯 **Progressive disclosure skills** | Inject domain instructions only when query keywords match — keeps prompts small for local models. |
+| 🌊 **Streaming** | Token-by-token streaming for non-tool responses. |
+| 🖥️ **Local LLMs** | Full Ollama support — run agents entirely offline. |
+| ☁️ **Cloud providers** | OpenAI, Gemini, Anthropic — swap providers, keep everything else. |
+| ⚡ **Async/await** | Native Swift concurrency throughout. No completion handlers. |
+| 🔒 **Cancellation** | Cooperative cancellation between turns. |
+
+### Provider support
+
+| Provider | Tool calling | Streaming | Model discovery |
+|---|---|---|---|
+| **Ollama** | ✅ Native `tools` | ✅ | ✅ `GET /api/tags` |
+| **OpenAI** | ✅ Native `tools` + `tool_choice` | ✅ | ✅ `GET /v1/models` |
+| **Gemini** | ✅ `functionDeclarations` | ✅ | ✅ `GET /v1beta/models` |
+| **Anthropic** | ✅ `tool_use` content blocks | ✅ | ✅ Curated list |
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────┐
+│                  Your Swift App                  │
+│          SwiftUI / AppKit / CLI / Server          │
+├─────────────────────────────────────────────────┤
+│                   SwiftAgentKit                   │
+│  ┌──────────┐ ┌────────┐ ┌─────────────────────┐ │
+│  │ Agent Loop│ │ Tools  │ │ Memory + Sessions  │ │
+│  │ ReAct/Plan│ │ Dedup  │ │ Token-aware trim   │ │
+│  │ Repair    │ │ Paralel│ │ FileSessionStore   │ │
+│  └──────────┘ └────────┘ └─────────────────────┘ │
+│  ┌──────────┐ ┌────────┐ ┌─────────────────────┐ │
+│  │ State    │ │Skills  │ │ Callbacks + Events  │ │
+│  │ {key}    │ │Trigger │ │ 8 hooks + stream   │ │
+│  └──────────┘ └────────┘ └─────────────────────┘ │
+├─────────────────────────────────────────────────┤
+│                 LLMProviderKit                    │
+│    Ollama · OpenAI · Gemini · Anthropic · more     │
+├─────────────────────────────────────────────────┤
+│               Foundation / URLSession             │
+└─────────────────────────────────────────────────┘
+```
+
+### Agent lifecycle
+
+```
+User query
+    │
+    ▼
+┌─────────────┐     ┌──────────────┐
+│ beforeAgent │────▶│  Planning?   │
+│  callback   │     │  (optional)  │
+└─────────────┘     └──────┬───────┘
+                           │
+                    ┌──────▼───────┐
+                    │  LLM call    │◀── beforeModel callback
+                    └──────┬───────┘
+                           │
+              ┌────────────┼────────────┐
+              ▼            ▼            ▼
+        Tool calls     Text answer    Error
+              │                        │
+              ▼                        ▼
+     ┌────────────────┐        onModelError
+     │ Tool dispatch  │        callback
+     │ (parallel+dedup)│
+     └───────┬────────┘
+             │
+     beforeTool ──▶ execute ──▶ afterTool
+     (can block)  (Swift code)  (can modify)
+             │
+             ▼
+     Results sent back to model
+             │
+             ▼
+        Next turn ──▶ until done ──▶ afterAgent callback
+```
+
+### Package layout
+
+```
+Sources/SwiftAgentKit/
+├── Core/
+│   ├── Agent.swift              # AgentConfig + main Agent runtime
+│   ├── AgentMessage.swift       # Messages, tool calls, tool results
+│   ├── AgentState.swift         # Cross-turn key-value state + {key} templating
+│   ├── AgentCallbacks.swift     # 8 intercept-able lifecycle hooks
+│   ├── AgentSkill.swift         # Progressive-disclosure skills
+│   ├── AgentEvent.swift         # Event stream + run summaries
+│   ├── AgentError.swift         # Typed errors
+│   └── AgentLLMResponse.swift   # Provider response bridge
+├── Tools/
+│   ├── AgentTool.swift          # Tool protocol + JSON-Schema params
+│   ├── ToolContext.swift        # Rich context (state, call info, actions)
+│   └── ToolDispatcher.swift     # Parallel dispatch, dedup, confirmation
+├── Memory/
+│   ├── Conversation.swift       # Token-aware conversation history
+│   └── SessionStore.swift       # Session persistence protocol + file store
+├── Planning/
+│   ├── AgentPlan.swift          # Plan model + LLMPlanner
+│   └── RepairRetryPolicy.swift  # Repair-retry + plan continuation
+├── StructuredOutput/
+│   └── StructuredOutput.swift   # Tolerant JSON extraction
+└── Logging/
+    └── AgentLogger.swift        # Lightweight logger
+```
+
+---
+
+## SwiftAgentKit + LLMProviderKit
+
+Two packages, two layers, one stack:
+
+```
+    Your App
+       │
+       ▼
+SwiftAgentKit          ← tools, memory, planning, state, events, sessions
+       │
+       ▼
+LLMProviderKit         ← provider protocol, request/response, streaming
+       │
+       ├── Ollama
+       ├── OpenAI
+       ├── Gemini
+       └── Anthropic
+```
+
+| Use LLMProviderKit when... | Use SwiftAgentKit when... |
+|---|---|
+| You need one-provider LLM calls | You need an agent loop |
+| You need streaming chat | You need tool calling |
+| You need model lists | You need memory + state |
+| You need provider abstraction | You need planning + callbacks |
+| | You need sessions + events |
+
+Most agentic apps use both. SwiftAgentKit depends on LLMProviderKit — you just add the provider products you need.
+
+---
+
+## Quick Start
+
+### Installation
+
+**Xcode:** File ▸ Add Package Dependencies → add `https://github.com/ayman3000/SwiftAgentKit` and `https://github.com/ayman3000/LLMProviderKit`
+
+**Package.swift:**
+
+```swift
+.dependencies: [
+    .package(url: "https://github.com/ayman3000/SwiftAgentKit.git", from: "0.1.0-alpha.1"),
+    .package(url: "https://github.com/ayman3000/LLMProviderKit.git", from: "0.1.0-alpha.1"),
+],
+targets: [
+    .target(name: "YourApp", dependencies: [
+        .product(name: "SwiftAgentKit", package: "SwiftAgentKit"),
+        .product(name: "LLMProviderKit", package: "LLMProviderKit"),
+        .product(name: "LLMProviderKitOllama", package: "LLMProviderKit"),
+        // Add the providers you need:
+        // .product(name: "LLMProviderKitOpenAI", package: "LLMProviderKit"),
+        // .product(name: "LLMProviderKitGemini", package: "LLMProviderKit"),
+        // .product(name: "LLMProviderKitAnthropic", package: "LLMProviderKit"),
+    ])
+]
+```
+
+### First agent (under 2 minutes)
+
+```swift
+import SwiftAgentKit
+import LLMProviderKit
+import LLMProviderKitOllama
+
+let provider = OllamaProvider(configuration: .local(model: "llama3.2"))
 
 let agent = Agent(config: AgentConfig(
     provider: provider,
@@ -237,239 +297,87 @@ let agent = Agent(config: AgentConfig(
     maxTurns: 1
 ))
 
-let answer = try await agent.run("Explain async/await in Swift with a tiny example.")
+let answer = try await agent.run("Explain async/await in one sentence.")
 print(answer)
 ```
 
-Use this pattern when you want conversation history but do not need tools.
+### First tool
+
+```swift
+struct EchoTool: AgentTool {
+    let name = "echo"
+    let description = "Echo a message back."
+    let parameters = ToolParameters(
+        properties: ["message": ToolParameterProperty(type: "string", description: "Message to echo")],
+        required: ["message"]
+    )
+
+    func execute(parameters: [String: Any]) async throws -> AgentToolResult {
+        let msg = parameters["message"] as? String ?? ""
+        return .success(toolCallId: "", toolName: name, result: "Echo: \(msg)")
+    }
+}
+
+agent.register(EchoTool())
+let response = try await agent.run("Echo the message 'Hello from SwiftAgentKit!'")
+```
 
 ---
 
-## Quick start: agent with tools
+## Examples
 
-Tools are normal Swift types that conform to `AgentTool`.
+### Tool calling
 
 ```swift
-import Foundation
-import SwiftAgentKit
-
 struct CurrentTimeTool: AgentTool {
     let name = "current_time"
-    let description = "Return the current date and time on the user's device."
+    let description = "Return the current date and time."
     let parameters = ToolParameters.empty
 
     func execute(parameters: [String: Any]) async throws -> AgentToolResult {
-        let text = Date().formatted(date: .complete, time: .standard)
-        return .success(toolCallId: "", toolName: name, result: text)
+        .success(toolCallId: "", toolName: name,
+                 result: Date().formatted(date: .complete, time: .standard))
     }
 }
-```
-
-Register the tool and run the agent:
-
-```swift
-import SwiftAgentKit
-import LLMProviderKit
-import LLMProviderKitOllama
-
-let provider = OllamaProvider(
-    configuration: OllamaProvider.local(model: "qwen3:0.6b")
-)
 
 let agent = Agent(config: AgentConfig(
     provider: provider,
     systemPrompt: "You are a helpful assistant. Use tools when needed.",
     maxTurns: 6
 ))
-
 agent.register(CurrentTimeTool())
 
-let response = try await agent.run("Use your tool to tell me the current time.")
-print(response)
+let response = try await agent.run("What time is it? Use the tool.")
 ```
 
-The agent will send the tool definition to the provider. If the model calls `current_time`, SwiftAgentKit executes the Swift tool and feeds the result back to the model.
-
----
-
-## Example: multiple runtime tools
+### Multiple tools with parallel dispatch
 
 ```swift
-struct EchoTool: AgentTool {
-    let name = "echo_message"
-    let description = "Echo a message back exactly."
-    let parameters = ToolParameters(
-        properties: [
-            "message": ToolParameterProperty(
-                type: "string",
-                description: "Message to echo"
-            )
-        ],
-        required: ["message"]
-    )
-
-    func execute(parameters: [String: Any]) async throws -> AgentToolResult {
-        let message = parameters["message"] as? String ?? ""
-        return .success(toolCallId: "", toolName: name, result: "Echo: \(message)")
-    }
-}
-
 struct CalculatorTool: AgentTool {
     let name = "calculator"
-    let description = "Calculate basic arithmetic expressions."
+    let description = "Calculate a basic arithmetic expression."
     let parameters = ToolParameters(
-        properties: [
-            "expression": ToolParameterProperty(
-                type: "string",
-                description: "Arithmetic expression, e.g. 38 * 17"
-            )
-        ],
+        properties: ["expression": ToolParameterProperty(type: "string", description: "e.g. 38 * 17")],
         required: ["expression"]
     )
 
     func execute(parameters: [String: Any]) async throws -> AgentToolResult {
-        let expression = parameters["expression"] as? String ?? ""
-
-        // Replace this tiny example with a real safe parser in production.
-        if expression.trimmingCharacters(in: .whitespaces) == "38 * 17" {
+        let expr = parameters["expression"] as? String ?? ""
+        // Replace with a real safe parser in production
+        if expr.trimmingCharacters(in: .whitespaces) == "38 * 17" {
             return .success(toolCallId: "", toolName: name, result: "646")
         }
-
-        return .error(
-            toolCallId: "",
-            toolName: name,
-            message: "Unsupported expression: \(expression)"
-        )
+        return .error(toolCallId: "", toolName: name, message: "Unsupported expression.")
     }
 }
 
-agent.registerAll([
-    CurrentTimeTool(),
-    EchoTool(),
-    CalculatorTool()
-])
-
-let result = try await agent.run("Get the current time, echo SwiftAgentKit, then calculate 38 * 17.")
-print(result)
+agent.registerAll([CurrentTimeTool(), EchoTool(), CalculatorTool()])
+let result = try await agent.run("Get the time, echo 'hello', then calculate 38 * 17.")
 ```
 
-When a model requests multiple tools in the same turn, SwiftAgentKit can dispatch them concurrently and preserves result order when feeding results back.
+When the model requests multiple tools in one turn, SwiftAgentKit dispatches them concurrently and preserves order when feeding results back.
 
----
-
-## Observing the agent loop
-
-Use events to build a timeline in your app UI or logs.
-
-```swift
-agent.onEvent { event in
-    switch event {
-    case .started(let query):
-        print("Started:", query)
-
-    case .llmCallStarted(let turn):
-        print("LLM call started — turn \(turn)")
-
-    case .llmCallCompleted(let turn, let response):
-        print("LLM completed — turn \(turn):", response.text)
-
-    case .toolCallsReceived(let calls):
-        print("Tool calls:", calls.map(\.name).joined(separator: ", "))
-
-    case .toolExecutionStarted(let call):
-        print("Tool started:", call.name)
-
-    case .toolExecutionFinished(let call, let result):
-        print("Tool finished:", call.name, result.isError ? "ERROR" : "OK")
-
-    case .finished(let summary):
-        print("Finished in \(summary.totalTurns) turns, tools: \(summary.toolsExecuted)")
-
-    default:
-        break
-    }
-}
-```
-
-This is useful for developer tools, debug panels, progress UIs, and audit logs.
-
----
-
-## Using different providers
-
-SwiftAgentKit works with any `LLMProviderKit` provider.
-
-### Ollama
-
-```swift
-import LLMProviderKitOllama
-
-let provider = OllamaProvider(
-    configuration: OllamaProvider.local(model: "qwen3:0.6b")
-)
-```
-
-### Gemini
-
-```swift
-import LLMProviderKitGemini
-
-let provider = GeminiProvider(
-    configuration: GeminiProvider.gemini(
-        apiKey: ProcessInfo.processInfo.environment["GEMINI_API_KEY"] ?? "",
-        model: "gemini-2.5-flash-lite"
-    )
-)
-```
-
-### OpenAI
-
-```swift
-import LLMProviderKitOpenAI
-
-let provider = OpenAIProvider(
-    configuration: OpenAIProvider.openAI(
-        apiKey: ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? "",
-        model: "gpt-4o-mini"
-    )
-)
-```
-
-### Anthropic
-
-```swift
-import LLMProviderKitAnthropic
-
-let provider = AnthropicProvider(
-    configuration: AnthropicProvider.anthropic(
-        apiKey: ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"] ?? "",
-        model: "claude-sonnet-4-20250514"
-    )
-)
-```
-
-Once you create the provider, the SwiftAgentKit code is the same:
-
-```swift
-let agent = Agent(config: AgentConfig(provider: provider, maxTurns: 6))
-agent.register(CurrentTimeTool())
-let response = try await agent.run("What time is it? Use the tool.")
-```
-
----
-
-## Agent modes and philosophies
-
-SwiftAgentKit supports several useful patterns through `AgentConfig`.
-
-| Pattern | Configuration | Use when |
-|---|---|---|
-| **Single-shot** | `maxTurns: 0` | One generation or structured extraction. |
-| **Multi-turn chat** | `maxTurns: 1`, no tools | Chat with history but no actions. |
-| **ReAct with tools** | `maxTurns > 0`, tools registered | The model must call tools and iterate. |
-| **Planner + ReAct** | `enablePlanning: true` | Multi-step tasks benefit from a plan before tool use. |
-
-### Single-shot structured output
+### Structured output
 
 ```swift
 struct Summary: Codable {
@@ -480,18 +388,15 @@ struct Summary: Codable {
 let agent = Agent(config: AgentConfig(
     provider: provider,
     systemPrompt: "Return only valid JSON matching {title: String, bullets: [String]}.",
-    maxTurns: 0
+    maxTurns: 0  // single-shot, no loop
 ))
 
-let summary = try await agent.runStructured(
-    "Summarize Swift actors in 3 bullets.",
-    as: Summary.self
-)
-
-print(summary.title)
+let summary = try await agent.runStructured("Summarize Swift actors in 3 bullets.", as: Summary.self)
+print(summary.title)     // "Swift Actors"
+print(summary.bullets)   // ["Isolation", "Thread-safe by default", "Replaces locks"]
 ```
 
-### Multi-turn chat
+### Memory + multi-turn chat
 
 ```swift
 let agent = Agent(config: AgentConfig(
@@ -504,11 +409,93 @@ let agent = Agent(config: AgentConfig(
 
 let first = try await agent.run("What is an actor in Swift?")
 let followUp = try await agent.run("Show a small example.")
+// Second call includes prior context automatically
 ```
 
-The second call includes previous conversation context automatically.
+### Session persistence
 
-### Planner + tool execution
+```swift
+let store = FileSessionStore(directoryPath: "/tmp/agent-sessions")
+
+try await agent.saveSession(store: store, sessionId: "chat-001")
+
+let restored = Agent(config: AgentConfig(provider: provider, maxTurns: 1))
+let loaded = try await restored.loadSession(store: store, sessionId: "chat-001")
+
+if loaded {
+    let answer = try await restored.run("What did we discuss earlier?")
+    print(answer)  // Remembers the prior conversation
+}
+```
+
+Implement your own `SessionStore` for SQLite, Core Data, CloudKit, or any backend.
+
+### Streaming
+
+```swift
+// Simple non-tool responses — token by token
+for try await chunk in agent.stream("Tell me a short story about Swift actors.") {
+    print(chunk, terminator: "")
+}
+
+// Tool-using agents — runs the loop, then streams the final response
+for try await chunk in agent.runStreaming("Use tools, then summarize.") {
+    print(chunk, terminator: "")
+}
+```
+
+> The tool loop is non-streaming internally (tool calls need complete responses). `runStreaming` runs the loop, then yields the final text.
+
+### Event monitoring
+
+```swift
+agent.onEvent { event in
+    switch event {
+    case .started(let query):
+        print("Started:", query)
+    case .llmCallStarted(let turn):
+        print("LLM call — turn \(turn)")
+    case .toolCallsReceived(let calls):
+        print("Tools:", calls.map(\.name).joined(separator: ", "))
+    case .toolExecutionFinished(let call, let result):
+        print("✓ \(call.name): \(result.isError ? "ERROR" : "OK")")
+    case .finished(let summary):
+        print("Done: \(summary.totalTurns) turns, \(summary.toolsExecuted) tools, \(String(format: "%.1f", summary.elapsed))s")
+    default: break
+    }
+}
+```
+
+Perfect for debug panels, progress UIs, and audit logs.
+
+### Callbacks + guardrails
+
+```swift
+var callbacks = AgentCallbacks()
+
+// Block destructive requests
+callbacks.beforeAgent = { query, state in
+    query.lowercased().contains("delete everything")
+        ? "I can't perform destructive actions without confirmation."
+        : nil
+}
+
+// Block dangerous tools
+callbacks.beforeTool = { call, context in
+    call.name == "delete_file"
+        ? .error(toolCallId: call.id, toolName: call.name, message: "Blocked by policy.")
+        : nil
+}
+
+// Post-process responses
+callbacks.afterAgent = { response, state in
+    response.trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+agent.callbacks = callbacks
+```
+
+### Planning
 
 ```swift
 let agent = Agent(config: AgentConfig(
@@ -520,56 +507,41 @@ let agent = Agent(config: AgentConfig(
     enableRepairRetry: true
 ))
 
-agent.registerAll([
-    ReadFileTool(),
-    WriteFileTool(),
-    ListFilesTool()
-])
-
-let result = try await agent.run("Inspect this small project and write a README summary.")
-print(result)
+agent.registerAll([ReadFileTool(), WriteFileTool(), ListFilesTool()])
+let result = try await agent.run("Inspect this project and write a README summary.")
 ```
 
-Planning is optional. Keep it off for simple tasks and enable it for tasks where step tracking matters.
+Planning is optional. Keep it off for simple tasks; enable it for multi-step workflows.
 
----
-
-## Agent state
-
-`AgentState` is a shared key-value store available across turns and tools.
+### Agent state + templating
 
 ```swift
 agent.state.setValue("pro", forKey: "user:tier")
 agent.state.setValue("/Users/example/project", forKey: "app:workspace")
-```
 
-System prompts can template values:
-
-```swift
-let agent = Agent(config: AgentConfig(
+// {key} placeholders in system prompts are auto-templated
+let agent2 = Agent(config: AgentConfig(
     provider: provider,
-    systemPrompt: "The user's tier is {user:tier}. Workspace: {app:workspace}.",
+    systemPrompt: "User tier: {user:tier}. Workspace: {app:workspace}.",
     maxTurns: 6
 ))
 ```
 
-Tools can access state through `ToolContext`:
+Tools access state via `ToolContext`:
 
 ```swift
 struct SaveNoteTool: AgentTool {
     let name = "save_note"
-    let description = "Save a short note into agent state."
+    let description = "Save a note into agent state."
     let parameters = ToolParameters(
-        properties: [
-            "note": ToolParameterProperty(type: "string", description: "Note text")
-        ],
+        properties: ["note": ToolParameterProperty(type: "string", description: "Note text")],
         required: ["note"]
     )
 
     func execute(context: ToolContext) async throws -> AgentToolResult {
         let note = context.parameters["note"] as? String ?? ""
         context.state.setValue(note, forKey: "session:last_note")
-        return .success(toolCallId: context.callId, toolName: name, result: "Saved note.")
+        return .success(toolCallId: context.callId, toolName: name, result: "Saved.")
     }
 
     func execute(parameters: [String: Any]) async throws -> AgentToolResult {
@@ -578,70 +550,15 @@ struct SaveNoteTool: AgentTool {
 }
 ```
 
-Suggested key prefixes:
+State key prefixes: `temp:` (cleared after run) · `session:` · `user:` · `app:`
 
-| Prefix | Meaning |
-|---|---|
-| `temp:` | Temporary data cleared after a run. |
-| `session:` | Current conversation/session data. |
-| `user:` | User-level data your app provides. |
-| `app:` | App-level configuration or context. |
-
----
-
-## Lifecycle callbacks and guardrails
-
-Callbacks can intercept the run. Return `nil` to continue normally, or return a value to override behavior.
-
-```swift
-var callbacks = AgentCallbacks()
-
-callbacks.beforeAgent = { query, state in
-    if query.lowercased().contains("delete everything") {
-        return "I can't perform destructive actions without explicit confirmation."
-    }
-    return nil
-}
-
-callbacks.beforeTool = { call, context in
-    if call.name == "delete_file" {
-        return .error(
-            toolCallId: call.id,
-            toolName: call.name,
-            message: "Blocked by app policy."
-        )
-    }
-    return nil
-}
-
-callbacks.afterAgent = { response, state in
-    response.trimmingCharacters(in: .whitespacesAndNewlines)
-}
-
-agent.callbacks = callbacks
-```
-
-Callbacks are useful for:
-
-- policy checks
-- user-tier gating
-- parameter validation
-- dangerous tool confirmation
-- PII redaction
-- fallback responses
-- logging and metrics
-
----
-
-## Progressive disclosure skills
-
-Skills inject extra instructions only when relevant. This keeps prompts smaller, which is especially important for local models.
+### Progressive disclosure skills
 
 ```swift
 agent.registerSkill(AgentSkill(
     name: "database-help",
     triggerKeywords: ["sql", "database", "query"],
-    instructions: "When writing SQL, prefer parameterized queries and explain indexes briefly."
+    instructions: "When writing SQL, prefer parameterized queries and explain indexes."
 ))
 
 agent.registerSkill(AgentSkill(
@@ -652,263 +569,210 @@ agent.registerSkill(AgentSkill(
 ))
 ```
 
-If the user asks about SQL, only the database skill is injected. The chart skill remains dormant.
+Only matching skills are injected — keeps prompts small for local models.
 
----
-
-## Session persistence
-
-Use `FileSessionStore` for simple JSON-based conversation persistence.
-
-```swift
-let store = FileSessionStore(directoryPath: "/tmp/agent-sessions")
-
-try await agent.saveSession(store: store, sessionId: "chat-001")
-
-let restored = Agent(config: AgentConfig(provider: provider, maxTurns: 1))
-let didLoad = try await restored.loadSession(store: store, sessionId: "chat-001")
-
-if didLoad {
-    let answer = try await restored.run("What did we discuss earlier?")
-    print(answer)
-}
-```
-
-For production apps, you can implement your own `SessionStore` backed by SQLite, Core Data, CloudKit, or your server.
-
----
-
-## Streaming
-
-For simple non-tool responses:
-
-```swift
-for try await chunk in agent.stream("Tell me a short story about Swift actors.") {
-    print(chunk, terminator: "")
-}
-```
-
-For tool-using agents:
-
-```swift
-for try await chunk in agent.runStreaming("Use tools, then summarize the result.") {
-    print(chunk, terminator: "")
-}
-```
-
-Important: the actual tool loop is non-streaming internally because tool calls require complete model responses. `runStreaming` runs the loop, then yields the final response.
-
----
-
-## Error handling
-
-Always wrap agent runs in `do/catch`.
-
-```swift
-do {
-    let result = try await agent.run("Analyze this project.")
-    print(result)
-} catch AgentError.maxTurnsReached(let turns) {
-    print("The agent reached the max turn limit: \(turns)")
-} catch AgentError.cancelled {
-    print("The run was cancelled.")
-} catch {
-    print("Agent failed:", error.localizedDescription)
-}
-```
-
-Use a reasonable `maxTurns` for tool agents. Small values are safer for UI apps; larger values are useful for complex workflows.
-
----
-
-## Cancellation
+### Cancellation
 
 ```swift
 let task = Task {
     try await agent.run("Do a long multi-step task.")
 }
 
-// Later, from a Cancel button:
+// From a Cancel button:
 agent.cancel()
 task.cancel()
+// Agent checks cancellation between turns and throws AgentError.cancelled
 ```
 
-The agent checks cancellation between turns and throws `AgentError.cancelled`.
-
----
-
-## Designing good tools
-
-Good tools are the difference between a useful agent and an unreliable one.
-
-### Tool design checklist
-
-- Use a short, clear tool name: `read_file`, `search_notes`, `create_event`.
-- Write a specific description. The model reads it to decide when to call the tool.
-- Keep parameters explicit and typed.
-- Return concise results. Long raw output can overflow the model context.
-- Validate parameters inside the tool.
-- Use `requiresConfirmation` or callbacks for destructive actions.
-- Prefer app-scoped capabilities over unrestricted system access.
-
-### Example: safer file reader
+### Error handling
 
 ```swift
-struct ReadWorkspaceFileTool: AgentTool {
-    let name = "read_workspace_file"
-    let description = "Read a UTF-8 text file inside the configured workspace."
-    let parameters = ToolParameters(
-        properties: [
-            "relativePath": ToolParameterProperty(
-                type: "string",
-                description: "Path relative to the workspace root"
-            )
-        ],
-        required: ["relativePath"]
-    )
-
-    func execute(context: ToolContext) async throws -> AgentToolResult {
-        let workspace = context.state.string(forKey: "app:workspace") ?? ""
-        let relativePath = context.parameters["relativePath"] as? String ?? ""
-
-        guard !relativePath.contains("..") else {
-            return .error(toolCallId: context.callId, toolName: name, message: "Path traversal is not allowed.")
-        }
-
-        let url = URL(fileURLWithPath: workspace).appendingPathComponent(relativePath)
-        let text = try String(contentsOf: url, encoding: .utf8)
-
-        return .success(toolCallId: context.callId, toolName: name, result: text)
-    }
-
-    func execute(parameters: [String: Any]) async throws -> AgentToolResult {
-        .error(toolCallId: "", toolName: name, message: "This tool requires context.")
-    }
+do {
+    let result = try await agent.run("Analyze this project.")
+    print(result)
+} catch AgentError.maxTurnsReached(let turns) {
+    print("Agent reached max turns: \(turns)")
+} catch AgentError.cancelled {
+    print("Cancelled.")
+} catch {
+    print("Agent failed:", error.localizedDescription)
 }
 ```
 
----
+### Switching providers
 
-## Package layout
+```swift
+// Ollama — local, offline
+let ollama = OllamaProvider(configuration: .local(model: "llama3.2"))
 
-```text
-Sources/SwiftAgentKit/
-├── Core/
-│   ├── Agent.swift              # AgentConfig and main Agent runtime
-│   ├── AgentMessage.swift       # Internal agent messages and tool-call bridge
-│   ├── AgentState.swift         # Cross-turn key-value state
-│   ├── AgentCallbacks.swift     # Intercept-able lifecycle hooks
-│   ├── AgentSkill.swift         # Progressive-disclosure skills
-│   ├── AgentEvent.swift         # Event stream and run summaries
-│   ├── AgentError.swift         # Typed agent errors
-│   └── AgentLLMResponse.swift   # Provider response bridge
-├── Tools/
-│   ├── AgentTool.swift          # Tool protocol and schemas
-│   ├── ToolContext.swift        # Tool execution context
-│   └── ToolDispatcher.swift     # Tool dispatch, dedup, parallel execution
-├── Memory/
-│   ├── Conversation.swift       # Token-aware conversation history
-│   └── SessionStore.swift       # Session persistence protocol + file store
-├── Planning/
-│   ├── AgentPlan.swift          # Plan model and planner protocol
-│   └── RepairRetryPolicy.swift  # Repair retry and continuation policies
-├── StructuredOutput/
-│   └── StructuredOutput.swift   # Tolerant JSON extraction
-└── Logging/
-    └── AgentLogger.swift        # Lightweight logging
+// OpenAI
+let openai = OpenAIProvider(configuration: .openAI(
+    apiKey: ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? "",
+    model: "gpt-4o-mini"
+))
+
+// Gemini
+let gemini = GeminiProvider(configuration: .gemini(
+    apiKey: ProcessInfo.processInfo.environment["GEMINI_API_KEY"] ?? "",
+    model: "gemini-2.5-flash-lite"
+))
+
+// Anthropic
+let anthropic = AnthropicProvider(configuration: .anthropic(
+    apiKey: ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"] ?? "",
+    model: "claude-sonnet-4-20250514"
+))
+
+// The agent code is identical — just pass a different provider
+let agent = Agent(config: AgentConfig(provider: openai, maxTurns: 6))
+agent.register(CurrentTimeTool())
+let response = try await agent.run("What time is it? Use the tool.")
 ```
 
+### Agent modes
+
+| Mode | Config | Use when |
+|---|---|---|
+| **Single-shot** | `maxTurns: 0` | One generation or structured extraction |
+| **Multi-turn chat** | `maxTurns: 1`, no tools | Chat with history, no actions |
+| **ReAct with tools** | `maxTurns > 0`, tools | Model calls tools and iterates |
+| **Planner + ReAct** | `enablePlanning: true` | Multi-step tasks need a plan first |
+
 ---
 
-## Build and test
+## Comparison
+
+| Feature | SwiftAgentKit | OpenAI Agents SDK | Google ADK | LangGraph | PydanticAI |
+|---|---|---|---|---|---|
+| **Native Swift** | ✅ | ❌ Python | ❌ Python | ❌ Python | ❌ Python |
+| **Tool calling** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Conversation memory** | ✅ Token-aware | ✅ | ✅ | ✅ | ❌ |
+| **Agent state** | ✅ KV store + templating | ❌ | ✅ | ✅ | ❌ |
+| **Planning** | ✅ Optional planner | ❌ | ✅ | ❌ | ❌ |
+| **Repair retry** | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **Session persistence** | ✅ Protocol + file store | ❌ | ❌ | ❌ | ❌ |
+| **Structured output** | ✅ Tolerant JSON | ❌ | ✅ | ❌ | ✅ |
+| **Event stream** | ✅ 15+ event types | ❌ | ✅ | ❌ | ❌ |
+| **Lifecycle callbacks** | ✅ 8 hooks | ❌ | ❌ | ❌ | ❌ |
+| **Local LLMs (Ollama)** | ✅ Native | ❌ | ❌ | ❌ | ❌ |
+| **OpenAI** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Anthropic** | ✅ | ❌ | ✅ | ❌ | ✅ |
+| **Gemini** | ✅ | ❌ | ✅ | ❌ | ❌ |
+| **Apple platforms** | ✅ macOS/iOS/tvOS/watchOS/visionOS | ❌ | ❌ | ❌ | ❌ |
+| **Zero external deps** | ✅ Foundation only | ❌ | ❌ | ❌ | ❌ |
+| **Streaming** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Progressive disclosure** | ✅ Skills + tier gating | ❌ | ❌ | ❌ | ❌ |
+
+---
+
+## Design Principles
+
+1. **Native Swift first.** Not a port. Not a wrapper. Built for Swift developers who want agents in their apps, not Python scripts with an API.
+2. **Protocol-oriented.** `AgentTool`, `LLMProvider`, `SessionStore`, `AgentPlanner`, `AgentObserver` — everything is a protocol. Implement your own anything.
+3. **Minimal dependencies.** SwiftAgentKit is Foundation-only. No UIKit, no AppKit, no SwiftUI, no third-party libraries. LLMProviderKit is the sole dependency.
+4. **Local-first capable.** Ollama is a first-class provider, not an afterthought. Run agents entirely offline.
+5. **Async/await everywhere.** Native Swift concurrency. No completion handlers, no Combine, no callback hell.
+6. **Composable.** Use what you need. Tools without planning. Memory without sessions. State without skills. Every feature is independent.
+7. **Provider-agnostic.** Swap Ollama for OpenAI for Gemini for Anthropic — the agent code doesn't change.
+8. **Observable.** 15+ event types + 8 interceptable callbacks. Build debug panels, audit logs, and guardrails.
+
+---
+
+## Roadmap
+
+### Near-term
+- [ ] More SwiftUI example apps
+- [ ] OpenAI + Anthropic live dogfood validation
+- [ ] Keychain-based API key sample
+- [ ] More tool schema examples
+- [ ] Cancellation stress tests
+- [ ] Public API review
+
+### Before beta
+- [ ] Stabilize core APIs
+- [ ] Executable examples for all README snippets
+- [ ] Provider regression test suite
+- [ ] Tagged GitHub release
+
+### Future
+- [ ] **MCP support** — Model Context Protocol integration
+- [ ] **RAG integration** — Retrieval-augmented generation
+- [ ] **Multi-agent orchestration** — Agent-to-agent delegation
+- [ ] **Workflow graphs** — Visual workflow builder
+- [ ] **Human-in-the-loop** — Interactive confirmation flows
+- [ ] **Agent evaluation** — Automated testing of agent behavior
+- [ ] **Observability** — OpenTelemetry-style tracing
+- [ ] **Distributed agents** — Multi-device agent coordination
+- [ ] **Persistent memory** — Long-term memory store
+- [ ] **Agent graphs** — DAG-based agent composition
+
+---
+
+## Why Another Agent Framework?
+
+### Why not LangGraph?
+
+LangGraph is excellent — for Python. It can't run natively in a SwiftUI app. It can't use Apple platform APIs. It requires a Python runtime. If you're building a Swift app, you need a Swift agent framework.
+
+### Why not Google ADK?
+
+Google ADK is a Python-first framework with good ideas (planning, callbacks, state). SwiftAgentKit adopts those ideas — but in native Swift, with protocol-oriented design, local LLM support, and zero Python dependencies.
+
+### Why not OpenAI Agents SDK?
+
+The OpenAI Agents SDK is OpenAI-specific and Python-only. SwiftAgentKit is provider-agnostic and Swift-native. Your agent should work with Ollama today and Anthropic tomorrow — without rewriting anything.
+
+### Why native Swift matters
+
+- **Performance.** No Python bridge, no IPC overhead, no runtime startup cost.
+- **Platform integration.** Direct access to CoreML, Foundation, FileProvider, CloudKit, Keychain, and every Apple framework.
+- **Distribution.** Ship agents inside macOS/iOS apps via the App Store. No server required.
+- **Developer experience.** Xcode debugging, Instruments profiling, Swift Package Manager, compile-time type safety.
+
+---
+
+## Alpha Status
+
+SwiftAgentKit is `0.1.0-alpha`. The core loop is working and dogfooded with local and cloud providers, but APIs may still evolve before beta.
+
+**Known alpha limitations:**
+- Public APIs may change before beta
+- Provider behavior varies by model quality — some models ignore tools even when available
+- Streaming is best for non-tool paths
+- OpenAI and Anthropic live dogfood coverage should be expanded
+
+**Build and test:**
 
 ```bash
 swift build
 swift test
 ```
 
-The unit tests are designed to avoid network calls. Live provider validation should be done separately with local Ollama or real API keys.
+54 unit tests, no network calls — all parsing, logic, state, callback, parallel dispatch, and session tests.
 
 ---
 
-## Alpha limitations
+## Contributing
 
-SwiftAgentKit is useful today, but still alpha.
+Issues, pull requests, feature requests, and feedback are all welcome.
 
-Known alpha expectations:
-
-- Public APIs may change before beta.
-- Provider behavior varies by model quality.
-- Some models may ignore tools even when tools are available.
-- Tool-use reliability depends on prompt quality and provider support.
-- Streaming is best for non-tool paths.
-- More examples and docs are still needed.
-- OpenAI and Anthropic dogfood coverage should be expanded before beta.
-
-Recommended version label:
-
-```text
-0.1.0-alpha.1
-```
+- 🐛 [Open an issue](https://github.com/ayman3000/SwiftAgentKit/issues) — bugs, feature requests, questions
+- 🔀 [Submit a pull request](https://github.com/ayman3000/SwiftAgentKit/pulls) — bug fixes, improvements, examples
+- ⭐ Star the repo if it helps you — it helps others discover it too
 
 ---
 
-## Roadmap
+## Support
 
-Short-term:
+If SwiftAgentKit helps you:
 
-- More real SwiftUI example apps
-- Stronger OpenAI and Anthropic validation
-- Better provider-specific examples
-- Keychain-based API-key sample
-- More tool schema examples
-- Cancellation stress tests
-- Public API review
+- ⭐ **Star the repository**
+- 🐛 **Open an issue** or suggest features
+- ☕ **Support development on [Ko-fi](https://ko-fi.com/W7W61DDVO5)**
 
-Before beta:
-
-- Stabilize core APIs
-- Add complete README examples as executable examples
-- Expand provider regression tests
-- Improve docs around model behavior and failure modes
-- Publish a tagged GitHub release
-
-Before v1:
-
-- API freeze
-- production-ready examples
-- package documentation comments review
-- Swift Package Index readiness
-- semantic versioning policy
-
----
-
-## Relationship to LLMProviderKit
-
-Use `LLMProviderKit` when you need:
-
-```text
-one provider abstraction
-streaming/non-streaming LLM calls
-model lists
-provider-specific request/response translation
-```
-
-Use `SwiftAgentKit` when you need:
-
-```text
-an agent loop
-tool calling
-state
-memory
-planning
-callbacks
-events
-session persistence
-structured output
-```
-
-Most agentic apps will use both.
+**Follow the author:**
+- LinkedIn: [Ayman Hamed](https://www.linkedin.com/in/ayman-hamed-moustafa/)
+- Explore macOS AI products: [kommanda.app](https://www.kommanda.app)
 
 ---
 
