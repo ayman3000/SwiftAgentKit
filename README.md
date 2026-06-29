@@ -24,6 +24,7 @@ Works with **Ollama**, **OpenAI**, **Google Gemini**, and **Anthropic** through 
 
 ## Table of Contents
 
+- [Who is this for?](#who-is-this-for)
 - [Why SwiftAgentKit?](#why-swiftagentkit)
 - [30-Second Example](#30-second-example)
 - [Features](#features)
@@ -41,13 +42,27 @@ Works with **Ollama**, **OpenAI**, **Google Gemini**, and **Anthropic** through 
 
 ---
 
+## Who is this for?
+
+SwiftAgentKit is for developers building:
+
+- **macOS AI assistants** — file managers, code tools, automation utilities
+- **iOS AI applications** — on-device assistants, chat apps, productivity tools
+- **Swift CLI agents** — command-line tools that need LLM reasoning + tool execution
+- **Local Ollama-powered tools** — offline-first agents with zero cloud dependency
+- **AI features inside existing Apple apps** — copilots, smart search, guided workflows
+- **Multi-step AI workflows** — plan → execute → verify → iterate
+- **Cross-provider agents** — prototype on Ollama, ship on OpenAI/Anthropic/Gemini
+
+If you're a Swift developer who wants models to *do things* in your app — not just generate text — SwiftAgentKit is built for you.
+
+---
+
 ## Why SwiftAgentKit?
 
 Python has LangGraph, Google ADK, OpenAI Agents SDK, PydanticAI — dozens of mature agent frameworks.
 
-**Swift had nothing native.**
-
-Existing Swift AI libraries are mostly thin OpenAI wrappers. They talk to models, but they don't let models *act* — no tool loop, no memory, no planning, no state, no sessions.
+**Swift's AI ecosystem still lacks mature native agent frameworks.** Existing Swift AI libraries are mostly thin OpenAI wrappers — they talk to models, but they don't let models *act* — no tool loop, no memory, no planning, no state, no sessions.
 
 SwiftAgentKit fills that gap:
 
@@ -100,6 +115,31 @@ print(response)
 
 That's a real agent. Not a chat wrapper — a tool-using loop where the model acts through your Swift code.
 
+### Quick Demo
+
+Here's what happens when you call `agent.run("What time is it? Use the tool.")`:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  agent.run("What time is it? Use the tool.")            │
+└──────────────────────┬──────────────────────────────────┘
+                       │
+                       ▼
+┌─────────────────────────────────────────────────────────┐
+│  Turn 1                                                  │
+│  → Send query + tool definitions to LLM                 │
+│  ← LLM responds: tool_calls: [current_time()]            │
+│  → Swift executes CurrentTimeTool()                     │
+│  ← Result: "Sunday, June 29, 2024 at 2:15 PM"           │
+│  → Send tool result back to LLM                         │
+│  ← LLM responds: "The current time is 2:15 PM."         │
+│  → Done — no more tool calls                            │
+└─────────────────────────────────────────────────────────┘
+
+Final response: "The current time is 2:15 PM."
+  Turns: 1  ·  Tools executed: 1  ·  Errors: 0
+```
+
 ---
 
 ## Features
@@ -136,6 +176,42 @@ That's a real agent. Not a chat wrapper — a tool-using loop where the model ac
 
 ## Architecture
 
+### How it works in 10 seconds
+
+```
+User Query ──→ SwiftAgentKit ──→ LLMProviderKit ──→ LLM Provider
+                   │                                      │
+                   │                              Model decides:
+                   │                              "I need to call a tool"
+                   │                                      │
+                   │  ◀──────── tool_calls ────────────────┘
+                   │
+              Swift executes tools
+              (your code runs)
+                   │
+                   │  ──→ tool results sent back to model
+                   │
+                   │  ◀──────── final answer ──────────────
+                   │
+              Return response
+```
+
+**That's the entire concept.** The model thinks, your Swift code acts, results go back, the model finishes.
+
+The diagrams below show the engineering details.
+
+**Color legend for all diagrams:**
+
+| Color | Meaning |
+|---|---|
+| 🔵 Blue | User input / your app |
+| 🟣 Purple | SwiftAgentKit internals |
+| 🟠 Orange | LLMProviderKit / LLM calls |
+| 🟡 Yellow | Tool execution (your Swift code) |
+| 🟢 Green | Successful output / providers |
+| 🔴 Red | Error handling |
+| ⚪ Gray | Edge cases / short-circuits |
+
 ### Two-layer stack
 
 ```mermaid
@@ -155,15 +231,20 @@ graph TD
     LPK --> GEMINI
     LPK --> ANTHROPIC
 
-    style SAK fill:#f9f,stroke:#333,stroke-width:2px
-    style LPK fill:#bbf,stroke:#333,stroke-width:2px
+    style APP fill:#4A90D9,stroke:#2C5F8A,stroke-width:2px,color:#fff
+    style SAK fill:#9B59B6,stroke:#6C3483,stroke-width:3px,color:#fff
+    style LPK fill:#E67E22,stroke:#A04500,stroke-width:2px,color:#fff
+    style OLLAMA fill:#27AE60,stroke:#1E8449,stroke-width:1px,color:#fff
+    style OPENAI fill:#27AE60,stroke:#1E8449,stroke-width:1px,color:#fff
+    style GEMINI fill:#27AE60,stroke:#1E8449,stroke-width:1px,color:#fff
+    style ANTHROPIC fill:#27AE60,stroke:#1E8449,stroke-width:1px,color:#fff
 ```
 
 SwiftAgentKit does **not** implement provider networking itself. It depends on `LLMProviderKit`'s `LLMProvider` protocol, so the same agent can run on local or cloud models.
 
 ### Agent ReAct loop
 
-This is the heart of SwiftAgentKit — the complete decision tree the agent follows on every `run()` call:
+The complete decision tree the agent follows on every `run()` call. **Follow the green path for the happy path** — blue is input, purple is SwiftAgentKit internals, yellow is tool execution, red is error handling:
 
 ```mermaid
 flowchart TD
@@ -203,7 +284,7 @@ flowchart TD
     AFTER_MODEL -- "nil / no callback" --> HAS_TOOLS_1
     MODIFIED --> HAS_TOOLS_1
 
-    HAS_TOOLS_1 -- "Yes" --> EMIT_TOOL_CALLS["emit toolCallsReceived<br/>append assistant msg<br/>with tool calls"]
+    HAS_TOOLS_1 -- "Yes — happy path" --> EMIT_TOOL_CALLS["emit toolCallsReceived<br/>append assistant msg<br/>with tool calls"]
     EMIT_TOOL_CALLS --> DISPATCH["ToolDispatcher.dispatch()<br/>parallel + dedup + callbacks<br/>stamp each result with call.id"]
     DISPATCH --> UPDATE_PLAN{"Plan active?"}
     UPDATE_PLAN -- "Yes" --> PROGRESS["Update plan step<br/>progress"]
@@ -218,7 +299,7 @@ flowchart TD
     REPAIR_CHECK -- "No" --> PLAN_CONT_CHECK{"Plan continuation?<br/>plan incomplete &<br/>shouldContinue()"}
     PLAN_CONT_CHECK -- "Yes" --> NUDGE_PLAN["Append continuation nudge<br/>emit planContinuationTriggered"]
     NUDGE_PLAN --> LOOP_BACK
-    PLAN_CONT_CHECK -- "No" --> DONE["Append assistant response<br/>emit finished(summary)<br/>clear temp state"]
+    PLAN_CONT_CHECK -- "No — done!" --> DONE["Append assistant response<br/>emit finished(summary)<br/>clear temp state"]
 
     DONE --> AFTER_AGENT{"afterAgent<br/>callback?"}
     AFTER_AGENT -- "returns value" --> RETURN_MOD["Return modified<br/>response"]
@@ -226,11 +307,28 @@ flowchart TD
 
     LOOP_ENTRY -.-> |"maxTurns reached"| MAX_TURNS["emit finished(summary)<br/>throw AgentError.maxTurnsReached"]
 
-    style DONE fill:#9f9,stroke:#333,stroke-width:2px
-    style CANCELLED fill:#f99,stroke:#333
-    style THROW_PROVIDER fill:#f99,stroke:#333
-    style MAX_TURNS fill:#f99,stroke:#333
-    style SHORT_CIRCUIT fill:#ff9,stroke:#333
+    %% Semantic colors — high contrast
+    style START fill:#4A90D9,stroke:#2C5F8A,stroke-width:2px,color:#fff
+    style ADD_USER fill:#9B59B6,stroke:#6C3483,stroke-width:1px,color:#fff
+    style TOOLS fill:#9B59B6,stroke:#6C3483,stroke-width:1px,color:#fff
+    style INJECT_SKILLS fill:#9B59B6,stroke:#6C3483,stroke-width:1px,color:#fff
+    style PLAN fill:#9B59B6,stroke:#6C3483,stroke-width:1px,color:#fff
+    style BUILD_REQ fill:#E67E22,stroke:#A04500,stroke-width:1px,color:#fff
+    style CALL_LLM fill:#E67E22,stroke:#A04500,stroke-width:1px,color:#fff
+    style PARSE fill:#E67E22,stroke:#A04500,stroke-width:1px,color:#fff
+    style DISPATCH fill:#F39C12,stroke:#B97700,stroke-width:2px,color:#fff
+    style APPEND_RESULTS fill:#9B59B6,stroke:#6C3483,stroke-width:1px,color:#fff
+    style DONE fill:#27AE60,stroke:#1E8449,stroke-width:3px,color:#fff
+    style RETURN fill:#27AE60,stroke:#1E8449,stroke-width:2px,color:#fff
+    style RETURN_MOD fill:#27AE60,stroke:#1E8449,stroke-width:2px,color:#fff
+
+    %% De-emphasize error/edge paths
+    style SHORT_CIRCUIT fill:#95A5A6,stroke:#7F8C8D,stroke-width:1px,color:#fff
+    style CANCELLED fill:#E74C3C,stroke:#C0392B,stroke-width:1px,color:#fff
+    style THROW_PROVIDER fill:#E74C3C,stroke:#C0392B,stroke-width:1px,color:#fff
+    style MAX_TURNS fill:#E74C3C,stroke:#C0392B,stroke-width:1px,color:#fff
+    style NUDGE_REPAIR fill:#F0B27A,stroke:#CA6F1E,stroke-width:1px,color:#333
+    style NUDGE_PLAN fill:#F0B27A,stroke:#CA6F1E,stroke-width:1px,color:#333
 ```
 
 ### Tool dispatch pipeline
@@ -284,8 +382,18 @@ flowchart TD
     EMIT_FINISH --> RESULT["AgentToolResult<br/>stamped with call.id<br/>+ toolName"]
     EMIT_FINISH_RET --> RESULT
 
-    style EXECUTE fill:#bbf,stroke:#333,stroke-width:2px
-    style RESULT fill:#9f9,stroke:#333,stroke-width:2px
+    %% Semantic colors
+    style CALLS fill:#4A90D9,stroke:#2C5F8A,stroke-width:2px,color:#fff
+    style DISPATCH fill:#F39C12,stroke:#B97700,stroke-width:2px,color:#fff
+    style EXECUTE fill:#F39C12,stroke:#B97700,stroke-width:3px,color:#fff
+    style RESULT fill:#27AE60,stroke:#1E8449,stroke-width:3px,color:#fff
+    style SKIP_DUP fill:#E74C3C,stroke:#C0392B,stroke-width:1px,color:#fff
+    style NOT_FOUND fill:#E74C3C,stroke:#C0392B,stroke-width:1px,color:#fff
+    style ERR_RESULT fill:#E74C3C,stroke:#C0392B,stroke-width:1px,color:#fff
+    style STAMP_RAW fill:#27AE60,stroke:#1E8449,stroke-width:1px,color:#fff
+    style STAMP_MOD fill:#27AE60,stroke:#1E8449,stroke-width:1px,color:#fff
+    style STAMP_REC fill:#27AE60,stroke:#1E8449,stroke-width:1px,color:#fff
+    style INTERCEPT fill:#27AE60,stroke:#1E8449,stroke-width:1px,color:#fff
 ```
 
 > **ID stamping** is critical for strict providers (OpenAI, Anthropic). Every result — whether from normal execution, callback interception, or error recovery — is stamped with the original `AgentToolCall.id` before entering conversation memory. Without this, providers reject or mis-correlate tool results.
@@ -334,10 +442,18 @@ flowchart LR
     AM -->|"toolCalls extracted"| DISPATCH["ToolDispatcher<br/>parallel + dedup"]
     DISPATCH --> TR
 
-    style REQ fill:#bbf,stroke:#333
-    style RESP fill:#bbf,stroke:#333
-    style DISPATCH fill:#f9f,stroke:#333
-    style TR fill:#9f9,stroke:#333
+    %% Semantic colors
+    style Q fill:#4A90D9,stroke:#2C5F8A,stroke-width:2px,color:#fff
+    style UM fill:#9B59B6,stroke:#6C3483,stroke-width:1px,color:#fff
+    style AM fill:#9B59B6,stroke:#6C3483,stroke-width:1px,color:#fff
+    style TR fill:#9B59B6,stroke:#6C3483,stroke-width:1px,color:#fff
+    style REQ fill:#E67E22,stroke:#A04500,stroke-width:2px,color:#fff
+    style RESP fill:#E67E22,stroke:#A04500,stroke-width:2px,color:#fff
+    style DISPATCH fill:#F39C12,stroke:#B97700,stroke-width:2px,color:#fff
+    style OLL fill:#27AE60,stroke:#1E8449,stroke-width:1px,color:#fff
+    style OAI fill:#27AE60,stroke:#1E8449,stroke-width:1px,color:#fff
+    style ANT fill:#27AE60,stroke:#1E8449,stroke-width:1px,color:#fff
+    style GEM fill:#27AE60,stroke:#1E8449,stroke-width:1px,color:#fff
 ```
 
 > **Fan-out**: A single `.tool(results: [r1, r2, r3])` agent message fans out to **three** separate `LLMMessage.tool(content:toolCallId:)` messages — one per result, each carrying its own `toolCallId`. Collapsing them under one ID breaks strict providers.
@@ -394,8 +510,13 @@ graph TD
     LPK --> P3
     LPK --> P4
 
-    style SAK fill:#f9f,stroke:#333,stroke-width:2px
-    style LPK fill:#bbf,stroke:#333,stroke-width:2px
+    style APP fill:#4A90D9,stroke:#2C5F8A,stroke-width:2px,color:#fff
+    style SAK fill:#9B59B6,stroke:#6C3483,stroke-width:3px,color:#fff
+    style LPK fill:#E67E22,stroke:#A04500,stroke-width:2px,color:#fff
+    style P1 fill:#27AE60,stroke:#1E8449,stroke-width:1px,color:#fff
+    style P2 fill:#27AE60,stroke:#1E8449,stroke-width:1px,color:#fff
+    style P3 fill:#27AE60,stroke:#1E8449,stroke-width:1px,color:#fff
+    style P4 fill:#27AE60,stroke:#1E8449,stroke-width:1px,color:#fff
 ```
 
 | Use LLMProviderKit when... | Use SwiftAgentKit when... |
@@ -798,24 +919,24 @@ let response = try await agent.run("What time is it? Use the tool.")
 
 | Feature | SwiftAgentKit | OpenAI Agents SDK | Google ADK | LangGraph | PydanticAI |
 |---|---|---|---|---|---|
-| **Native Swift** | ✅ | ❌ Python | ❌ Python | ❌ Python | ❌ Python |
+| **Native Swift** | ✅ | Python | Python | Python | Python |
 | **Tool calling** | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Conversation memory** | ✅ Token-aware | ✅ | ✅ | ✅ | ❌ |
-| **Agent state** | ✅ KV store + templating | ❌ | ✅ | ✅ | ❌ |
-| **Planning** | ✅ Optional planner | ❌ | ✅ | ❌ | ❌ |
-| **Repair retry** | ✅ | ❌ | ❌ | ❌ | ❌ |
-| **Session persistence** | ✅ Protocol + file store | ❌ | ❌ | ❌ | ❌ |
-| **Structured output** | ✅ Tolerant JSON | ❌ | ✅ | ❌ | ✅ |
-| **Event stream** | ✅ 15+ event types | ❌ | ✅ | ❌ | ❌ |
-| **Lifecycle callbacks** | ✅ 8 hooks | ❌ | ❌ | ❌ | ❌ |
-| **Local LLMs (Ollama)** | ✅ Native | ❌ | ❌ | ❌ | ❌ |
+| **Conversation memory** | ✅ Token-aware | ✅ | ✅ | ✅ | Limited |
+| **Agent state** | ✅ KV store + templating | Limited | ✅ | ✅ | Limited |
+| **Planning** | ✅ Optional planner | Limited | ✅ | Limited | Limited |
+| **Repair retry** | ✅ | Limited | Limited | Limited | Limited |
+| **Session persistence** | ✅ Protocol + file store | Limited | Limited | Limited | Limited |
+| **Structured output** | ✅ Tolerant JSON | Limited | ✅ | Limited | ✅ |
+| **Event stream** | ✅ 15+ event types | Limited | ✅ | Limited | Limited |
+| **Lifecycle callbacks** | ✅ 8 hooks | Limited | Limited | Limited | Limited |
+| **Local LLMs (Ollama)** | ✅ Native | Limited | Limited | Limited | Limited |
 | **OpenAI** | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Anthropic** | ✅ | ❌ | ✅ | ❌ | ✅ |
-| **Gemini** | ✅ | ❌ | ✅ | ❌ | ❌ |
-| **Apple platforms** | ✅ macOS/iOS/tvOS/watchOS/visionOS | ❌ | ❌ | ❌ | ❌ |
-| **Zero external deps** | ✅ Foundation only | ❌ | ❌ | ❌ | ❌ |
+| **Anthropic** | ✅ | Provider-specific | ✅ | Via extensions | ✅ |
+| **Gemini** | ✅ | Provider-specific | ✅ | Via extensions | Limited |
+| **Apple platforms** | ✅ macOS/iOS/tvOS/watchOS/visionOS | Python only | Python only | Python only | Python only |
+| **Zero external deps** | ✅ Foundation only | Python ecosystem | Python ecosystem | Python ecosystem | Python ecosystem |
 | **Streaming** | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Progressive disclosure** | ✅ Skills + tier gating | ❌ | ❌ | ❌ | ❌ |
+| **Progressive disclosure** | ✅ Skills + tier gating | Limited | Limited | Limited | Limited |
 
 ---
 
