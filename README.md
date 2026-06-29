@@ -128,7 +128,7 @@ Here's what happens when you call `agent.run("What time is it? Use the tool.")`:
 │  → Send query + tool definitions to LLM                 │
 │  ← LLM responds: tool_calls: [current_time()]            │
 │  → Swift executes CurrentTimeTool()                     │
-│  ← Result: "Sunday, June 29, 2024 at 2:15 PM"           │
+│  ← Result: "Sunday at 2:15 PM"                    │
 │  → Send tool result back to LLM                         │
 │  ← LLM responds: "The current time is 2:15 PM."         │
 │  → Done — no more tool calls                            │
@@ -733,6 +733,8 @@ SwiftAgentKit is `0.1.0-alpha`. The core loop is working and dogfooded with loca
 - Provider behavior varies by model quality — some models ignore tools even when available
 - Streaming is best for non-tool paths
 - OpenAI and Anthropic live dogfood coverage should be expanded
+
+If you try it in a real Swift app, feedback is very welcome.
 
 **Build and test:**
 
