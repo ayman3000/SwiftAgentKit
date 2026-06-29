@@ -64,3 +64,6 @@ coverage/
 # Local example outputs
 Examples/Runner/.build/
 Examples/Runner/.swiftpm/
+
+# Internal docs — not for public repo
+docs/
