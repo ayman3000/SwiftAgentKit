@@ -33,7 +33,6 @@ Works with **Ollama**, **OpenAI**, **Google Gemini**, and **Anthropic** through 
 - [Quick Start](#quick-start)
 - [Examples](#examples)
 - [Design Principles](#design-principles)
-- [Roadmap](#roadmap)
 - [Contributing](#contributing)
 - [Support](#support)
 - [License](#license)
@@ -694,39 +693,7 @@ let response = try await agent.run("What time is it? Use the tool.")
 
 ---
 
-## Roadmap
-
-### Near-term
-- [ ] More SwiftUI example apps
-- [ ] OpenAI + Anthropic live dogfood validation
-- [ ] Keychain-based API key sample
-- [ ] More tool schema examples
-- [ ] Cancellation stress tests
-- [ ] Public API review
-
-### Before beta
-- [ ] Stabilize core APIs
-- [ ] Executable examples for all README snippets
-- [ ] Provider regression test suite
-- [ ] Tagged GitHub release
-
-### Future
-- [ ] **MCP support** — Model Context Protocol integration
-- [ ] **RAG integration** — Retrieval-augmented generation
-- [ ] **Multi-agent orchestration** — Agent-to-agent delegation
-- [ ] **Workflow graphs** — Visual workflow builder
-- [ ] **Human-in-the-loop** — Interactive confirmation flows
-- [ ] **Agent evaluation** — Automated testing of agent behavior
-- [ ] **Observability** — OpenTelemetry-style tracing
-- [ ] **Distributed agents** — Multi-device agent coordination
-- [ ] **Persistent memory** — Long-term memory store
-- [ ] **Agent graphs** — DAG-based agent composition
-
----
-
 ## Alpha Status
-
-SwiftAgentKit is `0.1.0-alpha`. The core loop is working and dogfooded with local and cloud providers, but APIs may still evolve before beta.
 
 **Known alpha limitations:**
 - Public APIs may change before beta
