@@ -57,6 +57,10 @@ public struct AgentConfig: Sendable {
     /// Whether to enable plan continuation.
     public var enablePlanContinuation: Bool
 
+    /// Tools to register at agent init time.
+    /// Convenience — equivalent to calling `agent.registerAll(tools)` after init.
+    public var tools: [any AgentTool]
+
     public init(
         provider: any LLMProvider,
         model: String? = nil,
@@ -69,7 +73,8 @@ public struct AgentConfig: Sendable {
         maxMessages: Int = 50,
         enablePlanning: Bool = false,
         enableRepairRetry: Bool = true,
-        enablePlanContinuation: Bool = true
+        enablePlanContinuation: Bool = true,
+        tools: [any AgentTool] = []
     ) {
         self.provider = provider
         self.model = model
@@ -83,6 +88,7 @@ public struct AgentConfig: Sendable {
         self.enablePlanning = enablePlanning
         self.enableRepairRetry = enableRepairRetry
         self.enablePlanContinuation = enablePlanContinuation
+        self.tools = tools
     }
 }
 
@@ -214,6 +220,13 @@ public final class Agent: @unchecked Sendable {
         // Set up planner if enabled
         if config.enablePlanning {
             self.planner = LLMPlanner(provider: config.provider, model: config.model)
+        }
+
+        // Auto-register tools passed via config
+        if !config.tools.isEmpty {
+            for tool in config.tools {
+                register(tool)
+            }
         }
     }
 

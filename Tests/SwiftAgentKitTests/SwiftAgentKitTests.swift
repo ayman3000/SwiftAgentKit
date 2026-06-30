@@ -903,3 +903,16 @@ struct TestTools {
     agent.register(tool)
     #expect(Bool(true))
 }
+
+@Test func testAgentConfigToolsAutoRegistration() async throws {
+    let agent = Agent(config: AgentConfig(
+        provider: ToolAwareMockProvider(),
+        model: "mock",
+        maxTurns: 3,
+        tools: [EchoTool()]
+    ))
+
+    // Tools should be registered automatically from config
+    let output = try await agent.run("Use echo tool now")
+    #expect(output.contains("race-proof"))
+}
