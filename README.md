@@ -32,6 +32,7 @@ Works with **Ollama**, **OpenAI**, **Google Gemini**, and **Anthropic** through 
 - [SwiftAgentKit + LLMProviderKit](#swiftagentkit--llmproviderkit)
 - [Quick Start](#quick-start)
 - [Examples](#examples)
+- [@Tool Macro (Optional)](#tool-macro-optional)
 - [Design Principles](#design-principles)
 - [Contributing](#contributing)
 - [Support](#support)
@@ -84,14 +85,7 @@ import LLMProviderKitOllama
 // 1. Pick any provider
 let provider = OllamaProvider(configuration: .local(model: "llama3.2"))
 
-// 2. Create an agent with tools
-let agent = Agent(config: AgentConfig(
-    provider: provider,
-    systemPrompt: "You are a helpful assistant. Use tools when needed.",
-    maxTurns: 6
-))
-
-// 3. Define a tool — any Swift struct conforming to AgentTool
+// 2. Define a tool — any Swift struct conforming to AgentTool
 struct CurrentTimeTool: AgentTool {
     let name = "current_time"
     let description = "Return the current date and time."
@@ -103,7 +97,13 @@ struct CurrentTimeTool: AgentTool {
     }
 }
 
-agent.register(CurrentTimeTool())
+// 3. Create an agent — pass tools inline at init time
+let agent = Agent(config: AgentConfig(
+    provider: provider,
+    systemPrompt: "You are a helpful assistant. Use tools when needed.",
+    maxTurns: 6,
+    tools: [CurrentTimeTool()]
+))
 
 // 4. Run — the model decides to call the tool, Swift executes it, results go back
 let response = try await agent.run("What time is it? Use the tool.")
@@ -144,6 +144,7 @@ Final response: "The current time is 2:15 PM."
 | Feature | Description |
 |---|---|
 | 🔧 **Tool system** | Define Swift tools with JSON-Schema parameters. Models call them natively. Parallel dispatch + dedup. |
+| ✨ **@Tool macro** | Optional `@Tool` macro converts Swift functions to `AgentTool` structs — less boilerplate. |
 | 🧠 **Conversation memory** | Token-aware history that trims to fit the context window automatically. |
 | 📋 **Planning** | Optional planning step before execution for complex multi-step tasks. |
 | 🔄 **Repair retry** | Nudges the model when tools fail instead of accepting false success. |
@@ -456,7 +457,11 @@ struct EchoTool: AgentTool {
     }
 }
 
-agent.register(EchoTool())
+let agent = Agent(config: AgentConfig(
+    provider: provider,
+    maxTurns: 6,
+    tools: [EchoTool()]
+))
 let response = try await agent.run("Echo the message 'Hello from SwiftAgentKit!'")
 ```
 
@@ -771,6 +776,44 @@ let response = try await agent.run("What time is it? Use the tool.")
 | **Multi-turn chat** | `maxTurns: 1`, no tools | Chat with history, no actions |
 | **ReAct with tools** | `maxTurns > 0`, tools | Model calls tools and iterates |
 | **Planner + ReAct** | `enablePlanning: true` | Multi-step tasks need a plan first |
+
+---
+
+## @Tool Macro (Optional)
+
+Prefer less boilerplate? Use the `@Tool` macro to convert any Swift function into an `AgentTool`:
+
+```swift
+import SwiftAgentKit
+
+struct MyTools {
+    @Tool("Return the current date and time.")
+    func currentTime() async throws -> String {
+        Date().formatted(date: .complete, time: .standard)
+    }
+
+    @Tool("Calculate a basic arithmetic expression.")
+    func calculator(expression: String) async throws -> String {
+        // your logic here
+        "646"
+    }
+}
+
+let tools = MyTools()
+let agent = Agent(config: AgentConfig(
+    provider: provider,
+    maxTurns: 6,
+    tools: [tools.currentTimeTool(), tools.calculatorTool()]
+))
+```
+
+The macro generates:
+- An `AgentTool`-conforming struct with snake_case name from the function name
+- JSON-Schema parameters from the function signature (String, Int, Double, Bool)
+- Tool result wrapping with `context.callId`
+- A factory method (`funcNameTool()`) that captures `self`
+
+The `AgentTool` protocol remains the primary API. The macro is optional — use it when you want less boilerplate.
 
 ---
 
