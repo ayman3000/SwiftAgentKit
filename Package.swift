@@ -1,4 +1,5 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.2
+import CompilerPluginSupport
 import PackageDescription
 
 let package = Package(
@@ -15,14 +16,29 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../LLMProviderKit"),
+        .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "603.0.0"),
     ],
     targets: [
+        // Macro implementation (SwiftSyntax-based, compile-time code gen)
+        .macro(
+            name: "SwiftAgentKitMacros",
+            dependencies: [
+                .product(name: "SwiftSyntax", package: "swift-syntax"),
+                .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
+                .product(name: "SwiftCompilerPlugin", package: "swift-syntax"),
+            ]
+        ),
+
+        // Main library — depends on the macro target
         .target(
             name: "SwiftAgentKit",
             dependencies: [
                 .product(name: "LLMProviderKit", package: "LLMProviderKit"),
+                "SwiftAgentKitMacros",
             ]
         ),
+
+        // Tests
         .testTarget(
             name: "SwiftAgentKitTests",
             dependencies: [

@@ -231,7 +231,9 @@ public final class Agent: @unchecked Sendable {
 
     /// Set context fields for tools (e.g. current directory, selected files).
     public func setToolContext(_ context: [String: Any]) {
-        trackRegistrationTask(Task { await dispatcher.setContext(context) })
+        // Swift 6: [String: Any] is not Sendable — wrap in @unchecked Sendable box
+        let box = ToolContextBox(values: context)
+        trackRegistrationTask(Task { await dispatcher.setContext(box.values) })
     }
 
     /// Register a skill for progressive disclosure.

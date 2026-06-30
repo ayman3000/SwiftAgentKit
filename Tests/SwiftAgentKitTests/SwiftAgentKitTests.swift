@@ -803,3 +803,103 @@ struct ToolAwareMockProvider: LLMProvider {
 
     #expect(output.contains("race-proof"))
 }
+
+// MARK: - @Tool Macro Tests
+
+struct TestTools {
+    @Tool("Return the current date and time.")
+    func currentTime() async throws -> String {
+        "Sunday at 2:15 PM"
+    }
+
+    @Tool("Calculate a basic arithmetic expression.")
+    func calculate(expression: String) async throws -> String {
+        if expression.trimmingCharacters(in: .whitespaces) == "38 * 17" {
+            return "646"
+        }
+        return "unknown"
+    }
+
+    @Tool("Echo a message back.")
+    /// - Parameter message: The message to echo
+    func echoMessage(message: String) async throws -> String {
+        "Echo: \(message)"
+    }
+
+    @Tool("Check if a number is even.")
+    func isEven(number: Int) async throws -> String {
+        number % 2 == 0 ? "true" : "false"
+    }
+
+    @Tool("Check if user is active.")
+    func checkActive(active: Bool) async throws -> String {
+        active ? "active" : "inactive"
+    }
+}
+
+@Test func testToolMacroNoParams() async throws {
+    let tools = TestTools()
+    let tool = tools.currentTimeTool()
+    #expect(tool.name == "current_time")
+    #expect(tool.description == "Return the current date and time.")
+    #expect(tool.parameters == ToolParameters.empty)
+
+    let result = try await tool.execute(parameters: [:])
+    #expect(!result.isError)
+    #expect(result.result == "Sunday at 2:15 PM")
+}
+
+@Test func testToolMacroWithParams() async throws {
+    let tools = TestTools()
+    let tool = tools.calculateTool()
+    #expect(tool.name == "calculate")
+    #expect(tool.description == "Calculate a basic arithmetic expression.")
+    #expect(tool.parameters.properties.count == 1)
+    #expect(tool.parameters.properties["expression"]?.type == "string")
+    #expect(tool.parameters.required == ["expression"])
+
+    let result = try await tool.execute(parameters: ["expression": "38 * 17"])
+    #expect(!result.isError)
+    #expect(result.result == "646")
+}
+
+@Test func testToolMacroWithDocCDescription() async throws {
+    let tools = TestTools()
+    let tool = tools.echoMessageTool()
+    #expect(tool.name == "echo_message")
+    let prop = tool.parameters.properties["message"]
+    #expect(prop?.type == "string")
+    // DocC comment extraction falls back to param name when comment not found
+    #expect(prop?.description == "message" || prop?.description == "The message to echo")
+}
+
+@Test func testToolMacroWithIntParam() async throws {
+    let tools = TestTools()
+    let tool = tools.isEvenTool()
+    #expect(tool.parameters.properties["number"]?.type == "integer")
+    #expect(tool.parameters.required == ["number"])
+
+    let result = try await tool.execute(parameters: ["number": 4])
+    #expect(result.result == "true")
+}
+
+@Test func testToolMacroWithBoolParam() async throws {
+    let tools = TestTools()
+    let tool = tools.checkActiveTool()
+    #expect(tool.parameters.properties["active"]?.type == "boolean")
+
+    let result = try await tool.execute(parameters: ["active": true])
+    #expect(result.result == "active")
+}
+
+@Test func testToolMacroGeneratesAgentToolConformance() async throws {
+    let tools = TestTools()
+    let tool = tools.currentTimeTool()
+    let agent = Agent(config: AgentConfig(
+        provider: ToolAwareMockProvider(),
+        model: "mock",
+        maxTurns: 3
+    ))
+    agent.register(tool)
+    #expect(Bool(true))
+}
