@@ -783,6 +783,9 @@ public final class Agent: @unchecked Sendable {
                             fullText += text
                             continuation.yield(text)
                             self?.emit(.streamChunk(text))
+                        case .toolCall:
+                            // Tool calls during streaming — handled after full response
+                            break
                         case .finish:
                             self?.emit(.streamFinished)
                         case .error(let error):
