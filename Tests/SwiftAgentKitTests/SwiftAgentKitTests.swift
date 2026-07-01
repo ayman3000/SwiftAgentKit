@@ -608,7 +608,7 @@ struct DelayTool: AgentTool {
 
     func execute(parameters: [String: Any]) async throws -> AgentToolResult {
         // Simulate I/O delay
-        try await Task.sleep(nanoseconds: 50_000_000) // 50ms
+        try await Task.sleep(nanoseconds: 200_000_000) // 200ms
         let msg = parameters["msg"] as? String ?? ""
         return .success(toolCallId: "", toolName: name, result: msg)
     }
@@ -629,8 +629,8 @@ struct DelayTool: AgentTool {
     let elapsed = Date().timeIntervalSince(start)
 
     #expect(results.count == 2)
-    // Parallel: ~50ms total (not ~100ms sequential)
-    #expect(elapsed < 0.09) // Should be faster than 2x50ms
+    // Parallel: ~200ms total (not ~400ms sequential)
+    #expect(elapsed < 0.35) // Should be faster than 2x200ms
 }
 
 @Test func testAgentSkillMatches() {
