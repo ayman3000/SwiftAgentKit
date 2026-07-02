@@ -7,7 +7,7 @@ let package = Package(
     products: [.executable(name: "ExamplesRunner", targets: ["ExamplesRunner"])],
     dependencies: [
         .package(path: "../../../SwiftAgentKit"),
-        .package(path: "../../../LLMProviderKit"),
+        .package(url: "https://github.com/ayman3000/LLMProviderKit.git", from: "0.1.0-alpha.1"),
     ],
     targets: [
         .executableTarget(
