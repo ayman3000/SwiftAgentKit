@@ -131,7 +131,12 @@ public struct AgentMessage: Identifiable, @unchecked Sendable, Codable {
                     // Serialize parameters to JSON string
                     let paramsData = try? JSONEncoder().encode(call.parameters)
                     let argsString = paramsData.flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
-                    return LLMToolCall(id: call.id, name: call.name, arguments: argsString)
+                    return LLMToolCall(
+                        id: call.id,
+                        name: call.name,
+                        arguments: argsString,
+                        providerMetadata: call.providerMetadata
+                    )
                 }
                 return .assistant(content: content, toolCalls: llmToolCalls)
             }
@@ -167,11 +172,33 @@ public struct AgentToolCall: Identifiable, Codable, @unchecked Sendable {
     public let id: String
     public var name: String
     public var parameters: [String: AnyCodable]
+    public var providerMetadata: [String: String]
 
-    public init(id: String = UUID().uuidString, name: String, parameters: [String: AnyCodable] = [:]) {
+    public init(
+        id: String = UUID().uuidString,
+        name: String,
+        parameters: [String: AnyCodable] = [:],
+        providerMetadata: [String: String] = [:]
+    ) {
         self.id = id
         self.name = name
         self.parameters = parameters
+        self.providerMetadata = providerMetadata
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case parameters
+        case providerMetadata
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        parameters = try container.decode([String: AnyCodable].self, forKey: .parameters)
+        providerMetadata = try container.decodeIfPresent([String: String].self, forKey: .providerMetadata) ?? [:]
     }
 
     /// A stable deduplication key (name + sorted parameters).

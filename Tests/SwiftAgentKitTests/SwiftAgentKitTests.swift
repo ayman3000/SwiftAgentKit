@@ -184,6 +184,32 @@ struct FailingTool: AgentTool {
     #expect(llmMessages[1].content.contains("second result"))
 }
 
+@Test func testProviderMetadataSurvivesToolCallBridge() {
+    let request = LLMRequest(model: "gemini-2.5-flash", messages: [.user("What time is it?")])
+    let response = LLMResponse(
+        text: "",
+        finishReason: .toolCalls,
+        toolCalls: [
+            LLMToolCall(
+                id: "current_datetime",
+                name: "current_datetime",
+                arguments: "{}",
+                providerMetadata: ["gemini.thoughtSignature": "signed-part-token"]
+            )
+        ],
+        request: request,
+        providerName: "gemini"
+    )
+
+    let agentResponse = AgentLLMResponse.from(response)
+    let agentToolCall = try! #require(agentResponse.toolCalls?.first)
+    #expect(agentToolCall.providerMetadata["gemini.thoughtSignature"] == "signed-part-token")
+
+    let assistantMessage = AgentMessage.assistant(content: "", toolCalls: [agentToolCall])
+    let llmToolCall = try! #require(assistantMessage.toLLMMessage().toolCalls?.first)
+    #expect(llmToolCall.providerMetadata["gemini.thoughtSignature"] == "signed-part-token")
+}
+
 @Test func testToolDispatcherNotFound() async {
     let registry = ToolRegistry()
     let dispatcher = ToolDispatcher(registry: registry)

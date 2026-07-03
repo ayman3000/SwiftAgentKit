@@ -15,7 +15,7 @@ let package = Package(
         .library(name: "SwiftAgentKit", targets: ["SwiftAgentKit"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/ayman3000/LLMProviderKit.git", from: "0.1.0-alpha.1"),
+        .package(url: "https://github.com/ayman3000/LLMProviderKit.git", from: "0.1.0-alpha.2"),
         .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "603.0.0"),
     ],
     targets: [

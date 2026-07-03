@@ -57,7 +57,12 @@ public struct AgentLLMResponse: Sendable {
                         params[key] = AnyCodable(value)
                     }
                 }
-                return AgentToolCall(id: tc.id, name: tc.name, parameters: params)
+                return AgentToolCall(
+                    id: tc.id,
+                    name: tc.name,
+                    parameters: params,
+                    providerMetadata: tc.providerMetadata
+                )
             }
             return AgentLLMResponse(
                 text: response.text,
