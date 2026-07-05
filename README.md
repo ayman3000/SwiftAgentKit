@@ -20,6 +20,8 @@ A modern AI agent framework built specifically for Swift developers. Native tool
 
 Works with **Ollama**, **OpenAI**, **Google Gemini**, and **Anthropic** through [LLMProviderKit](https://github.com/ayman3000/LLMProviderKit).
 
+> If SwiftAgentKit helps you build agents in Swift, a ⭐ helps support development and makes the project easier to discover.
+
 ---
 
 ## Table of Contents
@@ -660,7 +662,7 @@ Planning is optional. Keep it off for simple tasks; enable it for multi-step wor
 
 ```swift
 agent.state.setValue("pro", forKey: "user:tier")
-agent.state.setValue("/Users/example/project", forKey: "app:workspace")
+agent.state.setValue("./ExampleProject", forKey: "app:workspace")
 
 // {key} placeholders in system prompts are auto-templated
 let agent2 = Agent(config: AgentConfig(
