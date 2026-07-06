@@ -196,6 +196,10 @@ public final class Agent: @unchecked Sendable {
     private let cancellationLock = NSLock()
     private var _isCancelled = false
 
+    /// Guards mutable per-run state and conversation writes from overlapping `run(_:)` calls.
+    private let runLock = NSLock()
+    private var _isRunActive = false
+
     // MARK: - Init
 
     public init(config: AgentConfig) {
@@ -322,6 +326,20 @@ public final class Agent: @unchecked Sendable {
         _isCancelled = false
     }
 
+    private func beginRunIfIdle() -> Bool {
+        runLock.lock()
+        defer { runLock.unlock() }
+        guard !_isRunActive else { return false }
+        _isRunActive = true
+        return true
+    }
+
+    private func endRun() {
+        runLock.lock()
+        _isRunActive = false
+        runLock.unlock()
+    }
+
     // MARK: - Run
 
     /// Run the agent on a query.
@@ -332,6 +350,11 @@ public final class Agent: @unchecked Sendable {
     /// 3. Return the final response
     ///
     public func run(_ query: String) async throws -> String {
+        guard beginRunIfIdle() else {
+            throw AgentError.runInProgress
+        }
+        defer { endRun() }
+
         await awaitPendingRegistrations()
         resetCancellation()
         let startTime = Date()

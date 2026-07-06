@@ -830,6 +830,29 @@ struct ToolAwareMockProvider: LLMProvider {
     #expect(output.contains("race-proof"))
 }
 
+@Test func testAgentRejectsConcurrentRunsOnSameInstance() async throws {
+    let agent = Agent(config: AgentConfig(provider: ToolAwareMockProvider(), model: "mock", maxTurns: 1))
+    var callbacks = AgentCallbacks()
+    callbacks.beforeAgent = { query, _ in
+        if query == "first" {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            return "first done"
+        }
+        return nil
+    }
+    agent.callbacks = callbacks
+
+    let firstRun = Task { try await agent.run("first") }
+    try await Task.sleep(nanoseconds: 50_000_000)
+
+    await #expect(throws: AgentError.runInProgress) {
+        _ = try await agent.run("second")
+    }
+
+    let firstOutput = try await firstRun.value
+    #expect(firstOutput == "first done")
+}
+
 // MARK: - @Tool Macro Tests
 
 struct TestTools {
@@ -855,6 +878,11 @@ struct TestTools {
     @Tool("Check if a number is even.")
     func isEven(number: Int) async throws -> String {
         number % 2 == 0 ? "true" : "false"
+    }
+
+    @Tool("Format a floating-point score.")
+    func formatScore(score: Double) async throws -> String {
+        String(format: "%.1f", score)
     }
 
     @Tool("Check if user is active.")
@@ -916,6 +944,16 @@ struct TestTools {
 
     let result = try await tool.execute(parameters: ["active": true])
     #expect(result.result == "active")
+}
+
+@Test func testToolMacroWithDoubleParam() async throws {
+    let tools = TestTools()
+    let tool = tools.formatScoreTool()
+    #expect(tool.parameters.properties["score"]?.type == "number")
+    #expect(tool.parameters.required == ["score"])
+
+    let result = try await tool.execute(parameters: ["score": 9.25])
+    #expect(result.result == "9.2")
 }
 
 @Test func testToolMacroGeneratesAgentToolConformance() async throws {

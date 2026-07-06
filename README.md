@@ -589,7 +589,7 @@ for try await chunk in agent.runStreaming("Use tools, then summarize.") {
 }
 ```
 
-> The tool loop is non-streaming internally (tool calls need complete responses). `runStreaming` runs the loop, then yields the final text.
+> The tool loop is non-streaming internally because tool calls need complete model responses. `runStreaming` is a convenience API: when no tools are registered it delegates to `stream(_:)`; when tools are registered it runs the ReAct loop first, then emits the final answer. Do not rely on it for live token-by-token visibility during tool execution.
 
 ### Event monitoring
 
@@ -815,6 +815,13 @@ The macro generates:
 - Tool result wrapping with `context.callId`
 - A factory method (`funcNameTool()`) that captures `self`
 
+Current alpha limitations:
+- Parameters are generated as required; optional/default arguments are not represented yet
+- Primitive parameters (`String`, `Int`, `Double`, `Bool`) are the supported path today
+- Arrays, nested objects, and enums should use manual `AgentTool` definitions for now
+- Malformed model arguments may coerce to default primitive values; validate inside the tool for critical operations
+- DocC extraction handles simple `- Parameter name:` comments; grouped `- Parameters:` blocks are not fully parsed yet
+
 The `AgentTool` protocol remains the primary API. The macro is optional — use it when you want less boilerplate.
 
 ---
@@ -837,7 +844,9 @@ The `AgentTool` protocol remains the primary API. The macro is optional — use 
 **Known alpha limitations:**
 - Public APIs may change before beta
 - Provider behavior varies by model quality — some models ignore tools even when available
-- Streaming is best for non-tool paths
+- `stream(_:)` is token-by-token for simple non-tool paths; `runStreaming(_:)` does not stream intermediate tool-loop tokens
+- One `Agent` instance is intended for one active `run(_:)` at a time
+- The `@Tool` macro is best for primitive required parameters; use manual `AgentTool` definitions for complex schemas
 - OpenAI and Anthropic live dogfood coverage should be expanded
 
 If you try it in a real Swift app, feedback is very welcome.
@@ -849,7 +858,7 @@ swift build
 swift test
 ```
 
-54 unit tests, no network calls — all parsing, logic, state, callback, parallel dispatch, and session tests.
+64 unit tests, no network calls — all parsing, logic, state, callback, parallel dispatch, session, concurrency guard, and macro tests.
 
 ---
 

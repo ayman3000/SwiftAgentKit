@@ -39,6 +39,9 @@ public enum AgentError: Error, Sendable, Equatable, LocalizedError {
     /// The operation was cancelled.
     case cancelled
 
+    /// Another run is already active on this agent instance.
+    case runInProgress
+
     /// An unexpected error.
     case unknown(String)
 
@@ -64,6 +67,8 @@ public enum AgentError: Error, Sendable, Equatable, LocalizedError {
             return "Repair retry limit exceeded (\(attempts) attempts). The model kept failing after nudges."
         case .cancelled:
             return "The operation was cancelled."
+        case .runInProgress:
+            return "This Agent instance already has an active run. Wait for it to finish, or create a separate Agent instance for concurrent work."
         case .unknown(let message):
             return "Unknown error: \(message)"
         }
@@ -83,6 +88,8 @@ public enum AgentError: Error, Sendable, Equatable, LocalizedError {
             return "Check that the planner prompt is correct and the model supports JSON output."
         case .repairRetryExhausted:
             return "The model may not be capable enough. Try a larger model or simplify the task."
+        case .runInProgress:
+            return "Use one Agent instance per concurrent task, or serialize calls to `run(_:)`."
         default:
             return nil
         }
