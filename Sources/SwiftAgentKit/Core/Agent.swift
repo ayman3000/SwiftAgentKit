@@ -829,9 +829,10 @@ public final class Agent: @unchecked Sendable {
     ///
     /// This runs the full ReAct loop (non-streaming, as it needs complete
     /// responses for tool calls). Once the model stops calling tools and
-    /// produces its final summary, that summary is streamed token-by-token.
+    /// produces its final summary, that summary is yielded as a single chunk.
     ///
-    /// If no tools are registered, this is equivalent to `stream()`.
+    /// If no tools are registered, this is equivalent to `stream()` and streams
+    /// provider chunks as they arrive.
     ///
     public func runStreaming(_ query: String) -> AsyncThrowingStream<String, Error> {
         return AsyncThrowingStream { [weak self] continuation in
