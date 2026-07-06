@@ -363,10 +363,15 @@ public final class Agent: @unchecked Sendable {
         // beforeAgent callback — can intercept the entire run
         if let beforeAgent = callbacks?.beforeAgent {
             if let intercepted = await beforeAgent(query, state) {
-                emit(.finished(summary: AgentRunSummary(
-                    query: query, totalTurns: 0, toolsExecuted: 0,
-                    toolErrors: 0, planStepsTotal: 0, planStepsCompleted: 0,
-                    finalResponse: intercepted, elapsed: 0
+                emit(.finished(summary: makeRunSummary(
+                    query: query,
+                    totalTurns: 0,
+                    toolsExecuted: 0,
+                    toolErrors: 0,
+                    plan: nil,
+                    finalResponse: intercepted,
+                    startTime: startTime,
+                    elapsedOverride: 0
                 )))
                 return intercepted
             }
@@ -428,11 +433,7 @@ public final class Agent: @unchecked Sendable {
         let registeredTools = registeredToolsEarly
 
         // Convert tool definitions to LLMProviderKit format
-        let llmToolDefs = registeredTools.map { tool -> LLMToolDefinition in
-            let paramsData = try? JSONEncoder().encode(tool.parameters)
-            let paramsDict = paramsData.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any] ?? [:]
-            return LLMToolDefinition(name: tool.name, description: tool.description, parameters: paramsDict)
-        }
+        let llmToolDefs = makeLLMToolDefinitions(from: registeredTools)
 
         // 3. Agent loop
         if config.maxTurns > 0 && !registeredTools.isEmpty {
@@ -461,14 +462,7 @@ public final class Agent: @unchecked Sendable {
                         if intercepted.hasToolCalls, let toolCalls = intercepted.toolCalls {
                             emit(.toolCallsReceived(toolCalls))
                             conversation.append(.assistant(content: intercepted.text, toolCalls: toolCalls))
-                            let dispatcherObserver = BlockObserver { [weak self] event in
-                                self?.emit(event)
-                            }
-                            let results = await dispatcher.dispatch(
-                                calls: toolCalls, state: state,
-                                turn: totalTurns, query: query,
-                                callbacks: callbacks, observer: dispatcherObserver
-                            )
+                            let results = await dispatchToolCalls(toolCalls, turn: totalTurns, query: query)
                             toolsExecuted += results.count
                             toolErrors += results.filter(\.isError).count
                             lastTurnErrors = results.filter(\.isError)
@@ -477,11 +471,14 @@ public final class Agent: @unchecked Sendable {
                             continue
                         }
                         conversation.append(.assistant(intercepted.text))
-                        let summary = AgentRunSummary(
-                            query: query, totalTurns: totalTurns, toolsExecuted: toolsExecuted,
-                            toolErrors: toolErrors, planStepsTotal: plan?.steps.count ?? 0,
-                            planStepsCompleted: plan?.completedCount ?? 0,
-                            finalResponse: intercepted.text, elapsed: Date().timeIntervalSince(startTime)
+                        let summary = makeRunSummary(
+                            query: query,
+                            totalTurns: totalTurns,
+                            toolsExecuted: toolsExecuted,
+                            toolErrors: toolErrors,
+                            plan: plan,
+                            finalResponse: intercepted.text,
+                            startTime: startTime
                         )
                         emit(.finished(summary: summary))
                         return intercepted.text
@@ -489,20 +486,7 @@ public final class Agent: @unchecked Sendable {
                 }
 
                 // Build LLM request (with state-templated system prompt)
-                let llmMessages = messagesForLLM.flatMap { msg -> [LLMMessage] in
-                    if msg.role == .system {
-                        return [.system(state.template(msg.content))]
-                    }
-                    return msg.toLLMMessages()
-                }
-                let request = LLMRequest(
-                    model: config.model ?? config.provider.configuration.defaultModel ?? "",
-                    messages: llmMessages,
-                    temperature: config.temperature,
-                    maxTokens: config.maxTokens,
-                    topP: config.topP,
-                    tools: llmToolDefs
-                )
+                let request = makeLLMRequest(messagesForLLM: messagesForLLM, tools: llmToolDefs)
 
                 // Call the provider
                 let response: LLMResponse
@@ -514,11 +498,14 @@ public final class Agent: @unchecked Sendable {
                         if let fallback = await onModelError(error, state) {
                             emit(.llmCallCompleted(turn: totalTurns, response: fallback))
                             conversation.append(.assistant(fallback.text))
-                            let summary = AgentRunSummary(
-                                query: query, totalTurns: totalTurns, toolsExecuted: toolsExecuted,
-                                toolErrors: toolErrors, planStepsTotal: plan?.steps.count ?? 0,
-                                planStepsCompleted: plan?.completedCount ?? 0,
-                                finalResponse: fallback.text, elapsed: Date().timeIntervalSince(startTime)
+                            let summary = makeRunSummary(
+                                query: query,
+                                totalTurns: totalTurns,
+                                toolsExecuted: toolsExecuted,
+                                toolErrors: toolErrors,
+                                plan: plan,
+                                finalResponse: fallback.text,
+                                startTime: startTime
                             )
                             emit(.finished(summary: summary))
                             return fallback.text
@@ -579,15 +566,14 @@ public final class Agent: @unchecked Sendable {
                     conversation.append(.assistant(agentResponse.text))
                     lastTurnErrors = []
 
-                    let summary = AgentRunSummary(
+                    let summary = makeRunSummary(
                         query: query,
                         totalTurns: totalTurns,
                         toolsExecuted: toolsExecuted,
                         toolErrors: toolErrors,
-                        planStepsTotal: plan?.steps.count ?? 0,
-                        planStepsCompleted: plan?.completedCount ?? 0,
+                        plan: plan,
                         finalResponse: agentResponse.text,
-                        elapsed: Date().timeIntervalSince(startTime)
+                        startTime: startTime
                     )
                     emit(.finished(summary: summary))
 
@@ -607,18 +593,7 @@ public final class Agent: @unchecked Sendable {
                 conversation.append(.assistant(content: agentResponse.text, toolCalls: toolCalls))
 
                 // Dispatch tool calls (with state + callbacks, parallel by default)
-                let dispatcherObserver = BlockObserver { [weak self] event in
-                    self?.emit(event)
-                }
-                let results = await dispatcher.dispatch(
-                    calls: toolCalls,
-                    state: state,
-                    turn: totalTurns,
-                    query: query,
-                    callbacks: callbacks,
-                    parallel: true,
-                    observer: dispatcherObserver
-                )
+                let results = await dispatchToolCalls(toolCalls, turn: totalTurns, query: query)
                 toolsExecuted += results.count
                 toolErrors += results.filter(\.isError).count
                 lastTurnErrors = results.filter(\.isError)
@@ -646,15 +621,14 @@ public final class Agent: @unchecked Sendable {
             }
 
             // Max turns reached
-            let summary = AgentRunSummary(
+            let summary = makeRunSummary(
                 query: query,
                 totalTurns: totalTurns,
                 toolsExecuted: toolsExecuted,
                 toolErrors: toolErrors,
-                planStepsTotal: plan?.steps.count ?? 0,
-                planStepsCompleted: plan?.completedCount ?? 0,
+                plan: plan,
                 finalResponse: "Max turns reached without completion.",
-                elapsed: Date().timeIntervalSince(startTime)
+                startTime: startTime
             )
             emit(.finished(summary: summary))
             throw AgentError.maxTurnsReached(config.maxTurns)
@@ -662,19 +636,7 @@ public final class Agent: @unchecked Sendable {
         } else {
             // Single-shot or multi-turn chat (no tools)
             let messagesForLLM = conversation.messagesForLLMCall()
-            let llmMessages = messagesForLLM.flatMap { msg -> [LLMMessage] in
-                if msg.role == .system {
-                    return [.system(state.template(msg.content))]
-                }
-                return msg.toLLMMessages()
-            }
-            let request = LLMRequest(
-                model: config.model ?? config.provider.configuration.defaultModel ?? "",
-                messages: llmMessages,
-                temperature: config.temperature,
-                maxTokens: config.maxTokens,
-                topP: config.topP
-            )
+            let request = makeLLMRequest(messagesForLLM: messagesForLLM)
 
             emit(.llmCallStarted(turn: 1))
 
@@ -684,11 +646,14 @@ public final class Agent: @unchecked Sendable {
                     emit(.llmCallCompleted(turn: 1, response: intercepted))
                     conversation.append(.assistant(intercepted.text))
                     state.clearTemp()
-                    let summary = AgentRunSummary(
-                        query: query, totalTurns: 1, toolsExecuted: 0,
-                        toolErrors: 0, planStepsTotal: plan?.steps.count ?? 0,
-                        planStepsCompleted: plan?.completedCount ?? 0,
-                        finalResponse: intercepted.text, elapsed: Date().timeIntervalSince(startTime)
+                    let summary = makeRunSummary(
+                        query: query,
+                        totalTurns: 1,
+                        toolsExecuted: 0,
+                        toolErrors: 0,
+                        plan: plan,
+                        finalResponse: intercepted.text,
+                        startTime: startTime
                     )
                     emit(.finished(summary: summary))
 
@@ -711,11 +676,14 @@ public final class Agent: @unchecked Sendable {
                         emit(.llmCallCompleted(turn: 1, response: fallback))
                         conversation.append(.assistant(fallback.text))
                         state.clearTemp()
-                        emit(.finished(summary: AgentRunSummary(
-                            query: query, totalTurns: 1, toolsExecuted: 0,
-                            toolErrors: 0, planStepsTotal: plan?.steps.count ?? 0,
-                            planStepsCompleted: plan?.completedCount ?? 0,
-                            finalResponse: fallback.text, elapsed: Date().timeIntervalSince(startTime)
+                        emit(.finished(summary: makeRunSummary(
+                            query: query,
+                            totalTurns: 1,
+                            toolsExecuted: 0,
+                            toolErrors: 0,
+                            plan: plan,
+                            finalResponse: fallback.text,
+                            startTime: startTime
                         )))
                         return fallback.text
                     }
@@ -737,15 +705,14 @@ public final class Agent: @unchecked Sendable {
             conversation.append(.assistant(agentResponse.text))
             state.clearTemp()
 
-            let summary = AgentRunSummary(
+            let summary = makeRunSummary(
                 query: query,
                 totalTurns: 1,
                 toolsExecuted: 0,
                 toolErrors: 0,
-                planStepsTotal: plan?.steps.count ?? 0,
-                planStepsCompleted: plan?.completedCount ?? 0,
+                plan: plan,
                 finalResponse: agentResponse.text,
-                elapsed: Date().timeIntervalSince(startTime)
+                startTime: startTime
             )
             emit(.finished(summary: summary))
 
@@ -758,6 +725,76 @@ public final class Agent: @unchecked Sendable {
 
             return agentResponse.text
         }
+    }
+
+    private func makeRunSummary(
+        query: String,
+        totalTurns: Int,
+        toolsExecuted: Int,
+        toolErrors: Int,
+        plan: AgentPlan?,
+        finalResponse: String,
+        startTime: Date,
+        elapsedOverride: TimeInterval? = nil
+    ) -> AgentRunSummary {
+        AgentRunSummary(
+            query: query,
+            totalTurns: totalTurns,
+            toolsExecuted: toolsExecuted,
+            toolErrors: toolErrors,
+            planStepsTotal: plan?.steps.count ?? 0,
+            planStepsCompleted: plan?.completedCount ?? 0,
+            finalResponse: finalResponse,
+            elapsed: elapsedOverride ?? Date().timeIntervalSince(startTime)
+        )
+    }
+
+    private func makeLLMToolDefinitions(from registeredTools: [any AgentTool]) -> [LLMToolDefinition] {
+        registeredTools.map { tool -> LLMToolDefinition in
+            let paramsData = try? JSONEncoder().encode(tool.parameters)
+            let paramsDict = paramsData.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any] ?? [:]
+            return LLMToolDefinition(name: tool.name, description: tool.description, parameters: paramsDict)
+        }
+    }
+
+    private func makeLLMRequest(
+        messagesForLLM: [AgentMessage],
+        tools: [LLMToolDefinition] = []
+    ) -> LLMRequest {
+        let llmMessages = messagesForLLM.flatMap { msg -> [LLMMessage] in
+            if msg.role == .system {
+                return [.system(state.template(msg.content))]
+            }
+            return msg.toLLMMessages()
+        }
+
+        return LLMRequest(
+            model: config.model ?? config.provider.configuration.defaultModel ?? "",
+            messages: llmMessages,
+            temperature: config.temperature,
+            maxTokens: config.maxTokens,
+            topP: config.topP,
+            tools: tools
+        )
+    }
+
+    private func dispatchToolCalls(
+        _ toolCalls: [AgentToolCall],
+        turn: Int,
+        query: String
+    ) async -> [AgentToolResult] {
+        let dispatcherObserver = BlockObserver { [weak self] event in
+            self?.emit(event)
+        }
+        return await dispatcher.dispatch(
+            calls: toolCalls,
+            state: state,
+            turn: turn,
+            query: query,
+            callbacks: callbacks,
+            parallel: true,
+            observer: dispatcherObserver
+        )
     }
 
     /// Track errors from the last turn (for repair-retry).
