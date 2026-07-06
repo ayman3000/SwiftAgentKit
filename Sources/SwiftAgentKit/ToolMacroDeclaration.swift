@@ -27,6 +27,16 @@
 /// }
 /// agent.register(MyTools().calculatorTool())
 /// ```
+///
+/// Alpha limitations:
+/// - Parameters generated from the function signature are currently advertised as required;
+///   optional/default arguments are not represented in the emitted schema yet.
+/// - The supported path is primitive parameters: `String`, `Int`, `Double`, and `Bool`.
+/// - Arrays, nested objects, and enums should use a manual `AgentTool` definition for now.
+/// - Malformed model arguments can coerce to primitive defaults (`""`, `0`, `0.0`, `false`);
+///   validate inside the tool for critical operations.
+/// - DocC parameter extraction handles simple `- Parameter name:` comments; grouped
+///   `- Parameters:` blocks are not fully parsed yet.
 @attached(peer, names: arbitrary)
 public macro Tool(_ description: String) = #externalMacro(module: "SwiftAgentKitMacros", type: "ToolMacro")
 
