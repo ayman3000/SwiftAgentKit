@@ -164,6 +164,20 @@ public final class Agent: @unchecked Sendable {
     /// Agent state — cross-turn mutable key-value store.
     public let state: AgentState
 
+    /// Optional persistent memory store. When set, the agent auto-registers
+    /// `RememberTool` and injects the memory context block into the system prompt.
+    public var memoryStore: (any AgentMemoryStore)? {
+        didSet {
+            if let store = memoryStore {
+                register(RememberTool(store: store))
+            }
+        }
+    }
+
+    /// Optional persistent goal store. When set, `run(_:trackGoal:)` persists goal
+    /// progress and results.
+    public var goalStore: (any AgentGoalStore)?
+
     /// Skill registry for progressive disclosure (optional).
     public let skillRegistry: SkillRegistry
 
@@ -776,6 +790,22 @@ public final class Agent: @unchecked Sendable {
             topP: config.topP,
             tools: tools
         )
+    }
+
+    private func persistGoal(query: String, status: AgentGoalStatus, summary: String?, plan: AgentPlan?) async {
+        guard let goalStore = goalStore else { return }
+        let goal = AgentGoal(
+            query: query,
+            status: status,
+            plan: plan,
+            summary: summary
+        )
+        try? await goalStore.save(goal)
+    }
+
+    private func persistGoal(_ goal: AgentGoal) async {
+        guard let goalStore = goalStore else { return }
+        try? await goalStore.save(goal)
     }
 
     private func dispatchToolCalls(

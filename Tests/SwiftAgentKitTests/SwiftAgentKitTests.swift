@@ -980,3 +980,158 @@ struct TestTools {
     let output = try await agent.run("Use echo tool now")
     #expect(output.contains("race-proof"))
 }
+
+
+// MARK: - AgentMemory Tests
+
+@Test func testAgentMemoryEntryEquatable() {
+    let entry = AgentMemoryEntry(kind: .user, title: "Name", content: "Ayman")
+    let same = AgentMemoryEntry(id: entry.id, kind: .user, title: "Name", content: "Ayman",
+                                createdAt: entry.createdAt, updatedAt: entry.updatedAt)
+    let different = AgentMemoryEntry(kind: .user, title: "Role", content: "Engineer")
+    #expect(entry == same)
+    #expect(entry != different)
+}
+
+@Test func testFileAgentMemoryStoreSeedsAndSaves() async throws {
+    let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let store = FileAgentMemoryStore(directory: tempDir)
+    store.seedIfNeeded()
+
+    let entries = try await store.loadAll()
+    #expect(entries.count >= 1) // AGENT.md
+
+    try FileManager.default.removeItem(at: tempDir)
+}
+
+@Test func testFileAgentMemoryStoreSavesUserFact() async throws {
+    let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let store = FileAgentMemoryStore(directory: tempDir)
+
+    let entry = AgentMemoryEntry(kind: .user, title: "Name", content: "Ayman")
+    try await store.save(entry)
+
+    let userEntries = try await store.load(kind: .user)
+    #expect(userEntries.count == 1)
+    #expect(userEntries[0].content.contains("Ayman"))
+
+    let context = await store.loadContextBlock()
+    #expect(context.contains("Ayman"))
+
+    try FileManager.default.removeItem(at: tempDir)
+}
+
+@Test func testFileAgentMemoryStoreSavesFact() async throws {
+    let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let store = FileAgentMemoryStore(directory: tempDir)
+
+    let entry = AgentMemoryEntry(kind: .fact, title: "Project Location", content: "~/projects/swift-kits")
+    try await store.save(entry)
+
+    let factEntries = try await store.load(kind: .fact)
+    #expect(factEntries.count == 1)
+    #expect(factEntries[0].title == "Project Location")
+
+    let indexURL = tempDir.appendingPathComponent("MEMORY.md")
+    let index = try String(contentsOf: indexURL, encoding: .utf8)
+    #expect(index.contains("Project Location"))
+    #expect(index.contains("memory/project-location.md"))
+
+    try FileManager.default.removeItem(at: tempDir)
+}
+
+@Test func testRememberToolExecutes() async throws {
+    let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let store = FileAgentMemoryStore(directory: tempDir)
+    let tool = RememberTool(store: store)
+
+    let result = try await tool.execute(parameters: [
+        "kind": "user",
+        "title": "Name",
+        "content": "Ayman"
+    ])
+
+    #expect(!result.isError)
+    #expect(result.result.contains("Remembered"))
+
+    let userEntries = try await store.load(kind: .user)
+    #expect(userEntries.count == 1)
+
+    try FileManager.default.removeItem(at: tempDir)
+}
+
+@Test func testRememberToolRejectsMissingFields() async throws {
+    let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let store = FileAgentMemoryStore(directory: tempDir)
+    let tool = RememberTool(store: store)
+
+    let result = try await tool.execute(parameters: ["kind": "user"])
+    #expect(result.isError)
+
+    try FileManager.default.removeItem(at: tempDir)
+}
+
+// MARK: - AgentGoal Tests
+
+@Test func testAgentGoalProgressAndStatus() {
+    var goal = AgentGoal(query: "Build a Swift package")
+    #expect(goal.status == .pending)
+    #expect(goal.progress == 0.0)
+
+    goal.start()
+    #expect(goal.status == .inProgress)
+
+    goal.complete(summary: "Done")
+    #expect(goal.status == .completed)
+    #expect(goal.progress == 1.0)
+    #expect(goal.summary == "Done")
+}
+
+@Test func testAgentGoalProgressFromPlan() {
+    var goal = AgentGoal(
+        query: "Do multi-step task",
+        status: .inProgress,
+        plan: AgentPlan(steps: [
+            AgentPlanStep(step: "A", status: .completed),
+            AgentPlanStep(step: "B", status: .completed),
+            AgentPlanStep(step: "C", status: .pending)
+        ])
+    )
+    #expect(goal.progress > 0.6 && goal.progress < 0.7)
+}
+
+@Test func testFileAgentGoalStoreRoundTrip() async throws {
+    let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    let store = FileAgentGoalStore(directory: tempDir)
+
+    var goal = AgentGoal(query: "Test goal")
+    goal.start()
+    try await store.save(goal)
+
+    let loaded = try await store.load(id: goal.id)
+    #expect(loaded != nil)
+    #expect(loaded?.query == "Test goal")
+    #expect(loaded?.status == .inProgress)
+
+    goal.complete(summary: "Finished")
+    try await store.save(goal)
+    let reloaded = try await store.load(id: goal.id)
+    #expect(reloaded?.status == .completed)
+    #expect(reloaded?.summary == "Finished")
+
+    let all = try await store.loadAll()
+    #expect(all.count == 1)
+
+    try await store.delete(id: goal.id)
+    #expect(try await store.load(id: goal.id) == nil)
+
+    try FileManager.default.removeItem(at: tempDir)
+}
+
+@Test func testDefaultStoreNamedHelpers() {
+    let memory = FileAgentMemoryStore.defaultStore(named: "testapp")
+    let goal = FileAgentGoalStore.defaultStore(named: "testapp")
+
+    #expect(memory.directory.path.hasSuffix("/.testapp"))
+    #expect(goal.directory.path.hasSuffix("/.testapp/goals"))
+}

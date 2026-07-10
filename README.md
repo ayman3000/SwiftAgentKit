@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/Swift-6.2%2B-orange" alt="Swift 6.2+">
   <img src="https://img.shields.io/badge/platforms-macOS%2013%2B%20%7C%20iOS%2016%2B%20%7C%20tvOS%2016%2B%20%7C%20watchOS%209%2B%20%7C%20visionOS%201%2B-blue" alt="Platforms">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT">
-  <img src="https://img.shields.io/badge/release-0.1.0--alpha-yellow" alt="Alpha">
+  <img src="https://img.shields.io/badge/release-0.2.0--alpha-yellow" alt="Alpha">
 </p>
 
 ---
@@ -148,6 +148,8 @@ Final response: "The current time is 2:15 PM."
 | 🔧 **Tool system** | Define Swift tools with JSON-Schema parameters. Models call them natively. Parallel dispatch + dedup. |
 | ✨ **@Tool macro** | Optional `@Tool` macro converts Swift functions to `AgentTool` structs — less boilerplate. |
 | 🧠 **Conversation memory** | Token-aware history that trims to fit the context window automatically. |
+| 🧠 **Persistent memory store** | Markdown-based long-term memory the agent can read and write across sessions. |
+| 🎯 **Goal tracking** | Track user requests as persistent goals with status and progress. |
 | 📋 **Planning** | Optional planning step before execution for complex multi-step tasks. |
 | 🔄 **Repair retry** | Nudges the model when tools fail instead of accepting false success. |
 | 📊 **Plan continuation** | Nudges the model if it stops before completing a plan. |
@@ -343,9 +345,12 @@ Sources/SwiftAgentKit/
 │   └── ToolDispatcher.swift     # Parallel dispatch, dedup, confirmation
 ├── Memory/
 │   ├── Conversation.swift       # Token-aware conversation history
-│   └── SessionStore.swift       # Session persistence protocol + file store
+│   ├── SessionStore.swift       # Session persistence protocol + file store
+│   ├── AgentMemoryStore.swift   # Long-term memory store protocol + file-backed impl
+│   └── RememberTool.swift       # Built-in tool for agents to persist memory
 ├── Planning/
 │   ├── AgentPlan.swift          # Plan model + LLMPlanner
+│   ├── AgentGoal.swift          # Goal model + goal store persistence
 │   └── RepairRetryPolicy.swift  # Repair-retry + plan continuation
 ├── StructuredOutput/
 │   └── StructuredOutput.swift   # Tolerant JSON extraction
@@ -407,7 +412,7 @@ Most agentic apps use both. SwiftAgentKit depends on LLMProviderKit — you just
 
 ```swift
 .dependencies: [
-    .package(url: "https://github.com/ayman3000/SwiftAgentKit.git", from: "0.1.0-alpha.1"),
+    .package(url: "https://github.com/ayman3000/SwiftAgentKit.git", from: "0.2.0-alpha.3"),
     .package(url: "https://github.com/ayman3000/LLMProviderKit.git", from: "0.1.0-alpha.1"),
 ],
 targets: [
@@ -556,6 +561,63 @@ let first = try await agent.run("What is an actor in Swift?")
 let followUp = try await agent.run("Show a small example.")
 // Second call includes prior context automatically
 ```
+
+### Persistent memory
+
+SwiftAgentKit now supports long-term, cross-session memory. The app chooses where memory lives — the library never hardcodes a folder name.
+
+```swift
+import Foundation
+import SwiftAgentKit
+
+// App names the folder; SwiftAgentKit provides a convenience helper
+let store = FileAgentMemoryStore.defaultStore(named: "myapp")
+
+// Or use any explicit directory URL
+// let store = FileAgentMemoryStore(directory: fileURL)
+
+let agent = Agent(config: AgentConfig(
+    provider: provider,
+    systemPrompt: "You are a helpful assistant. Remember user facts across sessions.",
+    maxTurns: 6
+))
+
+// Attaching a memory store:
+// 1. Injects the memory context block into the system prompt
+// 2. Auto-registers the built-in `remember` tool
+agent.memoryStore = store
+```
+
+The file-backed store uses a markdown layout similar to production agent patterns:
+
+```
+~/.myapp/
+├── AGENT.md          # Agent identity / instructions
+├── USER.md           # User profile
+├── MEMORY.md         # Index / summary of facts
+└── memory/
+    ├── fact-001.md   # Individual fact
+    └── fact-002.md
+```
+
+### Goal tracking
+
+Track user requests as persistent goals. Enable tracking on any `run(_:)` call and the agent saves the goal with final status and a summary.
+
+```swift
+let goalStore = FileAgentGoalStore(directory: someDirectoryURL)
+agent.goalStore = goalStore
+
+let answer = try await agent.run("Analyze this project and write a README summary.", trackGoal: true)
+
+// Later, inspect or resume goals
+let goals = try await goalStore.loadAll()
+for goal in goals {
+    print(goal.status, goal.query, goal.summary ?? "")
+}
+```
+
+Goals carry status (`pending`, `inProgress`, `completed`, `failed`, `abandoned`), a progress percentage derived from the active plan, and a final summary once the run finishes.
 
 ### Session persistence
 
@@ -778,6 +840,8 @@ let response = try await agent.run("What time is it? Use the tool.")
 | **Multi-turn chat** | `maxTurns: 1`, no tools | Chat with history, no actions |
 | **ReAct with tools** | `maxTurns > 0`, tools | Model calls tools and iterates |
 | **Planner + ReAct** | `enablePlanning: true` | Multi-step tasks need a plan first |
+| **Memory-enabled agent** | `agent.memoryStore = store` | Long-term memory across sessions |
+| **Goal-tracking agent** | `agent.goalStore = store` + `trackGoal: true` | Track request status and outcomes |
 
 ---
 
@@ -858,7 +922,7 @@ swift build
 swift test
 ```
 
-64 unit tests, no network calls — all parsing, logic, state, callback, parallel dispatch, session, concurrency guard, and macro tests.
+64 unit tests, no network calls — all parsing, logic, state, callback, parallel dispatch, session, memory, goal, concurrency guard, and macro tests.
 
 ---
 
