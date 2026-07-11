@@ -66,5 +66,17 @@ let package = Package(
                 "SwiftAgentKit",
             ]
         ),
+
+        // Examples runner — `swift run Runner 01`, `swift run Runner 02`, etc.
+        .executableTarget(
+            name: "Runner",
+            dependencies: [
+                "SwiftAgentKit",
+                "SwiftAgentKitMCP",
+                .product(name: "LLMProviderKit", package: "LLMProviderKit"),
+                .product(name: "LLMProviderKitOllama", package: "LLMProviderKit"),
+            ],
+            path: "Examples/Runner"
+        ),
     ]
 )
