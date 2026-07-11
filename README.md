@@ -16,6 +16,14 @@
 
 A modern AI agent framework for Swift. Native tool calling, conversation memory, planning, state, callbacks, session persistence, and a ReAct-style loop — all protocol-oriented, all Swift, zero UI dependencies. Designed for macOS/iOS apps, CLI agents, and local-first Ollama workflows. Works with **Ollama**, **OpenAI**, **Google Gemini**, and **Anthropic** through [LLMProviderKit](https://github.com/ayman3000/LLMProviderKit).
 
+## See SwiftAgentKit in action
+
+<video src="https://raw.githubusercontent.com/ayman3000/SwiftAgentKit/main/Media/SwiftAgentKitExplainer.mp4" controls width="100%"></video>
+
+<p align="center">
+  <a href="https://github.com/ayman3000/SwiftAgentKit/raw/main/Media/SwiftAgentKitExplainer.mp4"><strong>Watch or download the 74-second technical overview</strong></a>
+</p>
+
 ---
 
 ## Table of Contents
