@@ -1,0 +1,8 @@
+version: 1
+builder:
+  configs:
+    - platform: macOS
+      swift_version: 6.2
+      documentation_targets:
+        - SwiftAgentKit
+        - SwiftAgentKitMCP
