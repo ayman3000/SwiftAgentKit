@@ -12,17 +12,21 @@
   <img src="https://img.shields.io/badge/release-0.3.0--alpha-yellow" alt="Alpha">
 </p>
 
+<h2 align="center">Watch SwiftAgentKit in action</h2>
+
+<p align="center">
+  <a href="https://github.com/ayman3000/SwiftAgentKit/raw/main/Media/SwiftAgentKitExplainer.mp4">
+    <img src="https://raw.githubusercontent.com/ayman3000/SwiftAgentKit/main/Media/SwiftAgentKitPreview.gif" width="800" alt="Animated preview of the SwiftAgentKit technical overview">
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/ayman3000/SwiftAgentKit/raw/main/Media/SwiftAgentKitExplainer.mp4"><strong>▶ CLICK TO WATCH THE FULL 74-SECOND VIDEO</strong></a>
+</p>
+
 ---
 
 A modern AI agent framework for Swift. Native tool calling, conversation memory, planning, state, callbacks, session persistence, and a ReAct-style loop — all protocol-oriented, all Swift, zero UI dependencies. Designed for macOS/iOS apps, CLI agents, and local-first Ollama workflows. Works with **Ollama**, **OpenAI**, **Google Gemini**, and **Anthropic** through [LLMProviderKit](https://github.com/ayman3000/LLMProviderKit).
-
-## See SwiftAgentKit in action
-
-[![Watch the SwiftAgentKit technical overview](Media/SwiftAgentKitPreview.gif)](https://github.com/ayman3000/SwiftAgentKit/raw/main/Media/SwiftAgentKitExplainer.mp4)
-
-<p align="center">
-  <a href="https://github.com/ayman3000/SwiftAgentKit/raw/main/Media/SwiftAgentKitExplainer.mp4"><strong>Watch or download the full 74-second technical overview</strong></a>
-</p>
 
 ---
 
