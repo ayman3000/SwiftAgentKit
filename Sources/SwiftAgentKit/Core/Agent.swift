@@ -364,6 +364,15 @@ public final class Agent: @unchecked Sendable {
     /// 3. Return the final response
     ///
     public func run(_ query: String) async throws -> String {
+        try await run(query, images: [])
+    }
+
+    /// Run the agent with a user query and optional images (for vision-capable models).
+    ///
+    /// Images are forwarded to the provider as base64-encoded attachments in the user message.
+    /// Works with models that support vision (e.g., GPT-4o, Gemini, LLaVA).
+    ///
+    public func run(_ query: String, images: [LLMImage]) async throws -> String {
         guard beginRunIfIdle() else {
             throw AgentError.runInProgress
         }
@@ -392,7 +401,11 @@ public final class Agent: @unchecked Sendable {
         }
 
         // Add user message to conversation
-        conversation.append(.user(query))
+        if images.isEmpty {
+            conversation.append(.user(query))
+        } else {
+            conversation.append(.user(query, images: images))
+        }
 
         // Get registered tools and strengthen system prompt (must happen before skill injection)
         let registeredToolsEarly = await tools.allTools()
