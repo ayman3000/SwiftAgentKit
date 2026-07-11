@@ -18,10 +18,10 @@ A modern AI agent framework for Swift. Native tool calling, conversation memory,
 
 ## See SwiftAgentKit in action
 
-<video src="https://raw.githubusercontent.com/ayman3000/SwiftAgentKit/main/Media/SwiftAgentKitExplainer.mp4" controls width="100%"></video>
+[![Watch the SwiftAgentKit technical overview](Media/SwiftAgentKitPreview.gif)](https://github.com/ayman3000/SwiftAgentKit/raw/main/Media/SwiftAgentKitExplainer.mp4)
 
 <p align="center">
-  <a href="https://github.com/ayman3000/SwiftAgentKit/raw/main/Media/SwiftAgentKitExplainer.mp4"><strong>Watch or download the 74-second technical overview</strong></a>
+  <a href="https://github.com/ayman3000/SwiftAgentKit/raw/main/Media/SwiftAgentKitExplainer.mp4"><strong>Watch or download the full 74-second technical overview</strong></a>
 </p>
 
 ---
