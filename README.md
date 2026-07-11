@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/Swift-6.2%2B-orange" alt="Swift 6.2+">
   <img src="https://img.shields.io/badge/platforms-macOS%2013%2B%20%7C%20iOS%2016%2B%20%7C%20tvOS%2016%2B%20%7C%20watchOS%209%2B%20%7C%20visionOS%201%2B-blue" alt="Platforms">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT">
-  <img src="https://img.shields.io/badge/release-0.2.0--alpha-yellow" alt="Alpha">
+  <img src="https://img.shields.io/badge/release-0.3.0--alpha-yellow" alt="Alpha">
 </p>
 
 ---
@@ -25,6 +25,7 @@ A modern AI agent framework for Swift. Native tool calling, conversation memory,
 - [Architecture](#architecture)
 - [Quick Start](#quick-start)
 - [Examples](#examples)
+- [MCP Server Integration](#mcp-server-integration)
 - [@Tool Macro (Optional)](#tool-macro-optional)
 - [Design Principles](#design-principles)
 - [Alpha Status](#alpha-status)
@@ -171,8 +172,12 @@ Sources/SwiftAgentKit/
 │   └── RepairRetryPolicy.swift  # Repair-retry + plan continuation
 ├── StructuredOutput/
 │   └── StructuredOutput.swift   # Tolerant JSON extraction
-└── Logging/
-    └── AgentLogger.swift        # Lightweight logger
+├── Logging/
+│   └── AgentLogger.swift        # Lightweight logger
+Sources/SwiftAgentKitMCP/
+├── MCPClientConfig.swift        # stdio/HTTP connection config
+├── MCPToolBridge.swift          # MCP Tool → AgentTool bridge
+└── MCPManager.swift             # Connection lifecycle + tool discovery
 ```
 
 ---
@@ -187,7 +192,7 @@ Sources/SwiftAgentKit/
 
 ```swift
 .dependencies: [
-    .package(url: "https://github.com/ayman3000/SwiftAgentKit.git", from: "0.2.0-alpha.3"),
+    .package(url: "https://github.com/ayman3000/SwiftAgentKit.git", from: "0.3.0-alpha.1"),
     .package(url: "https://github.com/ayman3000/LLMProviderKit.git", from: "0.1.0-alpha.1"),
 ],
 targets: [
@@ -444,6 +449,75 @@ Planning is optional. Keep it off for simple tasks; enable it for multi-step wor
 
 ---
 
+## MCP Server Integration
+
+SwiftAgentKit can connect to any [Model Context Protocol](https://modelcontextprotocol.io) server and use its tools as native `AgentTool`s. This gives your agents instant access to the growing MCP ecosystem — filesystem, GitHub, databases, browser automation, and more — without writing tools in Swift.
+
+MCP support is an **optional product** (`SwiftAgentKitMCP`) so it doesn't add weight to the core library.
+
+### Installation
+
+Add `SwiftAgentKitMCP` to your dependencies:
+
+```swift
+.dependencies: [
+    .package(url: "https://github.com/ayman3000/SwiftAgentKit.git", from: "0.3.0-alpha.1"),
+    .package(url: "https://github.com/ayman3000/LLMProviderKit.git", from: "0.1.0-alpha.1"),
+],
+targets: [
+    .target(name: "YourApp", dependencies: [
+        .product(name: "SwiftAgentKit", package: "SwiftAgentKit"),
+        .product(name: "SwiftAgentKitMCP", package: "SwiftAgentKit"),
+        .product(name: "LLMProviderKitOllama", package: "LLMProviderKit"),
+    ])
+]
+```
+
+### Usage
+
+```swift
+import SwiftAgentKit
+import SwiftAgentKitMCP
+import LLMProviderKitOllama
+
+let agent = Agent(config: AgentConfig(
+    provider: OllamaProvider(configuration: OllamaProvider.local(model: "llama3.2")),
+    systemPrompt: "You are a helpful assistant with filesystem tools.",
+    maxTurns: 10
+))
+
+// Connect to MCP servers — tools are auto-discovered and bridged
+let mcp = MCPManager()
+try await mcp.connect(.stdio(command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]))
+try await mcp.connect(.http(endpoint: URL(string: "http://localhost:8080")!))
+
+// Bridge all MCP tools into the agent
+for tool in try await mcp.bridgedTools() {
+    agent.register(tool)
+}
+
+// Run — the agent can now use filesystem tools
+let response = try await agent.run("List the files in /tmp and summarize what's there.")
+print(response)
+
+// Clean up when done
+await mcp.disconnectAll()
+```
+
+### What's supported
+
+- **Stdio transport** — connect to local MCP servers via subprocess
+- **HTTP transport** — connect to remote MCP servers
+- **Tool discovery** — `listTools()` → `AgentTool` bridge (name, description, schema, execution)
+- **Multi-server** — connect to multiple MCP servers simultaneously; all tools merge
+
+### What's not yet supported
+
+- MCP resources, prompts, completions, sampling, elicitation — tools only for now
+- MCP server hosting (SwiftAgentKit is a client, not a server)
+
+---
+
 ## @Tool Macro (Optional)
 
 Use the `@Tool` macro to convert any Swift function into an `AgentTool` with less boilerplate:
@@ -504,7 +578,7 @@ swift build
 swift test
 ```
 
-74 unit tests, no network calls — all parsing, logic, state, callback, parallel dispatch, session, memory, goal, concurrency guard, and macro tests.
+78 unit tests (74 core + 4 MCP), no network calls.
 
 ---
 

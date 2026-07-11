@@ -13,10 +13,12 @@ let package = Package(
     ],
     products: [
         .library(name: "SwiftAgentKit", targets: ["SwiftAgentKit"]),
+        .library(name: "SwiftAgentKitMCP", targets: ["SwiftAgentKitMCP"]),
     ],
     dependencies: [
         .package(url: "https://github.com/ayman3000/LLMProviderKit.git", from: "0.1.0-alpha.5"),
         .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "603.0.0"),
+        .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.12.1"),
     ],
     targets: [
         // Macro implementation (SwiftSyntax-based, compile-time code gen)
@@ -44,6 +46,24 @@ let package = Package(
             dependencies: [
                 "SwiftAgentKit",
                 .product(name: "LLMProviderKit", package: "LLMProviderKit"),
+            ]
+        ),
+
+        // MCP integration — optional product, depends on the MCP Swift SDK
+        .target(
+            name: "SwiftAgentKitMCP",
+            dependencies: [
+                "SwiftAgentKit",
+                .product(name: "MCP", package: "swift-sdk"),
+            ]
+        ),
+
+        // MCP tests
+        .testTarget(
+            name: "SwiftAgentKitMCPTests",
+            dependencies: [
+                "SwiftAgentKitMCP",
+                "SwiftAgentKit",
             ]
         ),
     ]
