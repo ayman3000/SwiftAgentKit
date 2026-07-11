@@ -114,6 +114,79 @@ public actor MCPManager {
     public func connectedServers() -> [String] {
         connections.map { $0.serverName }
     }
+
+    /// List all resources from all connected MCP servers.
+    public func listResources() async throws -> [MCPResourceInfo] {
+        var resources: [MCPResourceInfo] = []
+        for conn in connections {
+            let (mcpResources, _) = try await conn.client.listResources()
+            for res in mcpResources {
+                resources.append(MCPResourceInfo(
+                    uri: res.uri,
+                    name: res.name,
+                    description: res.description,
+                    serverName: conn.serverName
+                ))
+            }
+        }
+        return resources
+    }
+
+    /// Read a resource from the MCP server that provides it.
+    public func readResource(uri: String) async throws -> String {
+        for conn in connections {
+            let contents = try await conn.client.readResource(uri: uri)
+            var text = ""
+            for content in contents {
+                if let t = content.text { text += t }
+            }
+            if !text.isEmpty { return text }
+        }
+        throw MCPManagerError.resourceNotFound(uri)
+    }
+
+    /// Build a context block from all MCP resources, suitable for injection into a system prompt.
+    public func resourcesContextBlock() async throws -> String {
+        let resources = try await listResources()
+        if resources.isEmpty { return "" }
+
+        var lines = ["## MCP Resources"]
+        for res in resources {
+            let desc = res.description.map { " — \($0)" } ?? ""
+            lines.append("- \(res.name) (`\(res.uri)`)\(desc)")
+        }
+        return lines.joined(separator: "\n")
+    }
+}
+
+// MARK: - MCP Resource Info
+
+/// Metadata about a discovered MCP resource.
+public struct MCPResourceInfo: Sendable {
+    public let uri: String
+    public let name: String
+    public let description: String?
+    public let serverName: String
+
+    public init(uri: String, name: String, description: String?, serverName: String) {
+        self.uri = uri
+        self.name = name
+        self.description = description
+        self.serverName = serverName
+    }
+}
+
+// MARK: - Errors
+
+public enum MCPManagerError: Error, LocalizedError {
+    case resourceNotFound(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .resourceNotFound(let uri):
+            return "MCP resource not found: \(uri)"
+        }
+    }
 }
 
 // MARK: - Internal

@@ -509,11 +509,12 @@ await mcp.disconnectAll()
 - **Stdio transport** — connect to local MCP servers via subprocess
 - **HTTP transport** — connect to remote MCP servers
 - **Tool discovery** — `listTools()` → `AgentTool` bridge (name, description, schema, execution)
-- **Multi-server** — connect to multiple MCP servers simultaneously; all tools merge
+- **Resource discovery** — `listResources()` → `MCPResourceInfo`, `readResource(uri:)`, `resourcesContextBlock()`
+- **Multi-server** — connect to multiple MCP servers simultaneously; all tools and resources merge
 
 ### What's not yet supported
 
-- MCP resources, prompts, completions, sampling, elicitation — tools only for now
+- MCP prompts, completions, sampling, elicitation — tools and resources only for now
 - MCP server hosting (SwiftAgentKit is a client, not a server)
 
 ---
@@ -578,7 +579,7 @@ swift build
 swift test
 ```
 
-78 unit tests (74 core + 4 MCP), no network calls.
+82 unit tests (74 core + 8 MCP), no network calls.
 
 ---
 

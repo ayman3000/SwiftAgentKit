@@ -37,4 +37,34 @@ final class MCPManagerTests: XCTestCase {
         XCTAssertEqual(info.name, "test-server")
         XCTAssertEqual(info.version, "1.0.0")
     }
+
+    func testMCPResourceInfo() {
+        let res = MCPResourceInfo(
+            uri: "file:///tmp/test.txt",
+            name: "Test File",
+            description: "A test resource",
+            serverName: "fs-server"
+        )
+        XCTAssertEqual(res.uri, "file:///tmp/test.txt")
+        XCTAssertEqual(res.name, "Test File")
+        XCTAssertEqual(res.description, "A test resource")
+        XCTAssertEqual(res.serverName, "fs-server")
+    }
+
+    func testMCPManagerErrorDescription() {
+        let error = MCPManagerError.resourceNotFound("file:///missing")
+        XCTAssertEqual(error.localizedDescription, "MCP resource not found: file:///missing")
+    }
+
+    func testListResourcesEmpty() async {
+        let manager = MCPManager()
+        let resources = try? await manager.listResources()
+        XCTAssertTrue(resources?.isEmpty ?? false)
+    }
+
+    func testResourcesContextBlockEmpty() async throws {
+        let manager = MCPManager()
+        let block = try await manager.resourcesContextBlock()
+        XCTAssertEqual(block, "")
+    }
 }
