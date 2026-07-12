@@ -204,7 +204,7 @@ Sources/SwiftAgentKitMCP/
 
 ```swift
 .dependencies: [
-    .package(url: "https://github.com/ayman3000/SwiftAgentKit.git", from: "0.3.0-alpha.6"),
+    .package(url: "https://github.com/ayman3000/SwiftAgentKit.git", from: "0.3.0-alpha.7"),
     .package(url: "https://github.com/ayman3000/LLMProviderKit.git", from: "0.1.0-alpha.1"),
 ],
 targets: [
@@ -473,7 +473,7 @@ Add `SwiftAgentKitMCP` to your dependencies:
 
 ```swift
 .dependencies: [
-    .package(url: "https://github.com/ayman3000/SwiftAgentKit.git", from: "0.3.0-alpha.6"),
+    .package(url: "https://github.com/ayman3000/SwiftAgentKit.git", from: "0.3.0-alpha.7"),
     .package(url: "https://github.com/ayman3000/LLMProviderKit.git", from: "0.1.0-alpha.1"),
 ],
 targets: [
@@ -591,7 +591,7 @@ swift build
 swift test
 ```
 
-86 unit tests (74 core + 12 MCP), no network calls.
+87 unit tests (75 core + 12 MCP), no network calls.
 
 ---
 

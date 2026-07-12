@@ -793,6 +793,16 @@ struct ToolAwareMockProvider: LLMProvider {
     func parseStreamLine(_ line: String, request: LLMRequest) throws -> [LLMStreamChunk] { [] }
 
     func parseResponse(_ data: Data, request: LLMRequest) throws -> LLMResponse {
+        if request.messages.contains(where: { $0.role == .user && $0.content.contains("Do you know me?") }) {
+            let systemPrompt = request.messages.first(where: { $0.role == .system })?.content ?? ""
+            return LLMResponse(
+                text: systemPrompt,
+                finishReason: .stop,
+                request: request,
+                providerName: Self.name
+            )
+        }
+
         if let toolMessage = request.messages.last(where: { $0.role == .tool }) {
             return LLMResponse(
                 text: "final tool result: \(toolMessage.content)",
@@ -819,6 +829,27 @@ struct ToolAwareMockProvider: LLMProvider {
             providerName: Self.name
         )
     }
+}
+
+@Test func testAgentInjectsPersistentMemoryIntoSystemPrompt() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("agent-memory-injection-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let store = FileAgentMemoryStore(directory: directory)
+    try await store.save(AgentMemoryEntry(kind: .user, title: "Name", content: "Ayman"))
+
+    let agent = Agent(config: AgentConfig(
+        provider: ToolAwareMockProvider(),
+        model: "mock",
+        systemPrompt: "You are helpful.",
+        maxTurns: 1
+    ))
+    agent.memoryStore = store
+
+    let output = try await agent.run("Do you know me?")
+    #expect(output.contains("Ayman"))
+    #expect(output.contains("MEMORY"))
 }
 
 @Test func testAgentAwaitsImmediateToolRegistrationBeforeRun() async throws {

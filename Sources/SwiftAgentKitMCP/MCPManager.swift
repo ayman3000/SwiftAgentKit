@@ -20,7 +20,7 @@ public actor MCPManager {
     /// Connect to an MCP server using the given configuration.
     @discardableResult
     public func connect(_ config: MCPClientConfig) async throws -> MCPServerInfo {
-        let client = Client(name: "SwiftAgentKit", version: "0.3.0-alpha.6")
+        let client = Client(name: "SwiftAgentKit", version: "0.3.0-alpha.7")
 
         let transport: Transport
         var process: Process?

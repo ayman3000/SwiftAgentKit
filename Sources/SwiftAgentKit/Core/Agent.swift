@@ -410,6 +410,19 @@ public final class Agent: @unchecked Sendable {
         // Get registered tools and strengthen system prompt (must happen before skill injection)
         let registeredToolsEarly = await tools.allTools()
         var effectiveSystemPrompt = config.systemPrompt ?? ""
+
+        // Persistent memory must be part of every model call. Loading it at run
+        // time ensures facts saved by earlier runs are immediately available.
+        if let memoryStore {
+            let memoryContext = await memoryStore.loadContextBlock()
+            if !memoryContext.isEmpty {
+                if !effectiveSystemPrompt.isEmpty {
+                    effectiveSystemPrompt += "\n\n"
+                }
+                effectiveSystemPrompt += memoryContext
+            }
+        }
+
         if !registeredToolsEarly.isEmpty {
             let toolNames = registeredToolsEarly.map { $0.name }.joined(separator: ", ")
             let toolInstruction = """
