@@ -67,4 +67,55 @@ final class MCPManagerTests: XCTestCase {
         let block = try await manager.resourcesContextBlock()
         XCTAssertEqual(block, "")
     }
+
+    func testExecutableResolverFindsCommandOnPATH() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mcp-resolver-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let executable = directory.appendingPathComponent("test-mcp")
+        try Data("#!/bin/sh\n".utf8).write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+
+        let resolved = try MCPExecutableResolver.resolve(
+            "test-mcp",
+            environment: ["PATH": directory.path]
+        )
+        XCTAssertEqual(resolved.standardizedFileURL, executable.standardizedFileURL)
+    }
+
+    func testExecutableResolverFindsUserLocalBinForGUIEnvironment() throws {
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mcp-home-\(UUID().uuidString)", isDirectory: true)
+        let bin = home.appendingPathComponent(".local/bin", isDirectory: true)
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let executable = bin.appendingPathComponent("npx")
+        try Data("#!/bin/sh\n".utf8).write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+
+        let resolved = try MCPExecutableResolver.resolve(
+            "npx",
+            environment: ["PATH": "/usr/bin:/bin"],
+            homeDirectory: home
+        )
+        XCTAssertEqual(resolved.standardizedFileURL, executable.standardizedFileURL)
+    }
+
+    func testExecutableResolverReportsMissingCommand() {
+        XCTAssertThrowsError(
+            try MCPExecutableResolver.resolve(
+                "definitely-not-an-mcp-command",
+                environment: ["PATH": ""],
+                homeDirectory: URL(fileURLWithPath: "/nonexistent")
+            )
+        ) { error in
+            XCTAssertEqual(
+                error.localizedDescription,
+                "MCP executable not found: definitely-not-an-mcp-command. Install it or provide an absolute path."
+            )
+        }
+    }
 }

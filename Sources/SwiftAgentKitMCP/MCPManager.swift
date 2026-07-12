@@ -20,18 +20,26 @@ public actor MCPManager {
     /// Connect to an MCP server using the given configuration.
     @discardableResult
     public func connect(_ config: MCPClientConfig) async throws -> MCPServerInfo {
-        let client = Client(name: "SwiftAgentKit", version: "0.3.0-alpha.1")
+        let client = Client(name: "SwiftAgentKit", version: "0.3.0-alpha.5")
 
         let transport: Transport
         var process: Process?
 
         switch config {
         case .stdio(let command, let args, let env):
+            // GUI-launched macOS apps have a minimal PATH. Resolve command names
+            // against PATH plus common package-manager locations before spawning.
+            let processEnvironment = ProcessInfo.processInfo.environment.merging(env ?? [:]) { _, custom in custom }
+            let executableURL = try MCPExecutableResolver.resolve(
+                command,
+                environment: processEnvironment
+            )
+
             // Spawn the MCP server as a subprocess and pipe its stdio
             let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: command)
+            proc.executableURL = executableURL
             proc.arguments = args
-            if let env { proc.environment = env }
+            proc.environment = processEnvironment
 
             let stdinPipe = Pipe()
             let stdoutPipe = Pipe()
@@ -179,10 +187,13 @@ public struct MCPResourceInfo: Sendable {
 // MARK: - Errors
 
 public enum MCPManagerError: Error, LocalizedError {
+    case executableNotFound(String)
     case resourceNotFound(String)
 
     public var errorDescription: String? {
         switch self {
+        case .executableNotFound(let command):
+            return "MCP executable not found: \(command). Install it or provide an absolute path."
         case .resourceNotFound(let uri):
             return "MCP resource not found: \(uri)"
         }
