@@ -1,6 +1,28 @@
 import Foundation
 
 enum MCPExecutableResolver {
+    static func enrichedEnvironment(
+        _ environment: [String: String],
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> [String: String] {
+        var result = environment
+        let fallbackDirectories = [
+            homeDirectory.appendingPathComponent(".local/bin").path,
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin",
+        ]
+        let existingDirectories = environment["PATH"]?
+            .split(separator: ":")
+            .map(String.init) ?? []
+        var seen = Set<String>()
+        result["PATH"] = (fallbackDirectories + existingDirectories)
+            .filter { seen.insert($0).inserted }
+            .joined(separator: ":")
+        return result
+    }
+
     static func resolve(
         _ command: String,
         environment: [String: String] = ProcessInfo.processInfo.environment,

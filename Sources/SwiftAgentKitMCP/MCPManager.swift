@@ -20,7 +20,7 @@ public actor MCPManager {
     /// Connect to an MCP server using the given configuration.
     @discardableResult
     public func connect(_ config: MCPClientConfig) async throws -> MCPServerInfo {
-        let client = Client(name: "SwiftAgentKit", version: "0.3.0-alpha.5")
+        let client = Client(name: "SwiftAgentKit", version: "0.3.0-alpha.6")
 
         let transport: Transport
         var process: Process?
@@ -29,7 +29,8 @@ public actor MCPManager {
         case .stdio(let command, let args, let env):
             // GUI-launched macOS apps have a minimal PATH. Resolve command names
             // against PATH plus common package-manager locations before spawning.
-            let processEnvironment = ProcessInfo.processInfo.environment.merging(env ?? [:]) { _, custom in custom }
+            let customEnvironment = ProcessInfo.processInfo.environment.merging(env ?? [:]) { _, custom in custom }
+            let processEnvironment = MCPExecutableResolver.enrichedEnvironment(customEnvironment)
             let executableURL = try MCPExecutableResolver.resolve(
                 command,
                 environment: processEnvironment

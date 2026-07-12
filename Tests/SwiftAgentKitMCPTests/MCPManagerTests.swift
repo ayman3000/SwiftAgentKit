@@ -104,6 +104,20 @@ final class MCPManagerTests: XCTestCase {
         XCTAssertEqual(resolved.standardizedFileURL, executable.standardizedFileURL)
     }
 
+    func testEnrichedEnvironmentMakesResolvedCommandDependenciesDiscoverable() {
+        let home = URL(fileURLWithPath: "/Users/tester")
+        let environment = MCPExecutableResolver.enrichedEnvironment(
+            ["PATH": "/usr/bin:/bin", "CUSTOM": "value"],
+            homeDirectory: home
+        )
+
+        XCTAssertEqual(environment["CUSTOM"], "value")
+        XCTAssertEqual(
+            environment["PATH"],
+            "/Users/tester/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+        )
+    }
+
     func testExecutableResolverReportsMissingCommand() {
         XCTAssertThrowsError(
             try MCPExecutableResolver.resolve(
