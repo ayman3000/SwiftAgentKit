@@ -5,6 +5,7 @@ All notable changes to SwiftAgentKit will be documented in this file.
 ## Unreleased
 
 ### Fixed
+- **ContextSift: single-shot retrieval to avoid paging loops.** `artifact_read`'s default read limit is raised 8000 → 24000 so a retrieval typically returns the whole artifact in one call. Paginated reads (repeated "call again with offset…") could make weaker models loop instead of converging. Validated live against `glm-5.2:cloud` (a large >8k tool output resolves with no retrieval spiral). Gated live regression added (`liveContextSiftNoArtifactReadLoop`).
 - **ContextSift: stop the `artifact_read` retrieval loop.** A large *active* tool result was bounded to `maxActiveResultChars` and spilled to an artifact with a "use artifact_read" hint; when the model then called `artifact_read`, that retrieval result was *itself* re-truncated and re-spilled — so the model kept calling `artifact_read` to "get the full output" that never fully surfaced (observed as ~6 repeated `artifact_read` calls until `maxTurns` ran out). Fix: retrieval tools (`artifact_read`, `artifact_search`) are now exempt from active-display truncation and receipt spilling — their output is shown in full (the tools already page via `offset`/`limit`). Also raised the default `maxActiveResultChars` 2000 → 8000 so ordinary tool outputs fit inline without any artifact round-trip. Regression coverage added (an active `artifact_read` result larger than the bound is shown in full, never re-truncated).
 
 ### Added

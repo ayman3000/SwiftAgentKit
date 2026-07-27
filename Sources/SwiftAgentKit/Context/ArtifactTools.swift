@@ -20,7 +20,7 @@ public struct ArtifactReadTool: AgentTool {
         properties: [
             "artifact_id": ToolParameterProperty(type: "string", description: "The artifact id, e.g. artifact-abc123"),
             "offset": ToolParameterProperty(type: "integer", description: "Start character offset (default 0)"),
-            "limit": ToolParameterProperty(type: "integer", description: "Max characters to read (default 8000)"),
+            "limit": ToolParameterProperty(type: "integer", description: "Max characters to read (default 24000 — usually the whole artifact in one call)"),
         ],
         required: ["artifact_id"]
     )
@@ -36,7 +36,9 @@ public struct ArtifactReadTool: AgentTool {
             return .error(toolCallId: "", toolName: name, message: "artifact_read requires an artifact_id.")
         }
         let offset = intValue(parameters["offset"]) ?? 0
-        let limit = intValue(parameters["limit"]) ?? 8_000
+        // Default high so retrieval is single-shot for typical outputs — paginated
+        // reads (repeated "call again with offset…") can make weaker models loop.
+        let limit = intValue(parameters["limit"]) ?? 24_000
 
         guard let slice = await store.read(id, offset: offset, limit: limit) else {
             return .error(toolCallId: "", toolName: name, message: "Unknown artifact: \(id)")
