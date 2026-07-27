@@ -68,6 +68,12 @@ public struct AgentConfig: Sendable {
     /// agent uses its normal trim-based context handling.
     public var contextManager: ContextManager?
 
+    /// When `true`, tools marked `requiresConfirmation` run WITHOUT prompting via
+    /// `AgentCallbacks.onToolConfirmation` — the agent has full autonomy. Default
+    /// `false` (confirmation-gated). Can also be flipped at runtime with
+    /// `agent.setAutonomousMode(_:)`.
+    public var autonomousMode: Bool
+
     public init(
         provider: any LLMProvider,
         model: String? = nil,
@@ -82,7 +88,8 @@ public struct AgentConfig: Sendable {
         enableRepairRetry: Bool = true,
         enablePlanContinuation: Bool = true,
         tools: [any AgentTool] = [],
-        contextManager: ContextManager? = nil
+        contextManager: ContextManager? = nil,
+        autonomousMode: Bool = false
     ) {
         self.provider = provider
         self.model = model
@@ -98,6 +105,7 @@ public struct AgentConfig: Sendable {
         self.enablePlanContinuation = enablePlanContinuation
         self.tools = tools
         self.contextManager = contextManager
+        self.autonomousMode = autonomousMode
     }
 }
 
@@ -263,9 +271,20 @@ public final class Agent: @unchecked Sendable {
                 register(tool)
             }
         }
+
+        // Apply autonomous mode (skips the confirmation gate) if configured.
+        if config.autonomousMode {
+            setAutonomousMode(true)
+        }
     }
 
     // MARK: - Tools
+
+    /// Enable/disable autonomous mode at runtime. When `true`, tools marked
+    /// `requiresConfirmation` run without prompting `onToolConfirmation`.
+    public func setAutonomousMode(_ enabled: Bool) {
+        trackRegistrationTask(Task { await dispatcher.setAutonomousMode(enabled) })
+    }
 
     /// Register a tool.
     public func register(_ tool: any AgentTool) {
