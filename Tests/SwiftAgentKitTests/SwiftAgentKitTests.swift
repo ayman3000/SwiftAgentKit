@@ -792,8 +792,16 @@ struct StatefulTool: AgentTool {
 
 // MARK: - Parallel Tool Execution Tests
 
+/// Records each tool's [start, end] interval so a test can prove parallelism
+/// deterministically (overlapping intervals) instead of via a flaky wall clock.
+actor OverlapRecorder {
+    private(set) var intervals: [(start: Date, end: Date)] = []
+    func record(_ start: Date, _ end: Date) { intervals.append((start, end)) }
+}
+
 struct DelayTool: AgentTool {
     let name: String
+    var recorder: OverlapRecorder? = nil
     let description = "Echoes with a small delay."
     let parameters = ToolParameters(
         properties: ["msg": ToolParameterProperty(type: "string", description: "Message")],
@@ -801,30 +809,36 @@ struct DelayTool: AgentTool {
     )
 
     func execute(parameters: [String: Any]) async throws -> AgentToolResult {
-        // Simulate I/O delay
+        let start = Date()
         try await Task.sleep(nanoseconds: 200_000_000) // 200ms
+        await recorder?.record(start, Date())
         let msg = parameters["msg"] as? String ?? ""
         return .success(toolCallId: "", toolName: name, result: msg)
     }
 }
 
 @Test func testParallelToolExecution() async {
+    let recorder = OverlapRecorder()
     let registry = ToolRegistry()
-    await registry.register(DelayTool(name: "delay1"))
-    await registry.register(DelayTool(name: "delay2"))
+    await registry.register(DelayTool(name: "delay1", recorder: recorder))
+    await registry.register(DelayTool(name: "delay2", recorder: recorder))
     let dispatcher = ToolDispatcher(registry: registry)
     let state = AgentState()
 
     let call1 = AgentToolCall(name: "delay1", parameters: ["msg": AnyCodable("a")])
     let call2 = AgentToolCall(name: "delay2", parameters: ["msg": AnyCodable("b")])
 
-    let start = Date()
     let results = await dispatcher.dispatch(calls: [call1, call2], state: state, parallel: true, observer: nil)
-    let elapsed = Date().timeIntervalSince(start)
-
     #expect(results.count == 2)
-    // Parallel: ~200ms total (not ~400ms sequential)
-    #expect(elapsed < 0.35) // Should be faster than 2x200ms
+
+    // Deterministic parallelism check: the two executions overlapped in time
+    // (machine-speed independent), rather than a flaky wall-clock threshold.
+    let intervals = await recorder.intervals
+    #expect(intervals.count == 2)
+    if intervals.count == 2 {
+        let (a, b) = (intervals[0], intervals[1])
+        #expect(a.start < b.end && b.start < a.end, "tool executions should overlap when run in parallel")
+    }
 }
 
 @Test func testAgentSkillMatches() {
