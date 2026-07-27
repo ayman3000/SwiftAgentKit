@@ -1320,3 +1320,109 @@ struct TestTools {
     #expect(memory.directory.path.hasSuffix("/.testapp"))
     #expect(goal.directory.path.hasSuffix("/.testapp/goals"))
 }
+
+// MARK: - Streaming-with-tools
+
+/// URLProtocol that scripts a two-turn ReAct exchange for `StreamingScriptedProvider`.
+/// The turn/stream flags are encoded in the request URL by `prepareRequest`.
+final class StreamingScriptedURLProtocol: URLProtocol, @unchecked Sendable {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let items = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        let isStream = items.first { $0.name == "stream" }?.value == "1"
+        let isFinal = items.first { $0.name == "final" }?.value == "1"
+
+        let body: String
+        if isStream {
+            // Turn 1 (no tool result yet) signals a tool call; turn 2 streams the answer.
+            body = isFinal
+                ? "data: text Hello\ndata: text  world\ndata: done stop\n"
+                : "data: done tool_calls\n"
+        } else {
+            body = "{}" // complete() path — parseResponse branches on the request
+        }
+
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: 200, httpVersion: nil,
+            headerFields: ["Content-Type": isStream ? "text/event-stream" : "application/json"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(body.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+/// A provider that streams real chunks: turn 1 asks for the `echo` tool, turn 2
+/// streams "Hello world" as two text chunks. Exercises `runStreaming` with tools.
+struct StreamingScriptedProvider: LLMProvider {
+    static let name = "streaming-scripted-mock"
+
+    let configuration = LLMProviderConfiguration(
+        name: StreamingScriptedProvider.name,
+        baseURL: URL(string: "https://stream.mock")!,
+        apiKey: nil,
+        defaultModel: "mock"
+    )
+
+    let urlSession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [StreamingScriptedURLProtocol.self]
+        return URLSession(configuration: config)
+    }()
+
+    func prepareRequest(_ request: LLMRequest, stream: Bool) throws -> URLRequest {
+        var comps = URLComponents(string: "https://stream.mock/c")!
+        let isFinal = request.messages.contains { $0.role == .tool }
+        comps.queryItems = [
+            URLQueryItem(name: "stream", value: stream ? "1" : "0"),
+            URLQueryItem(name: "final", value: isFinal ? "1" : "0"),
+        ]
+        return URLRequest(url: comps.url!)
+    }
+
+    func parseStreamLine(_ line: String, request: LLMRequest) throws -> [LLMStreamChunk] {
+        guard line.hasPrefix("data: ") else { return [] }
+        let payload = String(line.dropFirst("data: ".count))
+        if payload.hasPrefix("text ") { return [.text(String(payload.dropFirst("text ".count)))] }
+        if payload == "done stop" { return [.finish(reason: .stop, usage: nil)] }
+        if payload == "done tool_calls" { return [.finish(reason: .toolCalls, usage: nil)] }
+        return []
+    }
+
+    func parseResponse(_ data: Data, request: LLMRequest) throws -> LLMResponse {
+        let hasToolResult = request.messages.contains { $0.role == .tool }
+        if request.tools.contains(where: { $0.name == "echo" }) && !hasToolResult {
+            return LLMResponse(
+                text: "",
+                finishReason: .toolCalls,
+                toolCalls: [LLMToolCall(name: "echo", arguments: "{\"message\":\"hi\"}")],
+                request: request,
+                providerName: Self.name
+            )
+        }
+        return LLMResponse(text: "Hello world", finishReason: .stop, request: request, providerName: Self.name)
+    }
+}
+
+@Test func testRunStreamingStreamsFinalAnswerAfterToolCall() async throws {
+    let agent = Agent(config: AgentConfig(
+        provider: StreamingScriptedProvider(),
+        model: "mock",
+        maxTurns: 4
+    ))
+    agent.register(EchoTool())
+
+    var chunks: [String] = []
+    for try await chunk in agent.runStreaming("please echo something") {
+        chunks.append(chunk)
+    }
+
+    // The final answer arrived token-by-token (not a single post-hoc chunk)...
+    #expect(chunks.count >= 2)
+    // ...and reconstructs to the streamed answer, after the tool turn ran.
+    #expect(chunks.joined() == "Hello world")
+}
