@@ -1578,6 +1578,28 @@ private func firstArtifactID(in text: String) -> String? {
     }
 }
 
+@Test func testContextManagerDoesNotRetruncateArtifactReads() async {
+    // Small active bound so a normal result would be truncated…
+    let manager = ContextManager(maxActiveResultChars: 40)
+    let bigRead = String(repeating: "y", count: 500) + " READ_TAIL"
+
+    // Active exchange = an artifact_read the model just issued.
+    let messages: [AgentMessage] = [
+        .user("show me the full listing"),
+        .assistant(content: "", toolCalls: [AgentToolCall(id: "r1", name: "artifact_read")]),
+        .tool(results: [.success(toolCallId: "r1", toolName: "artifact_read", result: bigRead)]),
+    ]
+
+    let out = await manager.modelMessages(messages) { $0 }
+
+    // Retrieval output must be shown IN FULL — not re-truncated / re-spilled,
+    // otherwise the model loops calling artifact_read forever.
+    let toolMsg = out.first { $0.role == .tool }
+    #expect(toolMsg != nil)
+    #expect(toolMsg?.content.contains("READ_TAIL") == true)
+    #expect(toolMsg?.content.contains("truncated") == false)
+}
+
 @Test func testContextManagerKeepsActiveExchange() async {
     let manager = ContextManager()
     // Conversation ends on a tool result the model still needs to act on.
