@@ -692,6 +692,35 @@ struct TestScene: Codable, Equatable {
     #expect(snap["key1"] as? String == "a")
 }
 
+@Test func testAgentStateMutateIsAtomicUnderConcurrency() async {
+    let state = AgentState()
+    let n = 2000
+    // Many concurrent read-modify-write increments — atomic `mutate` must not
+    // lose any (a naive get-then-set would).
+    await withTaskGroup(of: Void.self) { group in
+        for _ in 0..<n {
+            group.addTask { state.mutate(forKey: "count", default: 0) { $0 += 1 } }
+        }
+    }
+    #expect(state.int(forKey: "count") == n)
+}
+
+@Test func testAgentStateConcurrentAccessIsSafe() async {
+    let state = AgentState()
+    // Hammer reads, writes, snapshots, and mutates concurrently — must not crash
+    // or corrupt (proves the internal lock covers every path).
+    await withTaskGroup(of: Void.self) { group in
+        for i in 0..<600 {
+            group.addTask { state.setValue(i, forKey: "k\(i % 8)") }
+            group.addTask { _ = state.snapshot() }
+            group.addTask { _ = state.value(forKey: "k\(i % 8)") }
+            group.addTask { state.mutate(forKey: "hits", default: 0) { $0 += 1 } }
+        }
+    }
+    #expect(state.int(forKey: "hits") == 600)
+    #expect(state.snapshot().keys.count <= 9)  // k0…k7 + hits
+}
+
 // MARK: - ToolContext Tests
 
 @Test func testToolContextAccess() {

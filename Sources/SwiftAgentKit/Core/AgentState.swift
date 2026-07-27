@@ -15,6 +15,11 @@ import Foundation
 /// This is the agent's "scratchpad" — tools can write data here and other
 /// tools (or the next turn's LLM call) can read it back.
 ///
+/// **Concurrency:** every accessor is guarded by an internal lock, so reads and
+/// writes are individually safe from parallel tool dispatch (hence the audited
+/// `@unchecked Sendable`). For a compound read-modify-write across concurrent
+/// tools, use `mutate(forKey:default:_:)` so the update is atomic.
+///
 /// State scoping is by key prefix (same as ADK):
 /// - `app:key` → app-wide (persists across sessions)
 /// - `user:key` → user-wide (persists across sessions for the same user)
@@ -72,6 +77,24 @@ public final class AgentState: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         storage.removeValue(forKey: key)
+    }
+
+    /// Atomically read-modify-write a value under the lock.
+    ///
+    /// The individual accessors are each thread-safe, but a *compound* update
+    /// (read, then write) done by a caller is not — two tools running in parallel
+    /// could both read the old value and one write is lost. Use this to update the
+    /// same key safely from concurrent tools, e.g.:
+    ///
+    /// ```swift
+    /// state.mutate(forKey: "seen", default: [String]()) { $0.append(id) }
+    /// ```
+    public func mutate<T>(forKey key: String, default defaultValue: T, _ transform: (inout T) -> Void) {
+        lock.lock()
+        defer { lock.unlock() }
+        var current = (storage[key] as? T) ?? defaultValue
+        transform(&current)
+        storage[key] = current
     }
 
     // MARK: - Snapshot
