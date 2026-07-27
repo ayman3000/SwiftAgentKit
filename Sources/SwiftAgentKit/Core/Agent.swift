@@ -1079,6 +1079,12 @@ public final class Agent: @unchecked Sendable {
     ///   text, but on the final turn the original deltas have already been
     ///   streamed — so a rewrite won't retroactively change what the caller saw.
     public func runStreaming(_ query: String) -> AsyncThrowingStream<String, Error> {
+        runStreaming(query, images: [])
+    }
+
+    /// Streaming variant that accepts images for vision-capable models. The images
+    /// are attached to the user turn; the rest of the ReAct loop is identical.
+    public func runStreaming(_ query: String, images: [LLMImage]) -> AsyncThrowingStream<String, Error> {
         return AsyncThrowingStream { [weak self] continuation in
             let task = Task { [weak self] in
                 guard let self else {
@@ -1088,7 +1094,7 @@ public final class Agent: @unchecked Sendable {
                 do {
                     _ = try await self.runLoop(
                         query: query,
-                        images: [],
+                        images: images,
                         onText: { continuation.yield($0) }
                     )
                     continuation.finish()
