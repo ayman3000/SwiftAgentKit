@@ -139,6 +139,33 @@ final class MCPManagerTests: XCTestCase {
         }
     }
 
+    /// Live: connect to a real filesystem MCP server via stdio and verify tools
+    /// are bridged. Gated on SAK_LIVE_TESTS=1 (needs npx; pre-warm the package so
+    /// the connect completes within the default handshake timeout).
+    ///   SAK_LIVE_TESTS=1 swift test --filter testLiveConnectsFilesystemServer
+    func testLiveConnectsFilesystemServer() async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["SAK_LIVE_TESTS"] == "1")
+
+        let manager = MCPManager()
+        defer { Task { await manager.disconnectAll() } }
+
+        let tmp = NSTemporaryDirectory()
+        _ = try await manager.connect(.stdio(
+            command: "npx",
+            args: ["-y", "@modelcontextprotocol/server-filesystem", tmp]
+        ))
+
+        let servers = await manager.connectedServers()
+        XCTAssertFalse(servers.isEmpty, "expected a connected server")
+
+        let tools = try await manager.bridgedTools()
+        XCTAssertFalse(tools.isEmpty, "expected bridged tools from the filesystem server")
+        XCTAssertTrue(
+            tools.contains { $0.name.contains("directory") || $0.name.contains("file") },
+            "expected a file/directory tool, got: \(tools.map(\.name))"
+        )
+    }
+
     func testExecutableResolverReportsMissingCommand() {
         XCTAssertThrowsError(
             try MCPExecutableResolver.resolve(
