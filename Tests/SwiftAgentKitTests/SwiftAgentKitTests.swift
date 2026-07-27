@@ -330,6 +330,34 @@ struct TestScene: Codable, Equatable {
     #expect(json != nil)
 }
 
+@Test func testStructuredOutputParseSingleLineFence() throws {
+    // Opening fence with no trailing newline used to defeat fence stripping.
+    let json = #"```json {"title": "Inline", "items": ["a"]} ```"#
+    let scene = try StructuredOutput<TestScene>.parse(from: json)
+    #expect(scene.title == "Inline")
+    #expect(scene.items == ["a"])
+}
+
+@Test func testStructuredOutputParseJSONContainingBackticks() throws {
+    // A string value containing ``` must not truncate extraction.
+    let json = #"{"title": "```code```", "items": ["x"]}"#
+    let scene = try StructuredOutput<TestScene>.parse(from: json)
+    #expect(scene.title == "```code```")
+}
+
+@Test func testStructuredOutputParseRootArray() throws {
+    let json = """
+    Here you go:
+    ```json
+    [{"title": "One", "items": []}, {"title": "Two", "items": ["z"]}]
+    ```
+    """
+    let scenes = try StructuredOutput<[TestScene]>.parse(from: json)
+    #expect(scenes.count == 2)
+    #expect(scenes[0].title == "One")
+    #expect(scenes[1].items == ["z"])
+}
+
 // MARK: - Planning Tests
 
 @Test func testAgentPlanStep() {
@@ -920,6 +948,13 @@ struct TestTools {
     func checkActive(active: Bool) async throws -> String {
         active ? "active" : "inactive"
     }
+
+    // A description containing a double-quote and a backslash — this only
+    // compiles if the macro escapes the description in the generated literal.
+    @Tool("Wrap text in \"quotes\" using a \\ backslash.")
+    func wrapQuoted(text: String) async throws -> String {
+        "\"\(text)\""
+    }
 }
 
 @Test func testToolMacroNoParams() async throws {
@@ -997,6 +1032,16 @@ struct TestTools {
     ))
     agent.register(tool)
     #expect(Bool(true))
+}
+
+@Test func testToolMacroHandlesEscapedDescription() async throws {
+    // A @Tool description containing escaped quotes and a backslash must
+    // survive macro expansion and compile — this guards the description
+    // passthrough. The expectation mirrors the source literal exactly.
+    let tool = TestTools().wrapQuotedTool()
+    #expect(tool.description == "Wrap text in \"quotes\" using a \\ backslash.")
+    let result = try await tool.execute(parameters: ["text": "hi"])
+    #expect(result.result == "\"hi\"")
 }
 
 @Test func testAgentConfigToolsAutoRegistration() async throws {

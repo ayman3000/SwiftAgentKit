@@ -156,7 +156,9 @@ public final class FileAgentGoalStore: AgentGoalStore, @unchecked Sendable {
 
     public func save(_ goal: AgentGoal) async throws {
         let data = try JSONEncoder().encode(goal)
-        try data.write(to: url(for: goal.id))
+        // Atomic write: avoids a truncated/corrupt goal file on crash or
+        // concurrent save (matching FileAgentMemoryStore / FileSessionStore).
+        try data.write(to: url(for: goal.id), options: .atomic)
     }
 
     public func load(id: String) async throws -> AgentGoal? {

@@ -16,22 +16,29 @@ public struct MCPToolBridge: AgentTool {
 
     private let client: Client
     private let serverName: String
+    private let timeout: TimeInterval
 
-    init(tool: Tool, client: Client, serverName: String) {
+    init(tool: Tool, client: Client, serverName: String, timeout: TimeInterval = 120) {
         self.name = tool.name
         self.description = tool.description ?? ""
         self.client = client
         self.serverName = serverName
         self.parameters = MCPToolBridge.convertSchema(tool.inputSchema)
         self.requiresConfirmation = false
+        self.timeout = timeout
     }
 
     public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
-        var arguments: [String: Value] = [:]
+        var mutableArguments: [String: Value] = [:]
         for (key, value) in parameters {
-            arguments[key] = MCPToolBridge.convertAnyToValue(value)
+            mutableArguments[key] = MCPToolBridge.convertAnyToValue(value)
         }
-        let (content, isError) = try await client.callTool(name: name, arguments: arguments)
+        let arguments = mutableArguments
+        let toolName = name
+        let mcpClient = client
+        let (content, isError) = try await withMCPTimeout(timeout) {
+            try await mcpClient.callTool(name: toolName, arguments: arguments)
+        }
 
         // Extract text from content items
         let textParts = content.compactMap { item -> String? in
@@ -95,9 +102,12 @@ public struct MCPToolBridge: AgentTool {
     /// Convert `Any` to MCP's `Value`.
     private static func convertAnyToValue(_ value: Any) -> Value {
         if let s = value as? String { return .string(s) }
+        // Check Bool before Int/Double: a JSON boolean bridged through
+        // NSNumber (e.g. via JSONSerialization) also satisfies `as? Int`,
+        // which would silently send 1/0 instead of true/false.
+        if let b = value as? Bool { return .bool(b) }
         if let i = value as? Int { return .int(i) }
         if let d = value as? Double { return .double(d) }
-        if let b = value as? Bool { return .bool(b) }
         if let arr = value as? [Any] { return .array(arr.map { convertAnyToValue($0) }) }
         if let dict = value as? [String: Any] {
             var v: [String: Value] = [:]

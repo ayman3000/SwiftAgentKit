@@ -118,6 +118,27 @@ final class MCPManagerTests: XCTestCase {
         )
     }
 
+    func testWithMCPTimeoutReturnsFastResult() async throws {
+        let value = try await withMCPTimeout(5) { 42 }
+        XCTAssertEqual(value, 42)
+    }
+
+    func testWithMCPTimeoutThrowsOnSlowOperation() async {
+        do {
+            _ = try await withMCPTimeout(0.05) {
+                try await Task.sleep(nanoseconds: 2_000_000_000) // 2s, well past the 50ms timeout
+                return 1
+            }
+            XCTFail("Expected a timeout error")
+        } catch let error as MCPManagerError {
+            if case .timedOut = error { /* expected */ } else {
+                XCTFail("Expected .timedOut, got \(error)")
+            }
+        } catch {
+            XCTFail("Expected MCPManagerError.timedOut, got \(error)")
+        }
+    }
+
     func testExecutableResolverReportsMissingCommand() {
         XCTAssertThrowsError(
             try MCPExecutableResolver.resolve(
