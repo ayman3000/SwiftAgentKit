@@ -1468,6 +1468,27 @@ final class StreamingEventFlags: @unchecked Sendable {
     #expect(seen.finished)
 }
 
+@Test func testRemoveObserverStopsEventDelivery() async throws {
+    let agent = Agent(config: AgentConfig(
+        provider: StreamingScriptedProvider(),
+        model: "mock",
+        maxTurns: 4
+    ))
+    agent.register(EchoTool())
+
+    let flags = StreamingEventFlags()
+    let token = agent.onEvent { flags.record($0) }
+    // Remove immediately — the observer must receive no events.
+    agent.removeObserver(token)
+
+    for try await _ in agent.runStreaming("please echo something") {}
+
+    let seen = flags.snapshot
+    #expect(!seen.toolCalls)
+    #expect(!seen.streamChunk)
+    #expect(!seen.finished)
+}
+
 // MARK: - Live model smoke test (gated)
 
 /// A real tool the model must call to answer correctly.
