@@ -34,8 +34,24 @@ public class Conversation: @unchecked Sendable {
     /// Maximum messages to keep (0 = unlimited).
     public var maxMessages: Int
 
-    /// Token estimation: characters per token (heuristic, ~4 chars/token).
-    public var charsPerToken: Double = 4.0
+    /// Token estimation: characters per token for the built-in heuristic.
+    ///
+    /// Defaults to a deliberately conservative 3.5 (rather than the looser ~4)
+    /// so trimming errs toward staying *under* the real context window — code,
+    /// JSON, and non-ASCII text are denser than plain English prose. For exact
+    /// counts, set `tokenCounter` instead.
+    public var charsPerToken: Double = 3.5
+
+    /// Per-message framing overhead added by the built-in heuristic (role marker,
+    /// message delimiters, etc.). Providers add a handful of tokens per message
+    /// on top of the content itself.
+    public var tokensPerMessageOverhead: Int = 4
+
+    /// Optional exact/custom token counter. When set, it overrides the built-in
+    /// heuristic used for context-window trimming — plug in a provider tokenizer
+    /// (or cached results from a provider's count-tokens endpoint) for precise
+    /// trimming. Must be synchronous; do not call the network from here.
+    public var tokenCounter: (@Sendable (AgentMessage) -> Int)?
 
     /// Reserve tokens for the model's output (so history doesn't consume the entire window).
     public var outputReserve: Int = 2048
@@ -131,7 +147,14 @@ public class Conversation: @unchecked Sendable {
     // MARK: - Token Estimation
 
     /// Estimate the token count for a message (including tool calls/results).
+    ///
+    /// Uses `tokenCounter` when set (exact), otherwise a conservative heuristic:
+    /// `ceil(characterCount / charsPerToken) + tokensPerMessageOverhead`.
     public func estimateTokens(_ message: AgentMessage) -> Int {
+        if let tokenCounter {
+            return tokenCounter(message)
+        }
+
         var chars = message.content.count
 
         if let toolCalls = message.toolCalls {
@@ -150,7 +173,7 @@ public class Conversation: @unchecked Sendable {
             }
         }
 
-        return Int(ceil(Double(chars) / charsPerToken))
+        return Int(ceil(Double(chars) / charsPerToken)) + tokensPerMessageOverhead
     }
 
     /// Estimate total tokens for a message array.
