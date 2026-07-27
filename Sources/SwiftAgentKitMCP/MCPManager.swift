@@ -15,6 +15,13 @@ public actor MCPManager {
 
     private var connections: [MCPConnection] = []
 
+    /// Timeout (seconds) for the initial connect/handshake with an MCP server.
+    public var connectTimeout: TimeInterval = 30
+
+    /// Timeout (seconds) for individual MCP requests (listTools, listResources,
+    /// readResource). Tool-call timeouts are configured on `MCPToolBridge`.
+    public var requestTimeout: TimeInterval = 60
+
     public init() {}
 
     /// Connect to an MCP server using the given configuration.
@@ -46,7 +53,9 @@ public actor MCPManager {
             let stdoutPipe = Pipe()
             proc.standardInput = stdinPipe
             proc.standardOutput = stdoutPipe
-            proc.standardError = Pipe()  // swallow stderr
+            // Discard stderr via /dev/null. A plain unread `Pipe()` would fill its
+            // ~64KB OS buffer on a chatty server and block the server's writes.
+            proc.standardError = FileHandle.nullDevice
 
             try proc.run()
 
@@ -65,21 +74,31 @@ public actor MCPManager {
             transport = HTTPClientTransport(endpoint: endpoint)
         }
 
-        let result = try await client.connect(transport: transport)
-        let info = MCPServerInfo(
-            name: result.serverInfo.name,
-            version: result.serverInfo.version
-        )
+        // Bound the handshake and clean up the spawned process if it fails or
+        // times out — otherwise a server that never completes initialization
+        // would hang the caller forever and leak the child process.
+        do {
+            let result = try await withMCPTimeout(connectTimeout) {
+                try await client.connect(transport: transport)
+            }
+            let info = MCPServerInfo(
+                name: result.serverInfo.name,
+                version: result.serverInfo.version
+            )
 
-        connections.append(MCPConnection(
-            client: client,
-            transport: transport,
-            serverName: result.serverInfo.name,
-            config: config,
-            process: process
-        ))
+            connections.append(MCPConnection(
+                client: client,
+                transport: transport,
+                serverName: result.serverInfo.name,
+                config: config,
+                process: process
+            ))
 
-        return info
+            return info
+        } catch {
+            process?.terminate()
+            throw error
+        }
     }
 
     /// Disconnect from a specific MCP server by name.
@@ -105,7 +124,9 @@ public actor MCPManager {
     public func bridgedTools() async throws -> [any AgentTool] {
         var tools: [any AgentTool] = []
         for conn in connections {
-            let (mcpTools, _) = try await conn.client.listTools()
+            let (mcpTools, _) = try await withMCPTimeout(requestTimeout) {
+                try await conn.client.listTools()
+            }
             for tool in mcpTools {
                 tools.append(MCPToolBridge(tool: tool, client: conn.client, serverName: conn.serverName))
             }
@@ -128,7 +149,9 @@ public actor MCPManager {
     public func listResources() async throws -> [MCPResourceInfo] {
         var resources: [MCPResourceInfo] = []
         for conn in connections {
-            let (mcpResources, _) = try await conn.client.listResources()
+            let (mcpResources, _) = try await withMCPTimeout(requestTimeout) {
+                try await conn.client.listResources()
+            }
             for res in mcpResources {
                 resources.append(MCPResourceInfo(
                     uri: res.uri,
@@ -142,14 +165,24 @@ public actor MCPManager {
     }
 
     /// Read a resource from the MCP server that provides it.
+    ///
+    /// Servers that don't own the URI typically throw; we swallow per-server
+    /// errors and try the next connection so one server's "unknown resource"
+    /// doesn't mask a resource owned by another.
     public func readResource(uri: String) async throws -> String {
         for conn in connections {
-            let contents = try await conn.client.readResource(uri: uri)
-            var text = ""
-            for content in contents {
-                if let t = content.text { text += t }
+            do {
+                let contents = try await withMCPTimeout(requestTimeout) {
+                    try await conn.client.readResource(uri: uri)
+                }
+                var text = ""
+                for content in contents {
+                    if let t = content.text { text += t }
+                }
+                if !text.isEmpty { return text }
+            } catch {
+                continue
             }
-            if !text.isEmpty { return text }
         }
         throw MCPManagerError.resourceNotFound(uri)
     }
@@ -190,6 +223,7 @@ public struct MCPResourceInfo: Sendable {
 public enum MCPManagerError: Error, LocalizedError {
     case executableNotFound(String)
     case resourceNotFound(String)
+    case timedOut(TimeInterval)
 
     public var errorDescription: String? {
         switch self {
@@ -197,7 +231,33 @@ public enum MCPManagerError: Error, LocalizedError {
             return "MCP executable not found: \(command). Install it or provide an absolute path."
         case .resourceNotFound(let uri):
             return "MCP resource not found: \(uri)"
+        case .timedOut(let seconds):
+            return "MCP request timed out after \(Int(seconds))s."
         }
+    }
+}
+
+// MARK: - Timeout helper
+
+/// Run an async MCP operation with a wall-clock timeout. If it doesn't finish
+/// in `seconds`, the operation task is cancelled and `MCPManagerError.timedOut`
+/// is thrown. The MCP SDK exposes no per-request timeout, and a stdio server
+/// that hangs (or never answers a request) would otherwise block forever.
+func withMCPTimeout<T: Sendable>(
+    _ seconds: TimeInterval,
+    operation: @escaping @Sendable () async throws -> T
+) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask { try await operation() }
+        group.addTask {
+            try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            throw MCPManagerError.timedOut(seconds)
+        }
+        defer { group.cancelAll() }
+        guard let result = try await group.next() else {
+            throw MCPManagerError.timedOut(seconds)
+        }
+        return result
     }
 }
 

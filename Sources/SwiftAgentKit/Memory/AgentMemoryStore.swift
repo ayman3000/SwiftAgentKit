@@ -96,6 +96,11 @@ public final class FileAgentMemoryStore: AgentMemoryStore, @unchecked Sendable {
 
     public let directory: URL
     private let fileManager = FileManager.default
+    /// Serializes mutating operations so concurrent `save`/`delete` calls don't
+    /// race on read-modify-write of USER.md and the MEMORY.md index (which would
+    /// lose writes or corrupt the index). Safe to hold across these methods
+    /// because their bodies perform only synchronous file I/O (no `await`).
+    private let lock = NSLock()
 
     /// Create a memory store rooted at the given directory.
     public init(directory: URL) {
@@ -147,35 +152,43 @@ public final class FileAgentMemoryStore: AgentMemoryStore, @unchecked Sendable {
     // MARK: - AgentMemoryStore
 
     public func save(_ entry: AgentMemoryEntry) async throws {
-        seedIfNeeded()
+        // Scoped lock (no `await` inside) serializes the read-modify-write of
+        // USER.md and the MEMORY.md index against concurrent save/delete calls.
+        try lock.withLock {
+            seedIfNeeded()
 
-        switch entry.kind {
-        case .agent:
-            let body = "# \(entry.title)\n\n\(entry.content)\n"
-            try body.write(to: agentURL, atomically: true, encoding: .utf8)
+            switch entry.kind {
+            case .agent:
+                let body = "# \(entry.title)\n\n\(entry.content)\n"
+                try body.write(to: agentURL, atomically: true, encoding: .utf8)
 
-        case .user:
-            let line = "- **\(entry.title):** \(entry.content)\n"
-            let existing = (try? String(contentsOf: userURL, encoding: .utf8)) ?? Self.defaultUserSoul
-            try (existing + line).write(to: userURL, atomically: true, encoding: .utf8)
+            case .user:
+                let line = "- **\(entry.title):** \(entry.content)\n"
+                let existing = (try? String(contentsOf: userURL, encoding: .utf8)) ?? Self.defaultUserSoul
+                try (existing + line).write(to: userURL, atomically: true, encoding: .utf8)
 
-        case .fact:
-            let slug = Self.slugify(entry.title)
-            let fileURL = memoryDirectory.appendingPathComponent("\(slug).md")
-            let body = "# \(entry.title)\n\n\(entry.content)\n"
-            try body.write(to: fileURL, atomically: true, encoding: .utf8)
-            addIndexLine(title: entry.title, slug: slug)
+            case .fact:
+                let slug = Self.slugify(entry.title)
+                let fileURL = memoryDirectory.appendingPathComponent("\(slug).md")
+                let body = "# \(entry.title)\n\n\(entry.content)\n"
+                try body.write(to: fileURL, atomically: true, encoding: .utf8)
+                addIndexLine(title: entry.title, slug: slug)
+            }
         }
     }
 
     public func delete(id: String) async throws {
-        // File store IDs are derived from titles; delete by slug for facts.
-        let slug = Self.slugify(id)
-        let fileURL = memoryDirectory.appendingPathComponent("\(slug).md")
-        if fileManager.fileExists(atPath: fileURL.path) {
-            try fileManager.removeItem(at: fileURL)
+        try lock.withLock {
+            // File store IDs are derived from titles; delete by slug for facts.
+            // NOTE: fact files are named by *title* slug, so callers must pass the
+            // entry's title here (not its UUID `id`) for the delete to match.
+            let slug = Self.slugify(id)
+            let fileURL = memoryDirectory.appendingPathComponent("\(slug).md")
+            if fileManager.fileExists(atPath: fileURL.path) {
+                try fileManager.removeItem(at: fileURL)
+            }
+            removeIndexLine(slug: slug)
         }
-        removeIndexLine(slug: slug)
     }
 
     public func loadAll() async throws -> [AgentMemoryEntry] {

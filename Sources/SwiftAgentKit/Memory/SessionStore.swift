@@ -53,7 +53,9 @@ public final class FileSessionStore: SessionStore, @unchecked Sendable {
     public func save(sessionId: String, messages: [AgentMessage]) async throws {
         let url = directory.appendingPathComponent("\(sanitize(sessionId)).json")
         let data = try JSONEncoder().encode(messages)
-        try data.write(to: url)
+        // Atomic write: a crash or concurrent write mid-save would otherwise
+        // leave a truncated JSON file that fails to decode on next launch.
+        try data.write(to: url, options: .atomic)
     }
 
     public func load(sessionId: String) async throws -> [AgentMessage]? {

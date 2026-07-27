@@ -30,7 +30,7 @@ public enum StructuredOutput<T: Decodable> {
     /// - Parameter text: The raw LLM response text (may contain markdown fences, prose, etc.)
     /// - Returns: The decoded value
     public static func parse(from text: String) throws -> T {
-        let jsonStr = extractJSONObject(from: text) ?? text
+        let jsonStr = extractJSON(from: text) ?? text
         guard let data = jsonStr.data(using: .utf8) else {
             throw StructuredOutputError.invalidJSON(text)
         }
@@ -45,89 +45,52 @@ public enum StructuredOutput<T: Decodable> {
         try parse(from: response.text)
     }
 
-    /// Extract the first complete JSON object from a string using brace matching.
+    /// Extract the first complete top-level JSON value — object *or* array —
+    /// from a string, whichever delimiter appears first.
     ///
-    /// Handles:
-    /// - Markdown code fences (```json ... ```)
-    /// - Surrounding prose before/after the JSON
-    /// - Strings containing braces (won't break depth counting)
-    /// - Escaped characters in strings
-    ///
-    public static func extractJSONObject(from raw: String) -> String? {
-        var text = raw
+    /// This is what `parse` uses, so root-level JSON arrays (`T == [Foo]`) work
+    /// as well as objects. Balanced matching skips surrounding prose and markdown
+    /// code fences naturally: the scan starts at the first `{`/`[` and stops at
+    /// its matching close, so leading ```` ```json ```` and a trailing ```` ``` ````
+    /// fall outside the returned range without any fragile fence stripping (which
+    /// previously mis-truncated single-line fences and JSON containing ```` ``` ````).
+    public static func extractJSON(from raw: String) -> String? {
+        let objectStart = raw.firstIndex(of: "{")
+        let arrayStart = raw.firstIndex(of: "[")
 
-        // Strip markdown code fences
-        if text.contains("```") {
-            if let startRange = text.range(of: "```json\n") {
-                text = String(text[startRange.upperBound...])
-            } else if let startRange = text.range(of: "```\n") {
-                text = String(text[startRange.upperBound...])
-            }
-            if let endRange = text.range(of: "```") {
-                text = String(text[..<endRange.lowerBound])
-            }
+        switch (objectStart, arrayStart) {
+        case let (obj?, arr?):
+            return obj < arr
+                ? extractBalanced(in: raw, from: obj, open: "{", close: "}")
+                : extractBalanced(in: raw, from: arr, open: "[", close: "]")
+        case let (obj?, nil):
+            return extractBalanced(in: raw, from: obj, open: "{", close: "}")
+        case let (nil, arr?):
+            return extractBalanced(in: raw, from: arr, open: "[", close: "]")
+        case (nil, nil):
+            return nil
         }
-
-        guard let startIdx = text.firstIndex(of: "{") else { return nil }
-
-        var depth = 0
-        var inString = false
-        var escape = false
-        var idx = startIdx
-
-        while idx < text.endIndex {
-            let char = text[idx]
-
-            if escape {
-                escape = false
-                idx = text.index(after: idx)
-                continue
-            }
-
-            if char == "\\" {
-                escape = true
-                idx = text.index(after: idx)
-                continue
-            }
-
-            if char == "\"" {
-                inString.toggle()
-            }
-
-            if !inString {
-                if char == "{" { depth += 1 }
-                if char == "}" {
-                    depth -= 1
-                    if depth == 0 {
-                        return String(text[startIdx...idx])
-                    }
-                }
-            }
-
-            idx = text.index(after: idx)
-        }
-
-        return nil
     }
 
-    /// Extract a JSON array from a string using bracket matching.
+    /// Extract the first complete JSON object using brace matching.
+    public static func extractJSONObject(from raw: String) -> String? {
+        guard let start = raw.firstIndex(of: "{") else { return nil }
+        return extractBalanced(in: raw, from: start, open: "{", close: "}")
+    }
+
+    /// Extract the first complete JSON array using bracket matching.
     public static func extractJSONArray(from raw: String) -> String? {
-        var text = raw
+        guard let start = raw.firstIndex(of: "[") else { return nil }
+        return extractBalanced(in: raw, from: start, open: "[", close: "]")
+    }
 
-        // Strip markdown code fences
-        if text.contains("```") {
-            if let startRange = text.range(of: "```json\n") {
-                text = String(text[startRange.upperBound...])
-            } else if let startRange = text.range(of: "```\n") {
-                text = String(text[startRange.upperBound...])
-            }
-            if let endRange = text.range(of: "```") {
-                text = String(text[..<endRange.lowerBound])
-            }
-        }
-
-        guard let startIdx = text.firstIndex(of: "[") else { return nil }
-
+    /// Balanced-delimiter scan honoring JSON string literals and escapes.
+    private static func extractBalanced(
+        in text: String,
+        from startIdx: String.Index,
+        open: Character,
+        close: Character
+    ) -> String? {
         var depth = 0
         var inString = false
         var escape = false
@@ -141,20 +104,17 @@ public enum StructuredOutput<T: Decodable> {
                 idx = text.index(after: idx)
                 continue
             }
-
             if char == "\\" {
                 escape = true
                 idx = text.index(after: idx)
                 continue
             }
-
             if char == "\"" {
                 inString.toggle()
             }
-
             if !inString {
-                if char == "[" { depth += 1 }
-                if char == "]" {
+                if char == open { depth += 1 }
+                if char == close {
                     depth -= 1
                     if depth == 0 {
                         return String(text[startIdx...idx])

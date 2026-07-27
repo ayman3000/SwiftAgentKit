@@ -1,8 +1,17 @@
 import Foundation
 import SwiftCompilerPlugin
+import SwiftDiagnostics
 import SwiftSyntax
 import SwiftSyntaxBuilder
 import SwiftSyntaxMacros
+
+/// A compile-time diagnostic emitted by `@Tool` for unsupported usage.
+struct ToolMacroDiagnostic: DiagnosticMessage {
+    let message: String
+    let diagnosticID = MessageID(domain: "SwiftAgentKitMacros", id: "ToolMacro")
+    let severity: DiagnosticSeverity = .error
+    init(_ message: String) { self.message = message }
+}
 
 /// Entry point for the SwiftAgentKit macro plugin.
 @main
@@ -68,12 +77,40 @@ public struct ToolMacro: PeerMacro {
         var paramExtractions: [String] = []
 
         for param in params {
+            // The generator uses `firstName` as both the JSON schema key and the
+            // Swift identifier, and passes arguments by that label. That only holds
+            // for a simple `label: Type` parameter — reject shapes it can't handle
+            // instead of emitting uncompilable code.
+            if param.firstName.text == "_" || param.secondName != nil {
+                context.diagnose(Diagnostic(
+                    node: Syntax(param),
+                    message: ToolMacroDiagnostic(
+                        "@Tool parameters must use a simple label, e.g. `func f(x: Int)`. "
+                        + "Wildcard `_` labels and separate external/internal names "
+                        + "(`func f(with x: Int)`) are not supported.")
+                ))
+                return []
+            }
+
             let paramName = param.firstName.text
             let paramType = param.type.trimmedDescription
 
-            let schemaType = swiftTypeToSchema(paramType)
+            // Only types whose extraction cast matches the closure parameter type
+            // are supported; anything else (optionals, arrays, enums, Int32/Float,
+            // custom types) would generate code that doesn't compile.
+            guard let schemaType = swiftTypeToSchema(paramType) else {
+                context.diagnose(Diagnostic(
+                    node: Syntax(param.type),
+                    message: ToolMacroDiagnostic(
+                        "@Tool does not support the parameter type `\(paramType)`. "
+                        + "Supported types: String, Int, Double, Bool. "
+                        + "(Optionals, arrays, enums, and custom types are not yet supported.)")
+                ))
+                return []
+            }
+
             // Extract DocC comment if present
-            let paramDesc = extractDocCComment(for: paramName, from: funcDecl) ?? "\(paramName)"
+            let paramDesc = extractDocCComment(for: paramName, from: funcDecl) ?? paramName
 
             properties.append("""
             "\(paramName)": ToolParameterProperty(type: "\(schemaType)", description: "\(paramDesc)")
@@ -82,16 +119,17 @@ public struct ToolMacro: PeerMacro {
             requiredParams.append("\"\(paramName)\"")
 
             // Generate extraction code based on type
-            if schemaType == "string" {
+            switch schemaType {
+            case "string":
                 paramExtractions.append("let \(paramName) = context.parameters[\"\(paramName)\"] as? String ?? \"\"")
-            } else if schemaType == "integer" {
+            case "integer":
                 paramExtractions.append("let \(paramName) = context.parameters[\"\(paramName)\"] as? Int ?? 0")
-            } else if schemaType == "number" {
+            case "number":
                 paramExtractions.append("let \(paramName) = context.parameters[\"\(paramName)\"] as? Double ?? 0.0")
-            } else if schemaType == "boolean" {
+            case "boolean":
                 paramExtractions.append("let \(paramName) = context.parameters[\"\(paramName)\"] as? Bool ?? false")
-            } else {
-                paramExtractions.append("let \(paramName) = context.parameters[\"\(paramName)\"] as? String ?? \"\"")
+            default:
+                break
             }
         }
 
@@ -194,15 +232,16 @@ public struct ToolMacro: PeerMacro {
         return result
     }
 
-    /// Map Swift types to JSON Schema types
-    private static func swiftTypeToSchema(_ swiftType: String) -> String {
+    /// Map a Swift type to a JSON Schema type. Returns `nil` for types the
+    /// generator can't currently produce compilable extraction code for — only
+    /// types whose `as?` cast matches the closure parameter type are supported.
+    private static func swiftTypeToSchema(_ swiftType: String) -> String? {
         switch swiftType {
         case "String": return "string"
-        case "Int", "Int32", "Int64": return "integer"
-        case "Double", "Float": return "number"
+        case "Int": return "integer"
+        case "Double": return "number"
         case "Bool": return "boolean"
-        case "[String]": return "array"
-        default: return "string"
+        default: return nil
         }
     }
 
