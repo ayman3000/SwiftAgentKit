@@ -34,9 +34,14 @@ public final class ContextManager: @unchecked Sendable {
     private let lock = NSLock()
     private var receiptCache: [String: ToolReceipt] = [:]
 
+    /// Tools whose output IS the retrieval mechanism — never re-truncate or
+    /// re-spill their results, or the model loops calling them to "get the full
+    /// output" that keeps getting bounded.
+    private static let retrievalToolNames: Set<String> = ["artifact_read", "artifact_search"]
+
     public init(
         store: any ArtifactStore = InMemoryArtifactStore(),
-        maxActiveResultChars: Int = 2_000,
+        maxActiveResultChars: Int = 8_000,
         ledgerEntries: Int = 20,
         summaryLength: Int = 200
     ) {
@@ -146,7 +151,9 @@ public final class ContextManager: @unchecked Sendable {
         let name = result.toolName ?? "tool"
         let summary = singleLine(String(result.result.prefix(summaryLength)))
         var artifactIDs: [String] = []
-        if result.result.count > summaryLength {
+        // Don't spill retrieval-tool output to a new artifact — that would nest
+        // artifacts of artifacts and never surface the real content.
+        if result.result.count > summaryLength && !Self.retrievalToolNames.contains(name) {
             let artifact = await store.save(result.result, description: "\(name) output", toolCallID: result.toolCallId)
             artifactIDs = [artifact.id]
         }
@@ -166,7 +173,10 @@ public final class ContextManager: @unchecked Sendable {
     private func activeDisplay(for result: AgentToolResult) async -> String {
         let name = result.toolName ?? "tool"
         let status = result.isError ? "ERROR" : "OK"
-        if result.result.count <= maxActiveResultChars {
+        // Retrieval-tool output is how full content gets surfaced — show it in
+        // full (the tool already pages via offset/limit); truncating it here is
+        // self-defeating and makes the model loop calling artifact_read.
+        if Self.retrievalToolNames.contains(name) || result.result.count <= maxActiveResultChars {
             return "[Tool: \(name)] \(status)\n\(result.result)"
         }
         let artifact = await store.save(result.result, description: "\(name) output", toolCallID: result.toolCallId)
