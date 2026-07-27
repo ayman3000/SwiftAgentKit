@@ -13,6 +13,7 @@ let package = Package(
     ],
     products: [
         .library(name: "SwiftAgentKit", targets: ["SwiftAgentKit"]),
+        .library(name: "SwiftAgentKitTools", targets: ["SwiftAgentKitTools"]),
         .library(name: "SwiftAgentKitMCP", targets: ["SwiftAgentKitMCP"]),
     ],
     dependencies: [
@@ -50,6 +51,19 @@ let package = Package(
                 // Used only by the gated live-model smoke test (real Ollama provider).
                 .product(name: "LLMProviderKitOllama", package: "LLMProviderKit"),
             ]
+        ),
+
+        // Built-in native tools — optional product (filesystem, shell, PDF).
+        // Foundation-only core; shell is macOS-gated, PDF is PDFKit-gated.
+        .target(
+            name: "SwiftAgentKitTools",
+            dependencies: ["SwiftAgentKit"]
+        ),
+
+        // Native-tools tests
+        .testTarget(
+            name: "SwiftAgentKitToolsTests",
+            dependencies: ["SwiftAgentKitTools", "SwiftAgentKit"]
         ),
 
         // MCP integration — optional product, depends on the MCP Swift SDK
