@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import SwiftAgentKit
+import LLMProviderKitOllama
 @testable import SwiftAgentKitTools
 
 private func tempDir() -> URL {
@@ -153,3 +154,25 @@ private func makeImage(text: String) -> NSImage {
     #expect(PDFExtractTextTool().requiresConfirmation == false)
 }
 #endif
+
+// MARK: - Live: agent actually invokes the tools (gated)
+
+/// End-to-end proof that a real model picks up and uses the framework tools.
+/// Registers `read_file` + a temp file with a sentinel, then asks the agent to
+/// read it. Gated on SAK_LIVE_TESTS=1 (local Ollama with `glm-5.2:cloud`).
+///   SAK_LIVE_TESTS=1 swift test --filter liveAgentUsesFileTool
+@Test(.enabled(if: ProcessInfo.processInfo.environment["SAK_LIVE_TESTS"] == "1"))
+func liveAgentUsesFileTool() async throws {
+    let dir = tempDir()
+    let file = dir.appendingPathComponent("notes.txt")
+    try "The project codename is TOOLS_OK_42.".write(to: file, atomically: true, encoding: .utf8)
+
+    let provider = OllamaProvider(configuration: OllamaProvider.local(model: "glm-5.2:cloud"))
+    let agent = Agent(config: AgentConfig(
+        provider: provider, model: "glm-5.2:cloud", maxTurns: 4,
+        tools: [FileReadTool(), ListDirTool()]
+    ))
+
+    let answer = try await agent.run("Read the file at \(file.path) and tell me the project codename it mentions.")
+    #expect(answer.contains("TOOLS_OK_42"))
+}
