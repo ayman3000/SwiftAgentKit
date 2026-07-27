@@ -198,6 +198,22 @@ public final class Agent: @unchecked Sendable {
     /// Skill registry for progressive disclosure (optional).
     public let skillRegistry: SkillRegistry
 
+    /// Optional persistent skill store. When set, the agent loads previously
+    /// authored skills into `skillRegistry` and auto-registers `LearnSkillTool`,
+    /// so it can turn recurring tasks (or corrected mistakes) into reusable,
+    /// keyword-triggered skills that persist across sessions.
+    public var skillStore: (any AgentSkillStore)? {
+        didSet {
+            guard let store = skillStore else { return }
+            register(LearnSkillTool(store: store, registry: skillRegistry))
+            trackRegistrationTask(Task { [skillRegistry] in
+                if let skills = try? await store.loadAll() {
+                    await skillRegistry.registerAll(skills)
+                }
+            })
+        }
+    }
+
     /// Lifecycle callbacks (intercept-able).
     public var callbacks: AgentCallbacks?
 

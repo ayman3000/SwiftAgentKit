@@ -1617,6 +1617,50 @@ private func firstArtifactID(in text: String) -> String? {
     #expect(out.contains { $0.role == .assistant && ($0.toolCalls?.isEmpty == false) })
 }
 
+// MARK: - Skill store + learn_skill (self-improvement)
+
+private func tempSkillDir() -> URL {
+    FileManager.default.temporaryDirectory
+        .appendingPathComponent("sak-skills-\(UUID().uuidString)", isDirectory: true)
+}
+
+@Test func testFileSkillStoreRoundTrips() async throws {
+    let store = FileAgentSkillStore(directory: tempSkillDir())
+    try await store.save(AgentSkill(
+        name: "Scaffold SwiftUI view",
+        triggerKeywords: ["swiftui", "new view"],
+        instructions: "1. Create the file. 2. Add a View struct. 3. Add a #Preview."
+    ))
+
+    let loaded = try await store.loadAll()
+    #expect(loaded.count == 1)
+    let skill = try #require(loaded.first)
+    #expect(skill.name == "Scaffold SwiftUI view")
+    #expect(skill.triggerKeywords.contains("swiftui"))
+    #expect(skill.instructions.contains("#Preview"))
+    #expect(skill.matches("please make a new SwiftUI screen"))
+}
+
+@Test func testLearnSkillToolPersistsAndActivates() async throws {
+    let store = FileAgentSkillStore(directory: tempSkillDir())
+    let registry = SkillRegistry()
+    let tool = LearnSkillTool(store: store, registry: registry)
+
+    let result = try await tool.execute(parameters: [
+        "name": "Fix flaky test",
+        "triggers": "flaky, retry, intermittent",
+        "instructions": "Re-run 3x; if it passes sometimes, quarantine and open an issue.",
+    ])
+    #expect(result.isError == false)
+
+    // Persisted…
+    let persisted = try await store.loadAll()
+    #expect(persisted.contains { $0.name == "Fix flaky test" })
+    // …and live in the registry (fires on a matching query).
+    let active = await registry.matchingSkills(for: "this test is flaky")
+    #expect(active.contains { $0.name == "Fix flaky test" })
+}
+
 // MARK: - Live model smoke test (gated)
 
 /// A real tool the model must call to answer correctly.
