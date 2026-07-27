@@ -68,8 +68,10 @@ public enum AgentEvent: Sendable {
     /// A tool finished executing.
     case toolExecutionFinished(call: AgentToolCall, result: AgentToolResult)
 
-    /// A tool requires user confirmation.
-    case toolConfirmationRequired(call: AgentToolCall, decision: @Sendable (Bool) -> Void)
+    /// A tool that requires confirmation is awaiting an approval decision.
+    /// The decision itself is made via `AgentCallbacks.onToolConfirmation`;
+    /// this event is informational (e.g. for surfacing a prompt in a UI).
+    case toolConfirmationRequired(call: AgentToolCall)
 
     /// A tool call was skipped (duplicate in same turn).
     case toolCallSkippedDuplicate(call: AgentToolCall)

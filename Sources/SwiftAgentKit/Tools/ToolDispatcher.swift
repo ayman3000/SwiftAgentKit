@@ -240,6 +240,24 @@ public actor ToolDispatcher {
             }
         }
 
+        // Confirmation gate — a tool marked `requiresConfirmation` must be
+        // approved before it runs, unless autonomous mode is enabled. If no
+        // confirmation handler is provided we fail closed (deny) rather than
+        // run an unconfirmed dangerous operation.
+        if tool.requiresConfirmation && !autonomousMode {
+            observer?.onEvent(.toolConfirmationRequired(call: call))
+            let approved = await callbacks?.onToolConfirmation?(call, context) ?? false
+            if !approved {
+                let denied = AgentToolResult.error(
+                    toolCallId: call.id, toolName: call.name,
+                    message: "Tool '\(call.name)' requires confirmation and was not approved. "
+                        + "Provide AgentCallbacks.onToolConfirmation or enable autonomous mode to run it."
+                )
+                observer?.onEvent(.toolExecutionFinished(call: call, result: denied))
+                return denied
+            }
+        }
+
         // Execute
         observer?.onEvent(.toolExecutionStarted(call: call))
 

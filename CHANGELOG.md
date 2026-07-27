@@ -7,6 +7,15 @@ All notable changes to SwiftAgentKit will be documented in this file.
 ### Added
 - Guard against overlapping `run(_:)` calls on the same `Agent` instance with `AgentError.runInProgress`.
 - Regression coverage for same-instance concurrent run rejection.
+- Wired up tool confirmation gating: tools with `requiresConfirmation == true` now require approval via the new `AgentCallbacks.onToolConfirmation` callback before executing (bypassed when autonomous mode is on). Without a handler the dispatcher fails closed — the tool is denied rather than run unconfirmed. Regression coverage added.
+
+### Fixed
+- Context-window trimming now evicts assistant tool_call turns together with their tool_result message(s), so history is never left with an orphaned tool_call or tool_result (strict providers such as OpenAI/Anthropic reject unpaired tool messages with HTTP 400). Applies to the message-count and token-budget trim paths.
+- Plan progress now advances for target-less (LLM-generated) plans — the earliest unfinished step is completed on each successful tool call. Previously such plans never progressed, so plan-continuation nudged the model until it exhausted its attempt budget.
+- Regression coverage for tool_call/tool_result pairing during trim and for target-less plan progress.
+
+### Changed
+- **Breaking:** `AgentEvent.toolConfirmationRequired` no longer carries a `decision` closure (`case toolConfirmationRequired(call:)`); it is now an informational event. Approval decisions are made via `AgentCallbacks.onToolConfirmation`.
 
 ### Documentation
 - Clarified `runStreaming(_:)` behavior for tool-using agents.
