@@ -33,6 +33,8 @@ public final class ContextManager: @unchecked Sendable {
 
     private let lock = NSLock()
     private var receiptCache: [String: ToolReceipt] = [:]
+    /// tool-call id → artifact id, so a large *active* result spills only once.
+    private var activeArtifactCache: [String: String] = [:]
 
     /// Tools whose output IS the retrieval mechanism — never re-truncate or
     /// re-spill their results, or the model loops calling them to "get the full
@@ -179,9 +181,31 @@ public final class ContextManager: @unchecked Sendable {
         if Self.retrievalToolNames.contains(name) || result.result.count <= maxActiveResultChars {
             return "[Tool: \(name)] \(status)\n\(result.result)"
         }
-        let artifact = await store.save(result.result, description: "\(name) output", toolCallID: result.toolCallId)
+        // `modelMessages` runs every turn, so a large result that stays the active
+        // exchange would spill a fresh artifact each turn. Reuse the artifact id
+        // for this tool-call id instead of duplicating the content in the store.
+        let artifactID: String
+        if let cached = cachedActiveArtifact(result.toolCallId) {
+            artifactID = cached
+        } else {
+            let artifact = await store.save(result.result, description: "\(name) output", toolCallID: result.toolCallId)
+            cacheActiveArtifact(result.toolCallId, artifact.id)
+            artifactID = artifact.id
+        }
         let preview = String(result.result.prefix(maxActiveResultChars))
-        return "[Tool: \(name)] \(status)\n\(preview)\n… [truncated — full output in artifact \(artifact.id); use artifact_read]"
+        return "[Tool: \(name)] \(status)\n\(preview)\n… [truncated — full output in artifact \(artifactID); use artifact_read]"
+    }
+
+    private func cachedActiveArtifact(_ callID: String) -> String? {
+        guard !callID.isEmpty else { return nil }
+        lock.lock(); defer { lock.unlock() }
+        return activeArtifactCache[callID]
+    }
+
+    private func cacheActiveArtifact(_ callID: String, _ artifactID: String) {
+        guard !callID.isEmpty else { return }
+        lock.lock(); defer { lock.unlock() }
+        activeArtifactCache[callID] = artifactID
     }
 
     private func cachedReceipt(_ callID: String) -> ToolReceipt? {
