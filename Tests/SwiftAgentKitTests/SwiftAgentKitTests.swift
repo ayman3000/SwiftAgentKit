@@ -1426,3 +1426,43 @@ struct StreamingScriptedProvider: LLMProvider {
     // ...and reconstructs to the streamed answer, after the tool turn ran.
     #expect(chunks.joined() == "Hello world")
 }
+
+/// Thread-safe capture of which event kinds the agent emitted.
+final class StreamingEventFlags: @unchecked Sendable {
+    private let lock = NSLock()
+    private var toolCalls = false, streamChunk = false, finished = false
+    func record(_ event: AgentEvent) {
+        lock.lock(); defer { lock.unlock() }
+        switch event {
+        case .toolCallsReceived: toolCalls = true
+        case .streamChunk: streamChunk = true
+        case .finished: finished = true
+        default: break
+        }
+    }
+    var snapshot: (toolCalls: Bool, streamChunk: Bool, finished: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        return (toolCalls, streamChunk, finished)
+    }
+}
+
+@Test func testRunStreamingSharesRunLoopEvents() async throws {
+    // Parity check: runStreaming now goes through the same ReAct loop as run(),
+    // so the full event set is emitted (tool calls, stream chunks, finished).
+    let agent = Agent(config: AgentConfig(
+        provider: StreamingScriptedProvider(),
+        model: "mock",
+        maxTurns: 4
+    ))
+    agent.register(EchoTool())
+
+    let flags = StreamingEventFlags()
+    agent.addObserver(BlockObserver { flags.record($0) })
+
+    for try await _ in agent.runStreaming("please echo something") {}
+
+    let seen = flags.snapshot
+    #expect(seen.toolCalls)
+    #expect(seen.streamChunk)
+    #expect(seen.finished)
+}
