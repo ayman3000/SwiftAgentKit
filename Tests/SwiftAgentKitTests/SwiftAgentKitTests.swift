@@ -1641,6 +1641,40 @@ private func tempSkillDir() -> URL {
     #expect(skill.matches("please make a new SwiftUI screen"))
 }
 
+@Test func testSkillStoreParsesTriggersAfterBlankLine() async throws {
+    let store = FileAgentSkillStore(directory: tempSkillDir())
+    try FileManager.default.createDirectory(at: store.directory, withIntermediateDirectories: true)
+    let md = "# Deploy\n\nTriggers: deploy, ship\n\nRun the deploy script.\n"
+    try md.write(to: store.directory.appendingPathComponent("deploy.md"), atomically: true, encoding: .utf8)
+
+    let loaded = try await store.loadAll()
+    let skill = try #require(loaded.first)
+    #expect(skill.name == "Deploy")
+    #expect(skill.triggerKeywords.contains("deploy"))
+    #expect(skill.instructions.contains("deploy script"))
+    #expect(skill.instructions.contains("Triggers:") == false)
+}
+
+@Test func testContextManagerReusesActiveArtifact() async {
+    let manager = ContextManager(maxActiveResultChars: 20)
+    let big = String(repeating: "z", count: 300)
+    let messages: [AgentMessage] = [
+        .user("go"),
+        .assistant(content: "", toolCalls: [AgentToolCall(id: "c1", name: "run_shell")]),
+        .tool(results: [.success(toolCallId: "c1", toolName: "run_shell", result: big)]),
+    ]
+
+    func artifactID(_ msgs: [LLMMessage]) -> String? {
+        let text = msgs.first { $0.role == .tool }?.content ?? ""
+        guard let r = text.range(of: #"artifact-[0-9a-f]{12}"#, options: .regularExpression) else { return nil }
+        return String(text[r])
+    }
+    let a = artifactID(await manager.modelMessages(messages) { $0 })
+    let b = artifactID(await manager.modelMessages(messages) { $0 })
+    #expect(a != nil)
+    #expect(a == b, "active artifact id should be stable across turns")
+}
+
 @Test func testLearnSkillToolPersistsAndActivates() async throws {
     let store = FileAgentSkillStore(directory: tempSkillDir())
     let registry = SkillRegistry()

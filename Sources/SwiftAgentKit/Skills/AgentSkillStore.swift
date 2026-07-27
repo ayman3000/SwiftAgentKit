@@ -95,16 +95,17 @@ public final class FileAgentSkillStore: AgentSkillStore, @unchecked Sendable {
                 name = String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces)
                 continue
             }
-            if !inBody, trimmed.lowercased().hasPrefix("triggers:") {
-                let raw = trimmed.dropFirst("triggers:".count)
-                triggers = raw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-                inBody = true
-                continue
+            if !inBody {
+                if trimmed.isEmpty { continue }   // skip blanks between title / triggers / body
+                if trimmed.lowercased().hasPrefix("triggers:") {
+                    let raw = trimmed.dropFirst("triggers:".count)
+                    triggers = raw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+                    inBody = true
+                    continue
+                }
+                inBody = true   // first non-empty, non-triggers line starts the body
             }
-            if inBody || name != nil {
-                inBody = true
-                instructionLines.append(line)
-            }
+            instructionLines.append(line)
         }
 
         guard let name, !name.isEmpty else { return nil }

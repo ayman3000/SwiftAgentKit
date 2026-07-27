@@ -33,10 +33,14 @@ public struct ShellTool: AgentTool {
     /// default this to the user's home for terminal-like behavior.
     private let defaultWorkingDirectory: URL?
     private let maxOutputChars: Int
+    /// Wall-clock limit; a command exceeding it is terminated so a hung process
+    /// (or one whose child keeps stdout open) never blocks the agent forever.
+    private let timeoutSeconds: Double
 
-    public init(defaultWorkingDirectory: URL? = nil, maxOutputChars: Int = 10_000) {
+    public init(defaultWorkingDirectory: URL? = nil, maxOutputChars: Int = 10_000, timeoutSeconds: Double = 120) {
         self.defaultWorkingDirectory = defaultWorkingDirectory
         self.maxOutputChars = maxOutputChars
+        self.timeoutSeconds = timeoutSeconds
     }
 
     public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
@@ -65,15 +69,27 @@ public struct ShellTool: AgentTool {
             return .error(toolCallId: "", toolName: name, message: "Failed to launch shell: \(error.localizedDescription)")
         }
 
-        // Read to EOF (occurs at process exit) before waiting — avoids a pipe-buffer deadlock.
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        // Read to EOF on a detached task (occurs when the process — and anything
+        // holding its stdout — exits), raced against a wall-clock timeout that
+        // terminates the process so the read unblocks.
+        let handle = pipe.fileHandleForReading
+        let readTask = Task.detached { handle.readDataToEndOfFile() }
+        let timeoutTask = Task { [timeoutSeconds] in
+            try? await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
+            if process.isRunning { process.terminate() }
+        }
+        let data = await readTask.value
+        timeoutTask.cancel()
         process.waitUntilExit()
+        // Our timeout terminates via SIGTERM → `.uncaughtSignal`; a normal exit is `.exit`.
+        let timedOut = process.terminationReason == .uncaughtSignal
 
         var output = String(data: data, encoding: .utf8) ?? ""
         if output.count > maxOutputChars {
             output = String(output.prefix(maxOutputChars)) + "\n… [output truncated]"
         }
-        let header = "exit \(process.terminationStatus)"
+        var header = "exit \(process.terminationStatus)"
+        if timedOut { header += " (terminated after \(Int(timeoutSeconds))s timeout)" }
         return .success(toolCallId: "", toolName: name, result: output.isEmpty ? header : "\(header)\n\(output)")
     }
 }
