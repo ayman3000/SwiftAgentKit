@@ -146,10 +146,12 @@ public final class LLMPlanner: AgentPlanner, @unchecked Sendable {
     }
 
     public func updateProgress(plan: inout AgentPlan, toolCall: AgentToolCall, result: AgentToolResult) {
-        // Match tool call to plan steps by target keywords
+        // Match tool call to plan steps by target keywords.
+        var matchedAny = false
         for index in plan.steps.indices {
             let step = plan.steps[index]
             if step.status == .completed || step.status == .verified { continue }
+            guard !step.targets.isEmpty else { continue }
 
             // Simple matching: check if any target appears in the tool name or result
             let matchFound = step.targets.contains { target in
@@ -159,7 +161,20 @@ public final class LLMPlanner: AgentPlanner, @unchecked Sendable {
 
             if matchFound {
                 plan.steps[index].status = result.isError ? .failed : .completed
+                matchedAny = true
             }
+        }
+
+        if matchedAny { return }
+
+        // Fallback for plans whose steps declare no targets (e.g. LLM-generated
+        // plans, whose steps default to `targets: []`): advance the earliest
+        // unfinished step on each successful tool call. Without this, target-less
+        // plans never progress and plan-continuation nudges the model until it
+        // exhausts its attempt budget. Errors do not advance the plan.
+        guard !result.isError else { return }
+        if let index = plan.steps.firstIndex(where: { $0.status == .pending || $0.status == .inProgress }) {
+            plan.steps[index].status = .completed
         }
     }
 
