@@ -1728,3 +1728,35 @@ actor ArtifactReadCounter {
     private(set) var count = 0
     func bump() { count += 1 }
 }
+
+/// Live proof of cross-conversation memory: a fact told to one agent is recalled
+/// by a *different* agent sharing the same `FileAgentMemoryStore`. Mirrors the
+/// Naseem setup (one store shared by every conversation). Gated on SAK_LIVE_TESTS=1.
+///   SAK_LIVE_TESTS=1 swift test --filter liveCrossConversationMemory
+@Test(.enabled(if: ProcessInfo.processInfo.environment["SAK_LIVE_TESTS"] == "1"))
+func liveCrossConversationMemory() async throws {
+    let dir = FileManager.default.temporaryDirectory
+        .appendingPathComponent("naseem-mem-\(UUID().uuidString)", isDirectory: true)
+    let store = FileAgentMemoryStore(directory: dir)
+    defer { try? FileManager.default.removeItem(at: dir) }
+
+    func makeAgent() -> Agent {
+        let provider = OllamaProvider(configuration: OllamaProvider.local(model: "glm-5.2:cloud"))
+        let agent = Agent(config: AgentConfig(provider: provider, model: "glm-5.2:cloud", maxTurns: 4))
+        agent.memoryStore = store
+        return agent
+    }
+
+    // Conversation 1 — the user introduces themselves.
+    let convo1 = makeAgent()
+    _ = try await convo1.run("My name is Ayman and I prefer Swift. Please remember this about me.")
+
+    // The remember tool should have persisted the user fact.
+    let userDoc = try await store.load(kind: .user).first?.content ?? ""
+    #expect(userDoc.localizedCaseInsensitiveContains("Ayman"))
+
+    // Conversation 2 — a brand-new agent, same store, no shared conversation history.
+    let convo2 = makeAgent()
+    let answer = try await convo2.run("What is my name? Answer with just the name.")
+    #expect(answer.localizedCaseInsensitiveContains("Ayman"))
+}
