@@ -1665,3 +1665,66 @@ func liveOllamaStreamingWithToolCall() async throws {
     #expect(!chunks.isEmpty)
     #expect(full.contains("42"))
 }
+
+/// A tool that returns a large multi-line "directory listing" (mimics run_shell),
+/// with a sentinel filename placed PAST the inline preview so the model must go
+/// through `artifact_read` to find it.
+struct BigListingTool: AgentTool {
+    let name = "run_shell"
+    let description = "Run a shell command and return its output. Use it to list files."
+    let parameters = ToolParameters(
+        properties: ["command": ToolParameterProperty(type: "string", description: "The shell command")],
+        required: ["command"]
+    )
+
+    static let needle = "NEEDLE_FILE_Zm9v.txt"
+
+    func execute(parameters: [String: Any]) async throws -> AgentToolResult {
+        var lines: [String] = []
+        for i in 0..<400 { lines.append("-rw-r--r--  1 user staff  \(1000 + i)  Jan  1 file_\(String(format: "%04d", i)).dat") }
+        lines.append("-rw-r--r--  1 user staff  4242  Jan  1 \(Self.needle)")  // ~well past 8k chars
+        return .success(toolCallId: "", toolName: name, result: lines.joined(separator: "\n"))
+    }
+}
+
+/// Live regression for the ContextSift `artifact_read` loop. With a `ContextManager`
+/// and a >8k tool output whose sentinel is only reachable via retrieval, the model
+/// must NOT spiral calling `artifact_read`. Gated on `SAK_LIVE_TESTS=1`.
+///   SAK_LIVE_TESTS=1 swift test --filter liveContextSiftNoArtifactReadLoop
+@Test(.enabled(if: ProcessInfo.processInfo.environment["SAK_LIVE_TESTS"] == "1"))
+func liveContextSiftNoArtifactReadLoop() async throws {
+    let provider = OllamaProvider(configuration: OllamaProvider.local(model: "glm-5.2:cloud"))
+    let agent = Agent(config: AgentConfig(
+        provider: provider,
+        model: "glm-5.2:cloud",
+        maxTurns: 8,
+        tools: [BigListingTool()],
+        contextManager: ContextManager()
+    ))
+
+    // Count artifact_read executions — before the fix this spiralled (~6 calls).
+    let counter = ArtifactReadCounter()
+    _ = agent.onEvent { event in
+        if case .toolExecutionFinished(let call, _) = event, call.name == "artifact_read" {
+            Task { await counter.bump() }
+        }
+    }
+
+    var chunks: [String] = []
+    for try await chunk in agent.runStreaming(
+        "Run run_shell to list the files, then tell me whether a file named \(BigListingTool.needle) is present. Answer yes or no and name it."
+    ) {
+        chunks.append(chunk)
+    }
+
+    let full = chunks.joined()
+    let reads = await counter.count
+    // The run produced a final answer and did not loop on retrieval.
+    #expect(!full.isEmpty)
+    #expect(reads <= 3, "artifact_read was called \(reads) times — retrieval loop suspected")
+}
+
+actor ArtifactReadCounter {
+    private(set) var count = 0
+    func bump() { count += 1 }
+}
