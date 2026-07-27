@@ -45,6 +45,11 @@ public actor ToolDispatcher {
         contextFields = context
     }
 
+    /// Enable/disable autonomous mode (skips the `requiresConfirmation` gate).
+    public func setAutonomousMode(_ enabled: Bool) {
+        autonomousMode = enabled
+    }
+
     // MARK: - Dispatch
 
     /// Dispatch a batch of tool calls — optionally in parallel.

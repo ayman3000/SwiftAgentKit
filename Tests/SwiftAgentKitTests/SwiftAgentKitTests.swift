@@ -292,6 +292,21 @@ struct DangerousTool: AgentTool {
     #expect(results[0].result.contains("not approved"))
 }
 
+@Test func testAutonomousModeBypassesConfirmationGate() async {
+    let registry = ToolRegistry()
+    await registry.register(DangerousTool())
+    let dispatcher = ToolDispatcher(registry: registry)
+    await dispatcher.setAutonomousMode(true)
+    let state = AgentState()
+
+    // No onToolConfirmation handler, but autonomous mode is on → runs anyway.
+    let call = AgentToolCall(name: "delete_everything")
+    let results = await dispatcher.dispatch(calls: [call], state: state, observer: nil)
+    #expect(results.count == 1)
+    #expect(results[0].isError == false)
+    #expect(results[0].result == "done")
+}
+
 // MARK: - Conversation/Memory Tests
 
 @Test func testConversationAppendAndRead() {
