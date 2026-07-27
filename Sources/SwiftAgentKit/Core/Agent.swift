@@ -304,9 +304,24 @@ public final class Agent: @unchecked Sendable {
         observers.append(observer)
     }
 
-    /// Add a block-based observer.
-    public func onEvent(_ block: @Sendable @escaping (AgentEvent) -> Void) {
-        addObserver(BlockObserver(block))
+    /// Remove a previously-added observer (matched by identity).
+    ///
+    /// Long-lived agents outlive the views that observe them; callers must
+    /// remove their observer when torn down, otherwise observers accumulate and
+    /// each event is delivered multiple times.
+    public func removeObserver(_ observer: any AgentObserver) {
+        observersLock.lock()
+        defer { observersLock.unlock() }
+        observers.removeAll { $0 === observer }
+    }
+
+    /// Add a block-based observer, returning the observer token so it can later
+    /// be passed to `removeObserver(_:)`.
+    @discardableResult
+    public func onEvent(_ block: @Sendable @escaping (AgentEvent) -> Void) -> any AgentObserver {
+        let observer = BlockObserver(block)
+        addObserver(observer)
+        return observer
     }
 
     private func emit(_ event: AgentEvent) {
