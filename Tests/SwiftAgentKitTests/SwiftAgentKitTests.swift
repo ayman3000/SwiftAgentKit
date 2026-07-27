@@ -1804,3 +1804,25 @@ func liveCrossConversationMemory() async throws {
     let answer = try await convo2.run("What is my name? Answer with just the name.")
     #expect(answer.localizedCaseInsensitiveContains("Ayman"))
 }
+
+/// Live: the agent authors a skill via `learn_skill` (auto-registered when a
+/// skill store is attached) and it persists. Gated on SAK_LIVE_TESTS=1.
+///   SAK_LIVE_TESTS=1 swift test --filter liveAgentLearnsSkill
+@Test(.enabled(if: ProcessInfo.processInfo.environment["SAK_LIVE_TESTS"] == "1"))
+func liveAgentLearnsSkill() async throws {
+    let dir = FileManager.default.temporaryDirectory
+        .appendingPathComponent("naseem-skills-\(UUID().uuidString)", isDirectory: true)
+    let store = FileAgentSkillStore(directory: dir)
+    defer { try? FileManager.default.removeItem(at: dir) }
+
+    let provider = OllamaProvider(configuration: OllamaProvider.local(model: "glm-5.2:cloud"))
+    let agent = Agent(config: AgentConfig(provider: provider, model: "glm-5.2:cloud", maxTurns: 4))
+    agent.skillStore = store   // auto-registers learn_skill + loads persisted skills
+
+    _ = try await agent.run(
+        "Use the learn_skill tool to save a skill named \"greet politely\" with triggers "
+        + "\"greeting, hello\" and instructions \"Say hello warmly and offer to help.\"")
+
+    let skills = try await store.loadAll()
+    #expect(skills.contains { $0.name.localizedCaseInsensitiveContains("greet") })
+}
