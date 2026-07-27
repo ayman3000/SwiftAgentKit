@@ -1504,6 +1504,82 @@ final class StreamingEventFlags: @unchecked Sendable {
     #expect(!seen.finished)
 }
 
+// MARK: - Context management (ContextSift)
+
+private func firstArtifactID(in text: String) -> String? {
+    guard let range = text.range(of: #"artifact-[0-9a-f]{12}"#, options: .regularExpression) else { return nil }
+    return String(text[range])
+}
+
+@Test func testArtifactStoreRoundTrip() async {
+    let store = InMemoryArtifactStore()
+    let saved = await store.save("line one\nNEEDLE here\nline three", description: "t", toolCallID: "c1")
+
+    let slice = await store.read(saved.id, offset: 0, limit: 4)
+    #expect(slice?.content == "line")
+    #expect(slice?.hasMore == true)
+
+    let matches = await store.search(saved.id, query: "needle", maxMatches: 5)
+    #expect(matches.count == 1)
+    #expect(matches.first?.line == 2)
+}
+
+@Test func testContextManagerExternalizesCompletedToolResults() async {
+    let manager = ContextManager(summaryLength: 40)
+    // Marker placed deep in the output (well past the 40-char receipt summary).
+    let bigResult = String(repeating: "x", count: 500) + " DEEP_NEEDLE_END"
+
+    // A completed tool exchange (an assistant text turn follows it), then a new user turn.
+    let messages: [AgentMessage] = [
+        .system("You are helpful."),
+        .user("read the file"),
+        .assistant(content: "", toolCalls: [AgentToolCall(id: "c1", name: "read_file")]),
+        .tool(results: [.success(toolCallId: "c1", toolName: "read_file", result: bigResult)]),
+        .assistant("Here is the summary."),
+        .user("thanks, what next?"),
+    ]
+
+    let out = await manager.modelMessages(messages) { $0 }
+
+    // The full tool output must NOT be resent in any model message…
+    #expect(out.allSatisfy { !$0.content.contains("DEEP_NEEDLE_END") })
+    // …but a ledger + artifact reference must appear in the (single) system block.
+    let system = out.first { $0.role == .system }
+    #expect(system != nil)
+    #expect(system?.content.contains("tool ledger") == true)
+    #expect(system?.content.contains("read_file") == true)
+    let artifactID = system.flatMap { firstArtifactID(in: $0.content) }
+    #expect(artifactID != nil)
+
+    // Main messages survive.
+    #expect(out.contains { $0.role == .user && $0.content.contains("thanks") })
+    #expect(out.contains { $0.role == .assistant && $0.content.contains("summary") })
+
+    // And the full output is retrievable from the store via the artifact tool.
+    if let artifactID {
+        let tool = ArtifactReadTool(store: manager.store)
+        let read = try? await tool.execute(parameters: ["artifact_id": artifactID])
+        #expect(read?.result.contains("DEEP_NEEDLE_END") == true)
+    }
+}
+
+@Test func testContextManagerKeepsActiveExchange() async {
+    let manager = ContextManager()
+    // Conversation ends on a tool result the model still needs to act on.
+    let messages: [AgentMessage] = [
+        .user("what time is it"),
+        .assistant(content: "", toolCalls: [AgentToolCall(id: "c1", name: "current_time")]),
+        .tool(results: [.success(toolCallId: "c1", toolName: "current_time", result: "12:00 PM")]),
+    ]
+
+    let out = await manager.modelMessages(messages) { $0 }
+
+    // The active tool result is kept in full (the model needs it now).
+    #expect(out.contains { $0.role == .tool && $0.content.contains("12:00 PM") })
+    // And the assistant tool-call turn is preserved (paired with the result).
+    #expect(out.contains { $0.role == .assistant && ($0.toolCalls?.isEmpty == false) })
+}
+
 // MARK: - Live model smoke test (gated)
 
 /// A real tool the model must call to answer correctly.

@@ -61,6 +61,13 @@ public struct AgentConfig: Sendable {
     /// Convenience — equivalent to calling `agent.registerAll(tools)` after init.
     public var tools: [any AgentTool]
 
+    /// Opt-in ContextSift-style context management. When set, completed tool
+    /// exchanges are moved out of active model context (replaced by a receipt
+    /// ledger, full output preserved in the manager's `ArtifactStore` and
+    /// retrievable via `artifact_read` / `artifact_search`). When `nil`, the
+    /// agent uses its normal trim-based context handling.
+    public var contextManager: ContextManager?
+
     public init(
         provider: any LLMProvider,
         model: String? = nil,
@@ -74,7 +81,8 @@ public struct AgentConfig: Sendable {
         enablePlanning: Bool = false,
         enableRepairRetry: Bool = true,
         enablePlanContinuation: Bool = true,
-        tools: [any AgentTool] = []
+        tools: [any AgentTool] = [],
+        contextManager: ContextManager? = nil
     ) {
         self.provider = provider
         self.model = model
@@ -89,6 +97,7 @@ public struct AgentConfig: Sendable {
         self.enableRepairRetry = enableRepairRetry
         self.enablePlanContinuation = enablePlanContinuation
         self.tools = tools
+        self.contextManager = contextManager
     }
 }
 
@@ -243,6 +252,14 @@ public final class Agent: @unchecked Sendable {
         // Auto-register tools passed via config
         if !config.tools.isEmpty {
             for tool in config.tools {
+                register(tool)
+            }
+        }
+
+        // Register the context manager's artifact-retrieval tools so the model
+        // can pull full tool outputs back from external storage on demand.
+        if let contextManager = config.contextManager {
+            for tool in contextManager.artifactTools {
                 register(tool)
             }
         }
@@ -550,7 +567,7 @@ public final class Agent: @unchecked Sendable {
                 }
 
                 // Build LLM request (with state-templated system prompt)
-                let request = makeLLMRequest(messagesForLLM: messagesForLLM, tools: llmToolDefs)
+                let request = await makeLLMRequest(messagesForLLM: messagesForLLM, tools: llmToolDefs)
 
                 // Call the provider (streamed when onText is set)
                 var agentResponse: AgentLLMResponse
@@ -697,7 +714,7 @@ public final class Agent: @unchecked Sendable {
         } else {
             // Single-shot or multi-turn chat (no tools)
             let messagesForLLM = conversation.messagesForLLMCall()
-            let request = makeLLMRequest(messagesForLLM: messagesForLLM)
+            let request = await makeLLMRequest(messagesForLLM: messagesForLLM)
 
             emit(.llmCallStarted(turn: 1))
 
@@ -887,12 +904,20 @@ public final class Agent: @unchecked Sendable {
     private func makeLLMRequest(
         messagesForLLM: [AgentMessage],
         tools: [LLMToolDefinition] = []
-    ) -> LLMRequest {
-        let llmMessages = messagesForLLM.flatMap { msg -> [LLMMessage] in
-            if msg.role == .system {
-                return [.system(state.template(msg.content))]
+    ) async -> LLMRequest {
+        let llmMessages: [LLMMessage]
+        if let contextManager = config.contextManager {
+            // ContextSift-style: externalize completed tool exchanges.
+            llmMessages = await contextManager.modelMessages(messagesForLLM) { [state] content in
+                state.template(content)
             }
-            return msg.toLLMMessages()
+        } else {
+            llmMessages = messagesForLLM.flatMap { msg -> [LLMMessage] in
+                if msg.role == .system {
+                    return [.system(state.template(msg.content))]
+                }
+                return msg.toLLMMessages()
+            }
         }
 
         return LLMRequest(
