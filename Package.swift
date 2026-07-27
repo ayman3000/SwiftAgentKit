@@ -63,7 +63,12 @@ let package = Package(
         // Native-tools tests
         .testTarget(
             name: "SwiftAgentKitToolsTests",
-            dependencies: ["SwiftAgentKitTools", "SwiftAgentKit"]
+            dependencies: [
+                "SwiftAgentKitTools",
+                "SwiftAgentKit",
+                // Used only by the gated live-model test (real Ollama provider).
+                .product(name: "LLMProviderKitOllama", package: "LLMProviderKit"),
+            ]
         ),
 
         // MCP integration — optional product, depends on the MCP Swift SDK
