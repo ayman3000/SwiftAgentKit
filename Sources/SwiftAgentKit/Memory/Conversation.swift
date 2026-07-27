@@ -97,12 +97,12 @@ public class Conversation: @unchecked Sendable {
 
         var trimmed = messages
 
-        // 1. Message-count trim
-        if maxMessages > 0 && trimmed.count > maxMessages {
-            let systemMessages = trimmed.filter { $0.role == .system }
-            let nonSystem = trimmed.filter { $0.role != .system }
-            let keepCount = maxMessages - systemMessages.count
-            trimmed = systemMessages + Array(nonSystem.suffix(max(0, keepCount)))
+        // 1. Message-count trim — evict oldest units (keeping tool_call/tool_result
+        //    pairs together) until at or under the message cap.
+        if maxMessages > 0 {
+            while trimmed.count > maxMessages && trimmed.contains(where: { $0.role != .system }) {
+                if !removeOldestNonSystemUnit(from: &trimmed) { break }
+            }
         }
 
         // 2. Token-budget trim
@@ -160,19 +160,39 @@ public class Conversation: @unchecked Sendable {
 
     // MARK: - Private trimming
 
+    /// Remove the oldest evictable unit of non-system messages.
+    ///
+    /// An assistant message that issued tool calls is removed together with the
+    /// tool-result message(s) that immediately follow it, so a `tool_result` is
+    /// never left without its originating `tool_call` (and vice versa) — strict
+    /// providers such as OpenAI and Anthropic reject an unpaired tool message.
+    ///
+    /// - Returns: `true` if a message was removed, `false` if only system
+    ///   messages remain (nothing evictable).
+    private func removeOldestNonSystemUnit(from messages: inout [AgentMessage]) -> Bool {
+        guard let idx = messages.firstIndex(where: { $0.role != .system }) else {
+            return false
+        }
+        let message = messages[idx]
+        messages.remove(at: idx)
+
+        // If it was an assistant turn with tool calls, drop the following
+        // contiguous tool-result message(s) that answer it.
+        if message.role == .assistant, let calls = message.toolCalls, !calls.isEmpty {
+            while idx < messages.count && messages[idx].role == .tool {
+                messages.remove(at: idx)
+            }
+        }
+        return true
+    }
+
     /// Trim to fit within 80% of the context window.
     private func ensureContextWindowFits(messages: [AgentMessage]) -> [AgentMessage] {
-        let budget = Int(Double(contextWindow - outputReserve) * 0.8)
+        let budget = max(0, Int(Double(contextWindow - outputReserve) * 0.8))
         var trimmed = messages
-        let nonSystem = trimmed.filter { $0.role != .system }
 
-        while estimateTotalTokens(trimmed) > budget && !nonSystem.isEmpty {
-            // Remove the oldest non-system message
-            if let firstNonSystemIdx = trimmed.firstIndex(where: { $0.role != .system }) {
-                trimmed.remove(at: firstNonSystemIdx)
-            } else {
-                break
-            }
+        while estimateTotalTokens(trimmed) > budget && trimmed.contains(where: { $0.role != .system }) {
+            if !removeOldestNonSystemUnit(from: &trimmed) { break }
         }
 
         return trimmed
@@ -180,16 +200,11 @@ public class Conversation: @unchecked Sendable {
 
     /// Trim oldest non-system messages until under token budget.
     private func trimByTokens(_ messages: [AgentMessage]) -> [AgentMessage] {
-        let budget = contextWindow - outputReserve
+        let budget = max(0, contextWindow - outputReserve)
         var trimmed = messages
 
-        while estimateTotalTokens(trimmed) > budget && trimmed.count > 1 {
-            // Remove the oldest non-system message
-            if let firstNonSystemIdx = trimmed.firstIndex(where: { $0.role != .system }) {
-                trimmed.remove(at: firstNonSystemIdx)
-            } else {
-                break
-            }
+        while estimateTotalTokens(trimmed) > budget && trimmed.contains(where: { $0.role != .system }) {
+            if !removeOldestNonSystemUnit(from: &trimmed) { break }
         }
 
         return trimmed

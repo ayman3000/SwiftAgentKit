@@ -85,6 +85,17 @@ struct FailingTool: AgentTool {
     }
 }
 
+struct DangerousTool: AgentTool {
+    let name = "delete_everything"
+    let description = "A destructive operation that requires confirmation."
+    let parameters = ToolParameters.empty
+    var requiresConfirmation: Bool { true }
+
+    func execute(parameters: [String: Any]) async throws -> AgentToolResult {
+        .success(toolCallId: "", toolName: name, result: "done")
+    }
+}
+
 @Test func testToolToJSON() {
     let tool = EchoTool()
     let json = tool.toJSON()
@@ -234,6 +245,52 @@ struct FailingTool: AgentTool {
     #expect(results[1].isError == true)  // Second is deduped
 }
 
+@Test func testConfirmationRequiredFailsClosedWithoutHandler() async {
+    let registry = ToolRegistry()
+    await registry.register(DangerousTool())
+    let dispatcher = ToolDispatcher(registry: registry)
+    let state = AgentState()
+
+    let call = AgentToolCall(name: "delete_everything")
+    // No onToolConfirmation handler and autonomous mode is off → fail closed.
+    let results = await dispatcher.dispatch(calls: [call], state: state, observer: nil)
+    #expect(results.count == 1)
+    #expect(results[0].isError == true)
+    #expect(results[0].result.contains("requires confirmation"))
+}
+
+@Test func testConfirmationRequiredRunsWhenApproved() async {
+    let registry = ToolRegistry()
+    await registry.register(DangerousTool())
+    let dispatcher = ToolDispatcher(registry: registry)
+    let state = AgentState()
+
+    var callbacks = AgentCallbacks()
+    callbacks.onToolConfirmation = { _, _ in true }
+
+    let call = AgentToolCall(name: "delete_everything")
+    let results = await dispatcher.dispatch(calls: [call], state: state, callbacks: callbacks, observer: nil)
+    #expect(results.count == 1)
+    #expect(results[0].isError == false)
+    #expect(results[0].result == "done")
+}
+
+@Test func testConfirmationRequiredDeniedByHandler() async {
+    let registry = ToolRegistry()
+    await registry.register(DangerousTool())
+    let dispatcher = ToolDispatcher(registry: registry)
+    let state = AgentState()
+
+    var callbacks = AgentCallbacks()
+    callbacks.onToolConfirmation = { _, _ in false }
+
+    let call = AgentToolCall(name: "delete_everything")
+    let results = await dispatcher.dispatch(calls: [call], state: state, callbacks: callbacks, observer: nil)
+    #expect(results.count == 1)
+    #expect(results[0].isError == true)
+    #expect(results[0].result.contains("not approved"))
+}
+
 // MARK: - Conversation/Memory Tests
 
 @Test func testConversationAppendAndRead() {
@@ -263,6 +320,34 @@ struct FailingTool: AgentTool {
     // System message should be preserved
     let all = conv.allMessages()
     #expect(all.first?.role == .system)
+}
+
+@Test func testTrimPreservesToolCallResultPairing() {
+    // Small caps force trimming across several tool-using turns.
+    let conv = Conversation(contextWindow: 8192, maxMessages: 4)
+    conv.append(.system("system"))
+    for i in 0..<6 {
+        let call = AgentToolCall(id: "call_\(i)", name: "echo", parameters: ["n": AnyCodable(i)])
+        conv.append(.assistant(content: "", toolCalls: [call]))
+        conv.append(.tool(results: [.success(toolCallId: "call_\(i)", toolName: "echo", result: "r\(i)")]))
+    }
+
+    _ = conv.trim()
+    let all = conv.allMessages()
+
+    // Every retained tool-result message must be immediately preceded by an
+    // assistant message that issued tool calls (no orphaned tool results).
+    for (idx, msg) in all.enumerated() where msg.role == .tool {
+        #expect(idx > 0)
+        let prev = all[idx - 1]
+        #expect(prev.role == .assistant)
+        #expect((prev.toolCalls?.isEmpty == false))
+    }
+    // And no assistant tool_call turn is left without its following tool result.
+    for (idx, msg) in all.enumerated() where msg.role == .assistant && (msg.toolCalls?.isEmpty == false) {
+        #expect(idx + 1 < all.count)
+        #expect(all[idx + 1].role == .tool)
+    }
 }
 
 @Test func testConversationTokenEstimation() {
@@ -390,6 +475,30 @@ struct TestScene: Codable, Equatable {
     #expect(plan.hasPendingSteps == true)
     #expect(plan.completedCount == 2)
     #expect(plan.progress > 0.6 && plan.progress < 0.7)
+}
+
+@Test func testUpdateProgressAdvancesTargetlessPlan() {
+    // LLM-generated steps default to empty `targets`; progress must still advance.
+    let planner = LLMPlanner(provider: ToolAwareMockProvider())
+    var plan = AgentPlan(steps: [
+        AgentPlanStep(step: "Step 1"),
+        AgentPlanStep(step: "Step 2")
+    ])
+    #expect(plan.progress == 0.0)
+
+    let ok = AgentToolResult.success(toolCallId: "c1", toolName: "echo", result: "done")
+    planner.updateProgress(plan: &plan, toolCall: AgentToolCall(id: "c1", name: "echo"), result: ok)
+    #expect(plan.completedCount == 1)
+
+    planner.updateProgress(plan: &plan, toolCall: AgentToolCall(id: "c2", name: "echo"), result: ok)
+    #expect(plan.completedCount == 2)
+    #expect(plan.hasPendingSteps == false)
+
+    // An error must not advance the plan.
+    var plan2 = AgentPlan(steps: [AgentPlanStep(step: "Only step")])
+    let err = AgentToolResult.error(toolCallId: "c3", toolName: "echo", message: "boom")
+    planner.updateProgress(plan: &plan2, toolCall: AgentToolCall(id: "c3", name: "echo"), result: err)
+    #expect(plan2.completedCount == 0)
 }
 
 // MARK: - Plan Parsing Tests

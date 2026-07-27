@@ -64,6 +64,17 @@ public struct AgentCallbacks: Sendable {
     /// Use case: result post-processing, error masking, format normalization.
     public var afterTool: (@Sendable (AgentToolCall, AgentToolResult, ToolContext) async -> AgentToolResult?)?
 
+    /// Called before executing a tool whose `requiresConfirmation` is `true`
+    /// (and when autonomous mode is off). Return `true` to approve execution,
+    /// `false` to deny it.
+    ///
+    /// If a confirmation-required tool is dispatched but this callback is not
+    /// set (and autonomous mode is off), the dispatcher fails closed — the tool
+    /// is denied rather than run unconfirmed.
+    ///
+    /// Use case: human-in-the-loop approval for dangerous or irreversible ops.
+    public var onToolConfirmation: (@Sendable (AgentToolCall, ToolContext) async -> Bool)?
+
     // MARK: - Error-level
 
     /// Called when an LLM call fails. Return non-nil to use this as
