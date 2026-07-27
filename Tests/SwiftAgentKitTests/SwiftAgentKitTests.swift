@@ -356,7 +356,22 @@ struct DangerousTool: AgentTool {
     let message = AgentMessage.user("This is a test message with some content")
     let tokens = conv.estimateTokens(message)
     #expect(tokens > 0)
-    #expect(tokens < 20) // ~38 chars / 4 = ~10 tokens
+    #expect(tokens < 20) // ~40 chars / 3.5 + overhead ≈ 16 tokens
+}
+
+@Test func testTokenCounterOverrideIsUsed() {
+    let conv = Conversation()
+    conv.tokenCounter = { _ in 999 }
+    #expect(conv.estimateTokens(.user("anything")) == 999)
+    #expect(conv.estimateTotalTokens([.user("a"), .user("b")]) == 1998)
+}
+
+@Test func testHeuristicIncludesPerMessageOverhead() {
+    let conv = Conversation()
+    conv.charsPerToken = 4.0
+    conv.tokensPerMessageOverhead = 5
+    // 8 chars / 4 = 2, plus 5 overhead = 7
+    #expect(conv.estimateTokens(.user("12345678")) == 7)
 }
 
 @Test func testConversationClear() {
