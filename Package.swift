@@ -47,6 +47,8 @@ let package = Package(
             dependencies: [
                 "SwiftAgentKit",
                 .product(name: "LLMProviderKit", package: "LLMProviderKit"),
+                // Used only by the gated live-model smoke test (real Ollama provider).
+                .product(name: "LLMProviderKitOllama", package: "LLMProviderKit"),
             ]
         ),
 

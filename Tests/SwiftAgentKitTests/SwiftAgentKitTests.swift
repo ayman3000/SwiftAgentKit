@@ -9,6 +9,7 @@
 import Testing
 import Foundation
 import LLMProviderKit
+import LLMProviderKitOllama
 @testable import SwiftAgentKit
 
 // MARK: - AgentMessage Tests
@@ -1465,4 +1466,53 @@ final class StreamingEventFlags: @unchecked Sendable {
     #expect(seen.toolCalls)
     #expect(seen.streamChunk)
     #expect(seen.finished)
+}
+
+// MARK: - Live model smoke test (gated)
+
+/// A real tool the model must call to answer correctly.
+struct AddTool: AgentTool {
+    let name = "add"
+    let description = "Add two integers and return their sum."
+    let parameters = ToolParameters(
+        properties: [
+            "a": ToolParameterProperty(type: "integer", description: "First integer"),
+            "b": ToolParameterProperty(type: "integer", description: "Second integer"),
+        ],
+        required: ["a", "b"]
+    )
+
+    func execute(parameters: [String: Any]) async throws -> AgentToolResult {
+        func intValue(_ key: String) -> Int {
+            if let i = parameters[key] as? Int { return i }
+            if let d = parameters[key] as? Double { return Int(d) }
+            if let s = parameters[key] as? String, let i = Int(s) { return i }
+            return 0
+        }
+        let sum = intValue("a") + intValue("b")
+        return .success(toolCallId: "", toolName: name, result: "\(sum)")
+    }
+}
+
+/// End-to-end streaming-with-tools against a real Ollama model. Gated: runs only
+/// when `SAK_LIVE_TESTS=1` (and a local Ollama server has `glm-5.2:cloud`), so CI
+/// and normal `swift test` stay hermetic. Run with:
+///   SAK_LIVE_TESTS=1 swift test --filter liveOllamaStreamingWithToolCall
+@Test(.enabled(if: ProcessInfo.processInfo.environment["SAK_LIVE_TESTS"] == "1"))
+func liveOllamaStreamingWithToolCall() async throws {
+    let provider = OllamaProvider(configuration: OllamaProvider.local(model: "glm-5.2:cloud"))
+    let agent = Agent(config: AgentConfig(provider: provider, model: "glm-5.2:cloud", maxTurns: 4))
+    agent.register(AddTool())
+
+    var chunks: [String] = []
+    for try await chunk in agent.runStreaming(
+        "What is 21 plus 21? Use the add tool, then state the numeric result."
+    ) {
+        chunks.append(chunk)
+    }
+
+    let full = chunks.joined()
+    // The answer streamed (at least one chunk) and reflects the tool's computed result.
+    #expect(!chunks.isEmpty)
+    #expect(full.contains("42"))
 }
