@@ -7,7 +7,7 @@ All notable changes to SwiftAgentKit will be documented in this file.
 ### Added
 - Guard against overlapping `run(_:)` calls on the same `Agent` instance with `AgentError.runInProgress`.
 - Regression coverage for same-instance concurrent run rejection.
-- **Streaming with tools (prototype):** `runStreaming(_:)` now runs a real streaming ReAct loop — each turn is streamed, and the final (tool-free) turn streams its answer token-by-token instead of being yielded as a single post-hoc chunk. Turns that signal tool use are re-issued non-streaming to obtain reliable tool-call arguments, then tools execute and the loop continues. (Prototype: this path does not yet apply planning, skills, repair-retry, or lifecycle callbacks.) Regression coverage added.
+- **Streaming with tools:** `runStreaming(_:)` streams assistant text token-by-token — including the final answer — instead of yielding it as a single post-hoc chunk. It now shares the exact ReAct implementation as `run(_:)` (planning, skills, repair-retry, lifecycle callbacks, and events all apply) via a common `runLoop(onText:)`; the streaming vs non-streaming difference is isolated to a single per-turn executor. Turns that signal tool use are re-issued non-streaming to obtain reliable tool-call arguments, then tools execute and the loop continues. Regression coverage added (streamed answer after a tool turn; event-parity with `run`).
 - Wired up tool confirmation gating: tools with `requiresConfirmation == true` now require approval via the new `AgentCallbacks.onToolConfirmation` callback before executing (bypassed when autonomous mode is on). Without a handler the dispatcher fails closed — the tool is denied rather than run unconfirmed. Regression coverage added.
 
 ### Fixed

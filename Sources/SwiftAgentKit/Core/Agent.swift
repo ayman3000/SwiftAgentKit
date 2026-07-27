@@ -373,6 +373,14 @@ public final class Agent: @unchecked Sendable {
     /// Works with models that support vision (e.g., GPT-4o, Gemini, LLaVA).
     ///
     public func run(_ query: String, images: [LLMImage]) async throws -> String {
+        try await runLoop(query: query, images: images, onText: nil)
+    }
+
+    /// Shared ReAct implementation backing both `run(_:)` (non-streaming) and
+    /// `runStreaming(_:)` (streaming). When `onText` is non-nil, each turn is
+    /// streamed and assistant text deltas are delivered to `onText` as they
+    /// arrive — including the final answer, token-by-token.
+    private func runLoop(query: String, images: [LLMImage], onText: (@Sendable (String) -> Void)?) async throws -> String {
         guard beginRunIfIdle() else {
             throw AgentError.runInProgress
         }
@@ -510,6 +518,7 @@ public final class Agent: @unchecked Sendable {
                             _ = conversation.trim()
                             continue
                         }
+                        onText?(intercepted.text)
                         conversation.append(.assistant(intercepted.text))
                         let summary = makeRunSummary(
                             query: query,
@@ -528,10 +537,10 @@ public final class Agent: @unchecked Sendable {
                 // Build LLM request (with state-templated system prompt)
                 let request = makeLLMRequest(messagesForLLM: messagesForLLM, tools: llmToolDefs)
 
-                // Call the provider
-                let response: LLMResponse
+                // Call the provider (streamed when onText is set)
+                var agentResponse: AgentLLMResponse
                 do {
-                    response = try await config.provider.complete(request)
+                    agentResponse = try await executeTurn(request: request, onText: onText)
                 } catch {
                     // onModelError callback — can provide fallback
                     if let onModelError = callbacks?.onModelError {
@@ -554,9 +563,6 @@ public final class Agent: @unchecked Sendable {
                     emit(.llmCallRetrying(turn: totalTurns, attempt: 1, error: error.localizedDescription))
                     throw AgentError.providerError(error.localizedDescription)
                 }
-
-                // Parse the response
-                var agentResponse = AgentLLMResponse.from(response)
 
                 // afterModel callback — can modify the response
                 if let afterModel = callbacks?.afterModel {
@@ -684,6 +690,7 @@ public final class Agent: @unchecked Sendable {
             if let beforeModel = callbacks?.beforeModel {
                 if let intercepted = await beforeModel(messagesForLLM, state) {
                     emit(.llmCallCompleted(turn: 1, response: intercepted))
+                    onText?(intercepted.text)
                     conversation.append(.assistant(intercepted.text))
                     state.clearTemp()
                     let summary = makeRunSummary(
@@ -707,9 +714,9 @@ public final class Agent: @unchecked Sendable {
                 }
             }
 
-            let response: LLMResponse
+            var agentResponse: AgentLLMResponse
             do {
-                response = try await config.provider.complete(request)
+                agentResponse = try await executeTurn(request: request, onText: onText)
             } catch {
                 if let onModelError = callbacks?.onModelError {
                     if let fallback = await onModelError(error, state) {
@@ -730,8 +737,6 @@ public final class Agent: @unchecked Sendable {
                 }
                 throw AgentError.providerError(error.localizedDescription)
             }
-
-            var agentResponse = AgentLLMResponse.from(response)
 
             // afterModel callback
             if let afterModel = callbacks?.afterModel {
@@ -787,6 +792,73 @@ public final class Agent: @unchecked Sendable {
             finalResponse: finalResponse,
             elapsed: elapsedOverride ?? Date().timeIntervalSince(startTime)
         )
+    }
+
+    /// Execute one turn against the provider and return the parsed response.
+    ///
+    /// - When `onText` is `nil`, the turn is non-streaming (`complete`).
+    /// - When `onText` is non-nil, the turn is streamed: text deltas are
+    ///   delivered to `onText` as they arrive. If the stream signals native tool
+    ///   use, the turn is re-issued non-streaming to obtain reliable tool-call
+    ///   arguments (provider streaming doesn't deliver complete tool args
+    ///   consistently). Otherwise the streamed text is parsed the same way as a
+    ///   non-streaming response — so text-marker tool calls (for models without
+    ///   native tool calling) are still detected.
+    private func executeTurn(
+        request: LLMRequest,
+        onText: (@Sendable (String) -> Void)?
+    ) async throws -> AgentLLMResponse {
+        guard let onText else {
+            let response = try await config.provider.complete(request)
+            return AgentLLMResponse.from(response)
+        }
+
+        var streamedText = ""
+        var sawNativeToolSignal = false
+        for try await chunk in config.provider.stream(request) {
+            switch chunk {
+            case .text(let text):
+                streamedText += text
+                onText(text)
+                emit(.streamChunk(text))
+            case .toolCall:
+                sawNativeToolSignal = true
+            case .finish(let reason, _):
+                if reason == .toolCalls { sawNativeToolSignal = true }
+            case .error(let error):
+                throw error
+            }
+        }
+        emit(.streamFinished)
+
+        if sawNativeToolSignal {
+            // Re-issue non-streaming for accurate tool-call arguments.
+            let response = try await config.provider.complete(request)
+            let parsed = AgentLLMResponse.from(response)
+            // Keep any streamed preamble text if the re-issue returned none.
+            if parsed.text.isEmpty && !streamedText.isEmpty {
+                return AgentLLMResponse(
+                    text: streamedText,
+                    toolCalls: parsed.toolCalls,
+                    finishReason: parsed.finishReason,
+                    usage: parsed.usage,
+                    providerName: parsed.providerName
+                )
+            }
+            return parsed
+        }
+
+        // No native tool signal — parse the streamed text so text-marker tool
+        // calls are still recognized (parity with the non-streaming path).
+        let synthesized = LLMResponse(
+            text: streamedText,
+            finishReason: .stop,
+            usage: nil,
+            toolCalls: [],
+            request: request,
+            providerName: type(of: config.provider).name
+        )
+        return AgentLLMResponse.from(synthesized)
     }
 
     private func makeLLMToolDefinitions(from registeredTools: [any AgentTool]) -> [LLMToolDefinition] {
@@ -918,20 +990,19 @@ public final class Agent: @unchecked Sendable {
         }
     }
 
-    /// Run the agent loop with tools, streaming the final answer token-by-token.
+    /// Run the agent loop, streaming assistant text token-by-token.
     ///
-    /// This is a real streaming ReAct loop. Each turn is streamed from the
-    /// provider so any assistant text (including the final answer) reaches the
-    /// caller as it is generated. When a turn signals tool use, the turn is
-    /// re-issued non-streaming to obtain reliable tool-call arguments (provider
-    /// streaming does not deliver complete tool arguments consistently), the
-    /// tools are executed, and the loop continues. The final turn — the one that
-    /// requests no tools — streams its answer directly to the caller.
+    /// This shares the exact ReAct implementation used by `run(_:)` — including
+    /// planning, skills, repair-retry, and lifecycle callbacks — but streams each
+    /// turn. Any assistant text, including the final answer, reaches the caller as
+    /// it is generated. Turns that signal tool use are re-issued non-streaming to
+    /// obtain reliable tool-call arguments (provider streaming does not deliver
+    /// complete tool arguments consistently), then tools run and the loop
+    /// continues; the final tool-free turn streams its answer directly.
     ///
-    /// If no tools are registered, this is equivalent to `stream()`.
-    ///
-    /// - Note: Prototype. Unlike `run(_:)`, this path does not yet apply
-    ///   planning, skills, repair-retry, or the model/agent lifecycle callbacks.
+    /// - Note: `afterModel`/`afterAgent` callbacks can still rewrite the returned
+    ///   text, but on the final turn the original deltas have already been
+    ///   streamed — so a rewrite won't retroactively change what the caller saw.
     public func runStreaming(_ query: String) -> AsyncThrowingStream<String, Error> {
         return AsyncThrowingStream { [weak self] continuation in
             let task = Task { [weak self] in
@@ -939,132 +1010,13 @@ public final class Agent: @unchecked Sendable {
                     continuation.finish()
                     return
                 }
-
-                // Await any in-flight tool registrations before deciding whether
-                // this run has tools (mirrors `run(_:)`).
-                await self.awaitPendingRegistrations()
-                let registeredTools = await self.tools.allTools()
-
-                // No tools (or turns disabled) → plain text streaming.
-                if registeredTools.isEmpty || self.config.maxTurns <= 0 {
-                    do {
-                        for try await chunk in self.stream(query) {
-                            continuation.yield(chunk)
-                        }
-                        continuation.finish()
-                    } catch {
-                        continuation.finish(throwing: error)
-                    }
-                    return
-                }
-
-                self.resetCancellation()
-                let startTime = Date()
-                self.emit(.started(query: query))
-
                 do {
-                    // --- Setup (system prompt + memory + tool instruction) ---
-                    self.conversation.append(.user(query))
-
-                    var systemPrompt = self.config.systemPrompt ?? ""
-                    if let memoryStore = self.memoryStore {
-                        let memory = await memoryStore.loadContextBlock()
-                        if !memory.isEmpty {
-                            systemPrompt += (systemPrompt.isEmpty ? "" : "\n\n") + memory
-                        }
-                    }
-                    let toolNames = registeredTools.map(\.name).joined(separator: ", ")
-                    systemPrompt += (systemPrompt.isEmpty ? "" : "\n\n")
-                        + "You have access to the following tools: \(toolNames). "
-                        + "When the request requires real actions or data, call the appropriate tool instead of guessing."
-                    self.conversation.setSystemMessage(.system(systemPrompt))
-
-                    let toolDefs = self.makeLLMToolDefinitions(from: registeredTools)
-                    var totalTurns = 0
-                    var toolsExecuted = 0
-                    var toolErrors = 0
-
-                    while totalTurns < self.config.maxTurns {
-                        if self.isCancelled {
-                            self.emit(.cancelled)
-                            throw AgentError.cancelled
-                        }
-                        totalTurns += 1
-
-                        let messages = self.conversation.messagesForLLMCall()
-                        let request = self.makeLLMRequest(messagesForLLM: messages, tools: toolDefs)
-                        self.emit(.llmCallStarted(turn: totalTurns))
-
-                        // Stream this turn: surface text live, watch for a tool-use signal.
-                        var turnText = ""
-                        var sawToolSignal = false
-                        for try await chunk in self.config.provider.stream(request) {
-                            switch chunk {
-                            case .text(let text):
-                                turnText += text
-                                continuation.yield(text)
-                                self.emit(.streamChunk(text))
-                            case .toolCall:
-                                sawToolSignal = true
-                            case .finish(let reason, _):
-                                if reason == .toolCalls { sawToolSignal = true }
-                            case .error(let error):
-                                throw error
-                            }
-                        }
-                        self.emit(.streamFinished)
-
-                        // No tool use → this streamed turn is the final answer.
-                        if !sawToolSignal {
-                            self.conversation.append(.assistant(turnText))
-                            self.emit(.finished(summary: self.makeRunSummary(
-                                query: query, totalTurns: totalTurns,
-                                toolsExecuted: toolsExecuted, toolErrors: toolErrors,
-                                plan: nil, finalResponse: turnText, startTime: startTime
-                            )))
-                            continuation.finish()
-                            return
-                        }
-
-                        // Tool use signalled. Streamed tool arguments aren't reliable
-                        // across providers, so re-issue non-streaming for accurate calls.
-                        let response = try await self.config.provider.complete(request)
-                        let agentResponse = AgentLLMResponse.from(response)
-
-                        guard agentResponse.hasToolCalls, let toolCalls = agentResponse.toolCalls else {
-                            // Model ultimately produced no tool calls — treat as final.
-                            let finalText = turnText.isEmpty ? agentResponse.text : turnText
-                            if turnText.isEmpty && !agentResponse.text.isEmpty {
-                                continuation.yield(agentResponse.text)
-                            }
-                            self.conversation.append(.assistant(finalText))
-                            self.emit(.finished(summary: self.makeRunSummary(
-                                query: query, totalTurns: totalTurns,
-                                toolsExecuted: toolsExecuted, toolErrors: toolErrors,
-                                plan: nil, finalResponse: finalText, startTime: startTime
-                            )))
-                            continuation.finish()
-                            return
-                        }
-
-                        self.emit(.toolCallsReceived(toolCalls))
-                        self.conversation.append(.assistant(content: turnText, toolCalls: toolCalls))
-
-                        let results = await self.dispatchToolCalls(toolCalls, turn: totalTurns, query: query)
-                        toolsExecuted += results.count
-                        toolErrors += results.filter(\.isError).count
-                        self.conversation.append(.tool(results: results))
-                        _ = self.conversation.trim()
-                    }
-
-                    // Max turns reached without a final answer.
-                    self.emit(.finished(summary: self.makeRunSummary(
-                        query: query, totalTurns: totalTurns,
-                        toolsExecuted: toolsExecuted, toolErrors: toolErrors,
-                        plan: nil, finalResponse: "Max turns reached without completion.",
-                        startTime: startTime
-                    )))
-                    continuation.finish(throwing: AgentError.maxTurnsReached(self.config.maxTurns))
+                    _ = try await self.runLoop(
+                        query: query,
+                        images: [],
+                        onText: { continuation.yield($0) }
+                    )
+                    continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
                 }
