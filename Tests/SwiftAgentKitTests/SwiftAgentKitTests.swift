@@ -1635,7 +1635,7 @@ private func firstArtifactID(in text: String) -> String? {
 }
 
 @Test func testContextManagerExternalizesCompletedToolResults() async {
-    let manager = ContextManager(summaryLength: 40)
+    let manager = ContextManager(summaryLength: 40, inlineBudgetChars: 0)
     // Marker placed deep in the output (well past the 40-char receipt summary).
     let bigResult = String(repeating: "x", count: 500) + " DEEP_NEEDLE_END"
 
@@ -1675,7 +1675,7 @@ private func firstArtifactID(in text: String) -> String? {
 
 @Test func testContextManagerDoesNotRetruncateArtifactReads() async {
     // Small active bound so a normal result would be truncated…
-    let manager = ContextManager(maxActiveResultChars: 40)
+    let manager = ContextManager(maxActiveResultChars: 40, inlineBudgetChars: 0)
     let bigRead = String(repeating: "y", count: 500) + " READ_TAIL"
 
     // Active exchange = an artifact_read the model just issued.
@@ -1695,8 +1695,32 @@ private func firstArtifactID(in text: String) -> String? {
     #expect(toolMsg?.content.contains("truncated") == false)
 }
 
+@Test func testContextManagerKeepsSmallConversationInline() async {
+    // A completed tool exchange in a SMALL conversation must stay fully inline
+    // (no ledger, tool result present) — not externalized — so the model keeps
+    // its own recent history and doesn't lose the thread on multi-step tasks.
+    let manager = ContextManager()  // default 16k inline budget
+    let messages: [AgentMessage] = [
+        .system("You are helpful."),
+        .user("check fpdf"),
+        .assistant(content: "", toolCalls: [AgentToolCall(id: "c1", name: "run_shell")]),
+        .tool(results: [.success(toolCallId: "c1", toolName: "run_shell", result: "fpdf 2.8.7 installed")]),
+        .assistant("Good, fpdf is available."),
+        .user("now create it"),
+    ]
+
+    let out = await manager.modelMessages(messages) { $0 }
+
+    // Tool result kept inline (not dropped into a ledger)…
+    #expect(out.contains { $0.role == .tool && $0.content.contains("fpdf 2.8.7 installed") })
+    // …the tool-call turn is preserved…
+    #expect(out.contains { $0.role == .assistant && ($0.toolCalls?.isEmpty == false) })
+    // …and no "tool ledger" externalization text appears.
+    #expect(out.allSatisfy { !$0.content.contains("tool ledger") })
+}
+
 @Test func testContextManagerKeepsActiveExchange() async {
-    let manager = ContextManager()
+    let manager = ContextManager(inlineBudgetChars: 0)
     // Conversation ends on a tool result the model still needs to act on.
     let messages: [AgentMessage] = [
         .user("what time is it"),
@@ -1751,7 +1775,7 @@ private func tempSkillDir() -> URL {
 }
 
 @Test func testContextManagerReusesActiveArtifact() async {
-    let manager = ContextManager(maxActiveResultChars: 20)
+    let manager = ContextManager(maxActiveResultChars: 20, inlineBudgetChars: 0)
     let big = String(repeating: "z", count: 300)
     let messages: [AgentMessage] = [
         .user("go"),
