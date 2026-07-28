@@ -53,7 +53,7 @@ public final class ContextManager: @unchecked Sendable {
         store: any ArtifactStore = InMemoryArtifactStore(),
         maxActiveResultChars: Int = 8_000,
         ledgerEntries: Int = 20,
-        summaryLength: Int = 200,
+        summaryLength: Int = 320,
         inlineBudgetChars: Int = 16_000
     ) {
         self.store = store
@@ -205,7 +205,7 @@ public final class ContextManager: @unchecked Sendable {
         if let cached = cachedReceipt(result.toolCallId) { return cached }
 
         let name = result.toolName ?? "tool"
-        let summary = singleLine(String(result.result.prefix(summaryLength)))
+        let summary = conclusionSummary(result.result)
         var artifactIDs: [String] = []
         // Don't spill retrieval-tool output to a new artifact — that would nest
         // artifacts of artifacts and never surface the real content.
@@ -274,5 +274,21 @@ public final class ContextManager: @unchecked Sendable {
 
     private func singleLine(_ text: String) -> String {
         text.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
+    }
+
+    /// A one-line receipt summary that preserves the tool's CONCLUSION. For long
+    /// output the meaningful result is often at the END (a shell exit line, a
+    /// written path, or — for a failure — the exception at the bottom of a
+    /// traceback), so we keep a head AND a tail rather than only the first N
+    /// characters. This is what lets the agent still know the outcome of a tool
+    /// call after its raw output has been compacted out of context.
+    private func conclusionSummary(_ text: String) -> String {
+        let flat = singleLine(text)
+        guard flat.count > summaryLength else { return flat }
+        let headLen = summaryLength / 2
+        let tailLen = summaryLength - headLen
+        let head = String(flat.prefix(headLen)).trimmingCharacters(in: .whitespaces)
+        let tail = String(flat.suffix(tailLen)).trimmingCharacters(in: .whitespaces)
+        return "\(head) … \(tail)"
     }
 }

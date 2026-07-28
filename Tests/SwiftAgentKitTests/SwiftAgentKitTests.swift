@@ -1725,9 +1725,10 @@ private func firstArtifactID(in text: String) -> String? {
 
     let out = await manager.modelMessages(messages) { $0 }
 
-    // The full tool output must NOT be resent in any model message…
-    #expect(out.allSatisfy { !$0.content.contains("DEEP_NEEDLE_END") })
-    // …but a ledger + artifact reference must appear in the (single) system block.
+    // The raw tool output must NOT be resent as an inline tool message (a short
+    // conclusion snippet in the ledger is fine — and desired).
+    #expect(!out.contains { $0.role == .tool && $0.content.contains("DEEP_NEEDLE_END") })
+    // …and a ledger + artifact reference must appear in the (single) system block.
     let system = out.first { $0.role == .system }
     #expect(system != nil)
     #expect(system?.content.contains("tool ledger") == true)
@@ -1793,6 +1794,30 @@ private func firstArtifactID(in text: String) -> String? {
     #expect(out.allSatisfy { !$0.content.contains("tool ledger") })
 }
 
+@Test func testReceiptSummaryCapturesConclusionAtTail() async {
+    // A failed tool exchange, externalized to the ledger. The ledger receipt must
+    // preserve the CONCLUSION (the exception at the END of a traceback), not just
+    // the first N chars — otherwise the agent can't tell what happened.
+    let manager = ContextManager(inlineBudgetChars: 0)   // force externalization
+    let traceback = "Traceback (most recent call last):\n"
+        + String(repeating: "  File \"build.py\", line 12, in <module>\n", count: 30)
+        + "UnicodeEncodeError: 'latin-1' codec can't encode character BULLET_CONCLUSION"
+    let messages: [AgentMessage] = [
+        .user("run the build"),
+        .assistant(content: "", toolCalls: [AgentToolCall(id: "c1", name: "run_shell")]),
+        .tool(results: [.error(toolCallId: "c1", toolName: "run_shell", message: traceback)]),
+        .assistant("that failed"),   // exchange is completed (not active)
+        .user("why did it fail?"),
+    ]
+
+    let out = await manager.modelMessages(messages) { $0 }
+    let system = out.first { $0.role == .system }?.content ?? ""
+
+    #expect(system.contains("BULLET_CONCLUSION"))   // the tail (real error) survived
+    #expect(system.contains("Traceback"))           // the head too
+    #expect(system.contains("ERROR"))               // marked as a failure
+}
+
 @Test func testContextManagerEvictsOldestKeepsRecent() async {
     // Over budget with two completed tool exchanges: the OLD one is externalized
     // to the ledger, the RECENT tool result stays inline (so an iterative
@@ -1812,7 +1837,9 @@ private func firstArtifactID(in text: String) -> String? {
     let out = await manager.modelMessages(messages) { $0 }
 
     #expect(out.contains { $0.role == .tool && $0.content.contains("RECENT_MARKER_kept") })
-    #expect(out.allSatisfy { !$0.content.contains("OLDTAIL") })
+    // The old exchange is externalized — not kept as an inline tool message
+    // (a conclusion snippet in the ledger is fine).
+    #expect(!out.contains { $0.role == .tool && $0.content.contains("OLDTAIL") })
     #expect(out.contains { $0.role == .system && $0.content.contains("ledger") })
 }
 
