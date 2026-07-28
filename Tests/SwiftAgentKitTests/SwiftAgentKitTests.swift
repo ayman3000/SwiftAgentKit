@@ -2103,3 +2103,38 @@ func liveAgentLearnsSkill() async throws {
     let skills = try await store.loadAll()
     #expect(skills.contains { $0.name.localizedCaseInsensitiveContains("greet") })
 }
+
+/// A tool that returns a blob whose meaningful value is at the END (like a
+/// script's exit line or a traceback's exception).
+struct ProbeTool: AgentTool {
+    let name = "probe"
+    let description = "Return a diagnostic blob. Call it once when asked."
+    let parameters = ToolParameters.empty
+    func execute(parameters: [String: Any]) async throws -> AgentToolResult {
+        let blob = String(repeating: "diagnostic line of output. ", count: 60) + " END_TOKEN=RESULT_TOKEN_ZZ"
+        return .success(toolCallId: "", toolName: name, result: blob)
+    }
+}
+
+/// Live proof of the receipt-conclusion fix: a tool runs early, its exchange is
+/// compacted into the ledger, and a LATER turn must recall the tool's outcome —
+/// which lives at the END of the output (kept by the head+tail receipt).
+///   SAK_LIVE_TESTS=1 swift test --filter liveAgentRecallsToolConclusionAfterCompaction
+@Test(.enabled(if: ProcessInfo.processInfo.environment["SAK_LIVE_TESTS"] == "1"))
+func liveAgentRecallsToolConclusionAfterCompaction() async throws {
+    let provider = OllamaProvider(configuration: OllamaProvider.local(model: "glm-5.2:cloud"))
+    let agent = Agent(config: AgentConfig(
+        provider: provider, model: "glm-5.2:cloud", maxTurns: 4,
+        tools: [ProbeTool()],
+        contextManager: ContextManager(inlineBudgetChars: 400)   // tiny → forces compaction
+    ))
+
+    // Turn 1: run the probe (its large output ends with the token).
+    _ = try await agent.run("Call the probe tool once, then briefly acknowledge it ran.")
+
+    // Turn 2 (same conversation): the probe exchange is now compacted. Recall its
+    // conclusion — only possible if the receipt kept the tail.
+    let answer = try await agent.run(
+        "Earlier you called the probe tool. What was the END_TOKEN value in its output? Answer with just that token.")
+    #expect(answer.contains("RESULT_TOKEN_ZZ"))
+}
