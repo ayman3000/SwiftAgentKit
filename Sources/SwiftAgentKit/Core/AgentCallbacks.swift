@@ -75,6 +75,21 @@ public struct AgentCallbacks: Sendable {
     /// Use case: human-in-the-loop approval for dangerous or irreversible ops.
     public var onToolConfirmation: (@Sendable (AgentToolCall, ToolContext) async -> Bool)?
 
+    // MARK: - Goal-level
+
+    /// Called when the model signals it's done (a turn with no tool calls),
+    /// BEFORE the agent stops. Return a `GoalVerdict` to enforce goal-driven
+    /// looping: `.satisfied` lets it stop; `.unsatisfied(reason:)` feeds the
+    /// reason back as a nudge and continues the loop; `.blocked(reason:)` stops
+    /// early on a real blocker. Bounded by `AgentConfig.maxVerificationRetries`.
+    ///
+    /// Use case: don't trust the model's "I'm done" — verify the goal is actually
+    /// met (e.g. the output file exists, tests pass, the answer contains X), and
+    /// keep the agent working until it is.
+    ///
+    /// - Parameters: the original query, the model's proposed final answer, state.
+    public var verifyCompletion: (@Sendable (String, String, AgentState) async -> GoalVerdict)?
+
     // MARK: - Error-level
 
     /// Called when an LLM call fails. Return non-nil to use this as

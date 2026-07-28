@@ -307,6 +307,80 @@ struct DangerousTool: AgentTool {
     #expect(results[0].result == "done")
 }
 
+// MARK: - Goal-completion verifier loop
+
+/// Always returns fixed text with no tool calls, so the loop hits the "done"
+/// branch each turn and the verifier decides whether to stop.
+struct PlainAnswerProvider: LLMProvider {
+    static let name = "plain-answer-mock"
+    let configuration = LLMProviderConfiguration(name: PlainAnswerProvider.name, baseURL: URL(string: "inproc://x")!)
+    let text: String
+    func complete(_ request: LLMRequest) async throws -> LLMResponse {
+        LLMResponse(text: text, finishReason: .stop, request: request, providerName: Self.name)
+    }
+    func stream(_ request: LLMRequest) -> AsyncThrowingStream<LLMStreamChunk, Error> {
+        AsyncThrowingStream { c in c.yield(.text(text)); c.yield(.finish(reason: .stop, usage: nil)); c.finish() }
+    }
+}
+
+actor VerifyCounter { private(set) var n = 0; func bump() { n += 1 } }
+
+@Test func testVerifierRetriesUntilSatisfied() async throws {
+    let counter = VerifyCounter()
+    let agent = Agent(config: AgentConfig(
+        provider: PlainAnswerProvider(text: "here you go"), maxTurns: 6, tools: [EchoTool()]))
+    var callbacks = AgentCallbacks()
+    callbacks.verifyCompletion = { _, _, _ in
+        await counter.bump()
+        return await counter.n >= 2 ? .satisfied : .unsatisfied(reason: "not done yet")
+    }
+    agent.callbacks = callbacks
+
+    let answer = try await agent.run("do the task")
+    #expect(answer.contains("here you go"))
+    #expect(await counter.n == 2)   // unsatisfied once, then satisfied
+}
+
+@Test func testVerifierSatisfiedStopsImmediately() async throws {
+    let counter = VerifyCounter()
+    let agent = Agent(config: AgentConfig(
+        provider: PlainAnswerProvider(text: "answer"), maxTurns: 6, tools: [EchoTool()]))
+    var callbacks = AgentCallbacks()
+    callbacks.verifyCompletion = { _, _, _ in await counter.bump(); return .satisfied }
+    agent.callbacks = callbacks
+
+    let answer = try await agent.run("do it")
+    #expect(answer.contains("answer"))
+    #expect(await counter.n == 1)   // one check, then stop
+}
+
+@Test func testVerifierBlockedStopsEarlyWithReason() async throws {
+    let agent = Agent(config: AgentConfig(
+        provider: PlainAnswerProvider(text: "trying"), maxTurns: 6, tools: [EchoTool()]))
+    var callbacks = AgentCallbacks()
+    callbacks.verifyCompletion = { _, _, _ in .blocked(reason: "needs a password I don't have") }
+    agent.callbacks = callbacks
+
+    let answer = try await agent.run("do it")
+    #expect(answer.contains("blocked"))
+    #expect(answer.contains("needs a password"))
+}
+
+@Test func testVerifierBoundedByMaxRetries() async throws {
+    let counter = VerifyCounter()
+    let agent = Agent(config: AgentConfig(
+        provider: PlainAnswerProvider(text: "still going"),
+        maxTurns: 20, tools: [EchoTool()], maxVerificationRetries: 2))
+    var callbacks = AgentCallbacks()
+    callbacks.verifyCompletion = { _, _, _ in await counter.bump(); return .unsatisfied(reason: "never happy") }
+    agent.callbacks = callbacks
+
+    // Always-unsatisfied verifier must NOT loop forever — it stops after the cap.
+    let answer = try await agent.run("do it")
+    #expect(answer.contains("still going"))
+    #expect(await counter.n == 2)   // capped at maxVerificationRetries
+}
+
 // MARK: - Conversation/Memory Tests
 
 @Test func testConversationAppendAndRead() {
