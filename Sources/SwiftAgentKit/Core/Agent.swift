@@ -239,6 +239,16 @@ public final class Agent: @unchecked Sendable {
     /// Logger.
     public var logger: AgentLogger
 
+    /// Estimated token count of the most recent prompt actually sent to the model
+    /// (after context management / trimming) — i.e. what the model really saw, not
+    /// the full stored history. Useful for a context-usage indicator.
+    public var lastPromptTokens: Int {
+        promptTokensLock.lock(); defer { promptTokensLock.unlock() }
+        return _lastPromptTokens
+    }
+    private let promptTokensLock = NSLock()
+    private var _lastPromptTokens = 0
+
     /// Cancellation flag.
     private let cancellationLock = NSLock()
     private var _isCancelled = false
@@ -972,6 +982,12 @@ public final class Agent: @unchecked Sendable {
                 return msg.toLLMMessages()
             }
         }
+
+        // Record the size of what we actually send (post context-management), so
+        // an app can show real context usage rather than raw-history size.
+        let promptChars = llmMessages.reduce(0) { $0 + $1.content.count }
+        let estimate = Int((Double(promptChars) / 3.5).rounded()) + llmMessages.count * 4
+        promptTokensLock.withLock { _lastPromptTokens = estimate }
 
         return LLMRequest(
             model: config.model ?? config.provider.configuration.defaultModel ?? "",
