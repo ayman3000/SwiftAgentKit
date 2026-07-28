@@ -1818,6 +1818,28 @@ private func firstArtifactID(in text: String) -> String? {
     #expect(system.contains("ERROR"))               // marked as a failure
 }
 
+@Test func testReceiptIncludesCallArgHint() async {
+    // A compacted run_shell receipt should name WHICH command ran, not just that
+    // some run_shell did — so the agent knows what failed.
+    let manager = ContextManager(inlineBudgetChars: 0)
+    let messages: [AgentMessage] = [
+        .user("build it"),
+        .assistant(content: "", toolCalls: [AgentToolCall(
+            id: "c1", name: "run_shell",
+            parameters: ["command": AnyCodable("python3 naseem_pdf_build.py")])]),
+        .tool(results: [.error(toolCallId: "c1", toolName: "run_shell",
+            message: "Traceback (most recent call last):\nUnicodeEncodeError: bad char")]),
+        .assistant("that failed"),
+        .user("why?"),
+    ]
+
+    let out = await manager.modelMessages(messages) { $0 }
+    let system = out.first { $0.role == .system }?.content ?? ""
+
+    #expect(system.contains("run_shell(python3 naseem_pdf_build.py)"))   // command named
+    #expect(system.contains("ERROR"))
+}
+
 @Test func testContextManagerEvictsOldestKeepsRecent() async {
     // Over budget with two completed tool exchanges: the OLD one is externalized
     // to the ledger, the RECENT tool result stays inline (so an iterative
