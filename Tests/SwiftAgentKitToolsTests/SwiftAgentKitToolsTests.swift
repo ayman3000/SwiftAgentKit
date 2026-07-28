@@ -208,3 +208,72 @@ func liveAgentChainsWriteThenRun() async throws {
     #expect(answer.contains("CHAIN_OK_7"))
     #expect(FileManager.default.fileExists(atPath: script))
 }
+
+// MARK: - Live: hard multi-stage loop with a real goal verifier (gated)
+
+/// Run a shell command and capture stdout+stderr (used by the verifier).
+private func shellCapture(_ command: String) -> String {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/bin/zsh")
+    p.arguments = ["-lc", command]
+    let pipe = Pipe(); p.standardOutput = pipe; p.standardError = pipe
+    try? p.run()
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    p.waitUntilExit()
+    return String(data: data, encoding: .utf8) ?? ""
+}
+
+actor RetryCounter { private(set) var n = 0; func bump() { n += 1 } }
+
+/// Stresses the full loop: write code -> run it -> a goal verifier RUNS the
+/// script and requires exact output -> if wrong, the agent self-repairs and
+/// retries until correct. The verifier is deterministic (it actually executes
+/// the script), so a wrong first attempt forces iteration.
+///   SAK_LIVE_TESTS=1 swift test --filter liveAgentSelfRepairsToExactOutput
+@Test(.enabled(if: ProcessInfo.processInfo.environment["SAK_LIVE_TESTS"] == "1"))
+func liveAgentSelfRepairsToExactOutput() async throws {
+    let dir = tempDir()
+    let script = dir.appendingPathComponent("fib.py").path
+    let retries = RetryCounter()
+
+    let agent = Agent(config: AgentConfig(
+        provider: OllamaProvider(configuration: OllamaProvider.local(model: "glm-5.2:cloud")),
+        model: "glm-5.2:cloud",
+        systemPrompt: """
+        You are a hands-on coding assistant. When a task needs several steps, keep \
+        going until it is FULLY done — never stop after one step or hand back \
+        mid-task. After writing a script, RUN it, check the actual output, and if \
+        it is wrong, fix the script and run it again until it is correct.
+        """,
+        maxTurns: 12,
+        tools: [FileWriteTool(), ShellTool(), FileReadTool()],
+        autonomousMode: true,
+        maxVerificationRetries: 4
+    ))
+
+    // Goal verifier: actually execute the script and require the exact line.
+    var callbacks = AgentCallbacks()
+    callbacks.verifyCompletion = { _, _, _ in
+        await retries.bump()
+        guard FileManager.default.fileExists(atPath: script) else {
+            return .unsatisfied(reason: "The script \(script) does not exist yet — create it.")
+        }
+        let out = shellCapture("python3 \(script)")
+        if out.contains("FIB10=55") { return .satisfied }
+        return .unsatisfied(reason:
+            "Running the script did not print the required line FIB10=55. Actual output was:\n\(out)\n"
+            + "Fix \(script) so it prints exactly FIB10=55, then run it again.")
+    }
+    agent.callbacks = callbacks
+
+    _ = try await agent.run(
+        "Write a Python script at \(script) that computes the 10th Fibonacci number "
+        + "(with fib(0)=0, fib(1)=1, so the 10th is 55) and prints exactly the line "
+        + "FIB10=55. Then run it and make sure the output is correct.")
+
+    // The goal is verifiably met: running the script prints the exact line.
+    let finalOut = shellCapture("python3 \(script)")
+    #expect(finalOut.contains("FIB10=55"))
+    // The verifier ran at least once (proving the goal-gate engaged).
+    #expect(await retries.n >= 1)
+}
