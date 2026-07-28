@@ -277,3 +277,48 @@ func liveAgentSelfRepairsToExactOutput() async throws {
     // The verifier ran at least once (proving the goal-gate engaged).
     #expect(await retries.n >= 1)
 }
+
+/// End-to-end proof of the isolated-Python-venv workflow: the agent creates a
+/// venv, installs a package INTO it, and runs a script that uses it — nothing
+/// touches system Python. Uses a tiny package (cowsay) so the install is fast.
+///   SAK_LIVE_TESTS=1 swift test --filter liveAgentUsesIsolatedVenv
+@Test(.enabled(if: ProcessInfo.processInfo.environment["SAK_LIVE_TESTS"] == "1"))
+func liveAgentUsesIsolatedVenv() async throws {
+    let dir = tempDir()
+    let venv = dir.appendingPathComponent("venv").path
+    let venvPy = "\(venv)/bin/python3"
+    let out = dir.appendingPathComponent("out.txt").path
+
+    let agent = Agent(config: AgentConfig(
+        provider: OllamaProvider(configuration: OllamaProvider.local(model: "glm-5.2:cloud")),
+        model: "glm-5.2:cloud",
+        systemPrompt: """
+        You are a hands-on assistant. Keep going until the task is FULLY done — \
+        run what you write and fix failures until it works. For Python, use ONLY \
+        the virtual environment at \(venv): create it with `python3 -m venv \(venv)` \
+        if missing, run scripts with `\(venvPy)`, and install packages with \
+        `\(venvPy) -m pip install <pkg>`. Never use the system Python.
+        """,
+        maxTurns: 12,
+        tools: [FileWriteTool(), ShellTool(), FileReadTool()],
+        autonomousMode: true,
+        maxVerificationRetries: 3
+    ))
+    var callbacks = AgentCallbacks()
+    callbacks.verifyCompletion = { _, _, _ in
+        FileManager.default.fileExists(atPath: out)
+            ? .satisfied
+            : .unsatisfied(reason: "The output file \(out) does not exist yet — finish creating it.")
+    }
+    agent.callbacks = callbacks
+
+    _ = try await agent.run(
+        "Using the venv, install the `cowsay` package and write a Python script that "
+        + "imports cowsay and writes the text VENV_OK to \(out). Then run it.")
+
+    // The output file exists…
+    #expect(FileManager.default.fileExists(atPath: out))
+    // …and cowsay was installed INTO the venv (proving the venv was used).
+    let venvHasCowsay = shellCapture("\(venvPy) -c 'import cowsay; print(\"has_cowsay\")'")
+    #expect(venvHasCowsay.contains("has_cowsay"))
+}
