@@ -135,28 +135,32 @@ public actor ToolDispatcher {
             }
         }
 
-        // Run unique calls concurrently with Task array (preserves order)
-        var tasks: [Task<AgentToolResult, Never>] = []
-        for call in uniqueCalls {
-            let task = Task {
-                var localSeen = Set<String>()
-                return await executeSingleCall(
-                    call: call,
-                    state: state,
-                    turn: turn,
-                    query: query,
-                    callbacks: callbacks,
-                    observer: observer,
-                    seenKeys: &localSeen
-                )
+        // Run unique calls concurrently in a structured task group (not detached
+        // `Task {}`), so cancellation of the agent's run task propagates into each
+        // tool — letting long-running tools (e.g. ShellTool) tear down promptly
+        // when the user hits Stop. Results are collected by index to preserve order.
+        var indexedResults = [AgentToolResult?](repeating: nil, count: uniqueCalls.count)
+        await withTaskGroup(of: (Int, AgentToolResult).self) { group in
+            for (i, call) in uniqueCalls.enumerated() {
+                group.addTask {
+                    var localSeen = Set<String>()
+                    let result = await self.executeSingleCall(
+                        call: call,
+                        state: state,
+                        turn: turn,
+                        query: query,
+                        callbacks: callbacks,
+                        observer: observer,
+                        seenKeys: &localSeen
+                    )
+                    return (i, result)
+                }
             }
-            tasks.append(task)
+            for await (i, result) in group {
+                indexedResults[i] = result
+            }
         }
-
-        var orderedResults: [AgentToolResult] = []
-        for task in tasks {
-            orderedResults.append(await task.value)
-        }
+        let orderedResults = indexedResults.compactMap { $0 }
 
         // Merge dedup results back in original order
         var finalResults: [AgentToolResult] = []
