@@ -41,16 +41,26 @@ public final class ContextManager: @unchecked Sendable {
     /// output" that keeps getting bounded.
     private static let retrievalToolNames: Set<String> = ["artifact_read", "artifact_search"]
 
+    /// Keep the whole conversation inline (no externalization) while its total
+    /// size is under this many characters. ContextSift only earns its keep when
+    /// context is large; externalizing tool exchanges in a small conversation just
+    /// hands the model receipts for its own recent steps and can make it lose the
+    /// thread. Above this budget, completed tool exchanges are externalized as
+    /// before. A single huge tool result still trips the budget (so it's offloaded).
+    public var inlineBudgetChars: Int
+
     public init(
         store: any ArtifactStore = InMemoryArtifactStore(),
         maxActiveResultChars: Int = 8_000,
         ledgerEntries: Int = 20,
-        summaryLength: Int = 200
+        summaryLength: Int = 200,
+        inlineBudgetChars: Int = 16_000
     ) {
         self.store = store
         self.maxActiveResultChars = maxActiveResultChars
         self.ledgerEntries = ledgerEntries
         self.summaryLength = summaryLength
+        self.inlineBudgetChars = inlineBudgetChars
     }
 
     /// The retrieval tools the model uses to pull full outputs back from the
@@ -74,6 +84,22 @@ public final class ContextManager: @unchecked Sendable {
             .filter { !$0.isEmpty }
 
         let rest = messages.filter { $0.role != .system }
+
+        // Budget gate: while the whole conversation is small, keep everything
+        // inline (full tool calls + results, no ledger) so the model has its
+        // complete recent history. Only externalize once context grows large.
+        let totalChars = messages.reduce(0) { sum, m in
+            sum + m.content.count + (m.toolResults?.reduce(0) { $0 + $1.result.count } ?? 0)
+        }
+        if totalChars <= inlineBudgetChars {
+            var inline: [LLMMessage] = []
+            if !systemBlocks.isEmpty { inline.append(.system(systemBlocks.joined(separator: "\n\n"))) }
+            for message in rest where message.role != .system {
+                inline.append(contentsOf: message.toLLMMessages())
+            }
+            return inline
+        }
+
         let activeStart = activeExchangeStart(in: rest)
 
         // Receipts for every completed tool result (spilled to artifacts as needed).
