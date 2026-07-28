@@ -176,3 +176,35 @@ func liveAgentUsesFileTool() async throws {
     let answer = try await agent.run("Read the file at \(file.path) and tell me the project codename it mentions.")
     #expect(answer.contains("TOOLS_OK_42"))
 }
+
+/// Reproduces the "wrote the script but didn't run it" failure: does the model
+/// CHAIN multiple tool steps (write a script, THEN run it) to completion?
+/// Uses autonomous mode (no confirmation gate) + a persistence-oriented prompt.
+///   SAK_LIVE_TESTS=1 swift test --filter liveAgentChainsWriteThenRun
+@Test(.enabled(if: ProcessInfo.processInfo.environment["SAK_LIVE_TESTS"] == "1"))
+func liveAgentChainsWriteThenRun() async throws {
+    let dir = tempDir()
+    let script = dir.appendingPathComponent("hello.py").path
+
+    let provider = OllamaProvider(configuration: OllamaProvider.local(model: "glm-5.2:cloud"))
+    let agent = Agent(config: AgentConfig(
+        provider: provider,
+        model: "glm-5.2:cloud",
+        systemPrompt: """
+        You are a hands-on assistant. When a task needs several tool steps, keep \
+        going until it is FULLY done — never stop after one step and never hand \
+        back to the user mid-task. After writing a script, RUN it and report the \
+        actual output.
+        """,
+        maxTurns: 8,
+        tools: [FileWriteTool(), ShellTool()],
+        autonomousMode: true
+    ))
+
+    let answer = try await agent.run(
+        "Write a Python script to \(script) that prints exactly CHAIN_OK_7, then run it with python3 and tell me its output.")
+
+    // Success = it chained write_file -> run_shell and reported the real output.
+    #expect(answer.contains("CHAIN_OK_7"))
+    #expect(FileManager.default.fileExists(atPath: script))
+}
