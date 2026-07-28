@@ -84,6 +84,12 @@ public enum AgentEvent: Sendable {
     /// Plan continuation nudge.
     case planContinuationTriggered(pendingSteps: [String], attempt: Int)
 
+    /// Goal verification found the task not yet complete; re-nudged to continue.
+    case completionVerificationFailed(reason: String, attempt: Int)
+
+    /// Goal verification hit a real blocker; the run stops early.
+    case completionBlocked(reason: String)
+
     // MARK: - Memory
 
     /// History was trimmed to fit the context window.

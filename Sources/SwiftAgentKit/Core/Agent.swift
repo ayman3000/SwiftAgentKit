@@ -74,6 +74,11 @@ public struct AgentConfig: Sendable {
     /// `agent.setAutonomousMode(_:)`.
     public var autonomousMode: Bool
 
+    /// Max times an unsatisfied `AgentCallbacks.verifyCompletion` verdict may
+    /// re-nudge the model to keep working before the agent stops anyway. Bounds
+    /// goal-driven looping (also bounded by `maxTurns`). Default 3.
+    public var maxVerificationRetries: Int
+
     public init(
         provider: any LLMProvider,
         model: String? = nil,
@@ -89,7 +94,8 @@ public struct AgentConfig: Sendable {
         enablePlanContinuation: Bool = true,
         tools: [any AgentTool] = [],
         contextManager: ContextManager? = nil,
-        autonomousMode: Bool = false
+        autonomousMode: Bool = false,
+        maxVerificationRetries: Int = 3
     ) {
         self.provider = provider
         self.model = model
@@ -106,6 +112,7 @@ public struct AgentConfig: Sendable {
         self.tools = tools
         self.contextManager = contextManager
         self.autonomousMode = autonomousMode
+        self.maxVerificationRetries = maxVerificationRetries
     }
 }
 
@@ -536,6 +543,7 @@ public final class Agent: @unchecked Sendable {
         var plan: AgentPlan?
         var repairAttempts = 0
         var planContinuationAttempts = 0
+        var verificationAttempts = 0
 
         // 1. Planning phase (optional)
         if let planner, planner.shouldPlan(for: query) {
@@ -683,6 +691,32 @@ public final class Agent: @unchecked Sendable {
                         planContinuationAttempts += 1
                         emit(.planContinuationTriggered(pendingSteps: plan.pendingSteps.map(\.step), attempt: planContinuationAttempts))
                         continue
+                    }
+
+                    // Goal-completion verification — don't trust the model's "done"
+                    // signal; verify the goal is actually met before stopping.
+                    if let verify = callbacks?.verifyCompletion, verificationAttempts < config.maxVerificationRetries {
+                        let verdict = await verify(query, agentResponse.text, state)
+                        switch verdict {
+                        case .satisfied:
+                            break  // fall through to Done
+                        case .unsatisfied(let reason):
+                            conversation.append(.assistant(agentResponse.text))
+                            conversation.append(.user(
+                                "The task is NOT complete yet. \(reason)\n\nKeep going until it is fully done."))
+                            verificationAttempts += 1
+                            emit(.completionVerificationFailed(reason: reason, attempt: verificationAttempts))
+                            continue
+                        case .blocked(let reason):
+                            conversation.append(.assistant(agentResponse.text))
+                            emit(.completionBlocked(reason: reason))
+                            // Stop early: surface the blocker rather than burn turns.
+                            let blockedText = agentResponse.text.isEmpty
+                                ? "Blocked: \(reason)"
+                                : agentResponse.text + "\n\n[blocked: \(reason)]"
+                            state.clearTemp()
+                            return blockedText
+                        }
                     }
 
                     // Done — return the response
