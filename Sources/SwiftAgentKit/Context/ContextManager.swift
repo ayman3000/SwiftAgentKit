@@ -129,11 +129,18 @@ public final class ContextManager: @unchecked Sendable {
             }
         }
 
+        // Map each tool-call id → its call, so a receipt can name the invocation
+        // (e.g. the shell command), not just the tool.
+        var callsByID: [String: AgentToolCall] = [:]
+        for message in rest where message.role == .assistant {
+            for call in message.toolCalls ?? [] { callsByID[call.id] = call }
+        }
+
         // Receipts for the externalized (older) tool results only.
         var receipts: [ToolReceipt] = []
         for index in externalized.sorted() where rest[index].role == .tool {
             for result in rest[index].toolResults ?? [] {
-                receipts.append(await receipt(for: result))
+                receipts.append(await receipt(for: result, call: callsByID[result.toolCallId]))
             }
         }
 
@@ -200,8 +207,10 @@ public final class ContextManager: @unchecked Sendable {
     }
 
     /// A cached receipt for a completed tool result — spilling the full output to
-    /// an artifact when it exceeds the summary length.
-    private func receipt(for result: AgentToolResult) async -> ToolReceipt {
+    /// an artifact when it exceeds the summary length. `call` (when available)
+    /// supplies a short arg hint (e.g. the shell command) so the ledger names the
+    /// invocation.
+    private func receipt(for result: AgentToolResult, call: AgentToolCall?) async -> ToolReceipt {
         if let cached = cachedReceipt(result.toolCallId) { return cached }
 
         let name = result.toolName ?? "tool"
@@ -218,10 +227,25 @@ public final class ContextManager: @unchecked Sendable {
             toolName: name,
             isError: result.isError,
             summary: summary,
-            artifactIDs: artifactIDs
+            artifactIDs: artifactIDs,
+            argHint: call.flatMap { Self.argHint(for: $0) }
         )
         cache(receipt)
         return receipt
+    }
+
+    /// A short, single-line hint of a call's most salient argument (the command,
+    /// path, query, etc.) for the ledger line.
+    private static func argHint(for call: AgentToolCall) -> String? {
+        let params = call.parameters
+        let keys = ["command", "path", "input", "reference", "query", "url", "name"]
+        for key in keys {
+            if let value = params[key]?.value as? String, !value.isEmpty {
+                let flat = value.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
+                return flat.count > 80 ? String(flat.prefix(80)) + "…" : flat
+            }
+        }
+        return nil
     }
 
     /// The bounded display for an *active* tool result: full if small, otherwise
