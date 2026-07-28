@@ -322,3 +322,38 @@ func liveAgentUsesIsolatedVenv() async throws {
     let venvHasCowsay = shellCapture("\(venvPy) -c 'import cowsay; print(\"has_cowsay\")'")
     #expect(venvHasCowsay.contains("has_cowsay"))
 }
+
+// MARK: - PythonTool
+
+#if os(macOS)
+@Test func pythonToolRequiresConfirmation() {
+    #expect(PythonTool(venvPath: tempDir().appendingPathComponent("venv")).requiresConfirmation == true)
+}
+
+/// Live: run_python creates a venv, installs a package into it, and runs code —
+/// isolated from system Python. Gated (creates a temp venv, installs cowsay).
+///   SAK_LIVE_TESTS=1 swift test --filter pythonToolRunsInIsolatedVenv
+@Test(.enabled(if: ProcessInfo.processInfo.environment["SAK_LIVE_TESTS"] == "1"))
+func pythonToolRunsInIsolatedVenv() async throws {
+    let dir = tempDir()
+    let venv = dir.appendingPathComponent("venv")
+    let tool = PythonTool(venvPath: venv)
+
+    // Plain code (no packages): venv is created, code runs.
+    let r1 = try await tool.execute(parameters: ["code": "print('PY_OK', 6*7)"])
+    #expect(r1.isError == false)
+    #expect(r1.result.contains("PY_OK 42"))
+    #expect(r1.result.contains("exit 0"))
+    #expect(FileManager.default.isExecutableFile(atPath: venv.appendingPathComponent("bin/python3").path))
+
+    // With a package: it's installed into THIS venv and importable.
+    let r2 = try await tool.execute(parameters: [
+        "code": "import cowsay; print('COWSAY_OK')",
+        "packages": ["cowsay"],
+    ])
+    #expect(r2.result.contains("COWSAY_OK"))
+    // Proof of isolation: the package landed in the temp venv, not system Python.
+    let venvHas = shellCapture("\(venv.appendingPathComponent("bin/python3").path) -c 'import cowsay; print(\"in_venv\")'")
+    #expect(venvHas.contains("in_venv"))
+}
+#endif
