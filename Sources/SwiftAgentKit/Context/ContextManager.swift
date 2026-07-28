@@ -100,15 +100,40 @@ public final class ContextManager: @unchecked Sendable {
             return inline
         }
 
-        let activeStart = activeExchangeStart(in: rest)
+        let activeStart = activeExchangeStart(in: rest) ?? rest.count
 
-        // Receipts for every completed tool result (spilled to artifacts as needed).
-        var receipts: [ToolReceipt] = []
-        for (index, message) in rest.enumerated() where index < (activeStart ?? rest.count) {
-            if message.role == .tool, let results = message.toolResults {
-                for result in results {
-                    receipts.append(await receipt(for: result))
+        // Over budget: externalize whole tool exchanges OLDEST-FIRST until we're
+        // back under budget, keeping the most RECENT tool results inline. This
+        // preserves the working set an iterative task needs (run → read error →
+        // fix → rerun) while still capping growth. An exchange is an
+        // assistant-with-toolCalls turn plus its following tool-result messages;
+        // evicting whole exchanges keeps tool_call/result pairing valid.
+        var externalized = Set<Int>()   // indices in `rest` to move to the ledger
+        var remaining = totalChars
+        var i = 0
+        while i < activeStart && remaining > inlineBudgetChars {
+            if rest[i].role == .assistant, rest[i].toolCalls?.isEmpty == false {
+                var j = i + 1
+                var exchangeChars = rest[i].content.count
+                var span = [i]
+                while j < activeStart, rest[j].role == .tool {
+                    span.append(j)
+                    exchangeChars += rest[j].toolResults?.reduce(0) { $0 + $1.result.count } ?? 0
+                    j += 1
                 }
+                span.forEach { externalized.insert($0) }
+                remaining -= exchangeChars
+                i = j
+            } else {
+                i += 1
+            }
+        }
+
+        // Receipts for the externalized (older) tool results only.
+        var receipts: [ToolReceipt] = []
+        for index in externalized.sorted() where rest[index].role == .tool {
+            for result in rest[index].toolResults ?? [] {
+                receipts.append(await receipt(for: result))
             }
         }
 
@@ -120,7 +145,7 @@ public final class ContextManager: @unchecked Sendable {
         if !receipts.isEmpty {
             let lines = receipts.suffix(ledgerEntries).map { "- " + $0.ledgerLine() }.joined(separator: "\n")
             systemParts.append(
-                "Recent tool ledger — these tool calls already completed. Their full output is "
+                "Older tool ledger — these tool calls already completed and their full output is "
                 + "NOT in this message; retrieve it with artifact_read / artifact_search using the "
                 + "artifact id in brackets when you need the details:\n" + lines
             )
@@ -129,26 +154,29 @@ public final class ContextManager: @unchecked Sendable {
             out.append(.system(systemParts.joined(separator: "\n\n")))
         }
 
-        // Main messages + the active exchange.
+        // Main messages. Externalized exchanges collapse to a ledger line
+        // (assistant keeps text only, tool results dropped); everything else —
+        // recent completed exchanges and the active exchange — stays inline
+        // (tool results bounded by `activeDisplay`).
         for (index, message) in rest.enumerated() {
-            let isActive = activeStart.map { index >= $0 } ?? false
+            let isExternalized = externalized.contains(index)
             switch message.role {
             case .user:
                 out.append(contentsOf: message.toLLMMessages())
             case .assistant:
-                if isActive {
-                    out.append(contentsOf: message.toLLMMessages()) // keep tool calls
-                } else if !message.content.isEmpty {
-                    out.append(.assistant(message.content))          // drop completed tool calls
+                if isExternalized {
+                    if !message.content.isEmpty { out.append(.assistant(message.content)) }  // drop tool calls
+                } else {
+                    out.append(contentsOf: message.toLLMMessages())  // keep tool calls (recent/active)
                 }
             case .tool:
-                if isActive, let results = message.toolResults {
+                if !isExternalized, let results = message.toolResults {
                     for result in results {
                         let display = await activeDisplay(for: result)
                         out.append(.tool(display, toolCallId: result.toolCallId))
                     }
                 }
-                // completed tool results are dropped (represented in the ledger)
+                // externalized tool results are dropped (represented in the ledger)
             case .system:
                 break
             }

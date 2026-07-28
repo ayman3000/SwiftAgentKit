@@ -1719,6 +1719,29 @@ private func firstArtifactID(in text: String) -> String? {
     #expect(out.allSatisfy { !$0.content.contains("tool ledger") })
 }
 
+@Test func testContextManagerEvictsOldestKeepsRecent() async {
+    // Over budget with two completed tool exchanges: the OLD one is externalized
+    // to the ledger, the RECENT tool result stays inline (so an iterative
+    // debug loop can still see what it just did).
+    let manager = ContextManager(inlineBudgetChars: 200)
+    let oldResult = String(repeating: "O", count: 400) + " OLDTAIL"   // marker past the 200-char summary
+    let messages: [AgentMessage] = [
+        .user("start"),
+        .assistant(content: "", toolCalls: [AgentToolCall(id: "old", name: "run_shell")]),
+        .tool(results: [.success(toolCallId: "old", toolName: "run_shell", result: oldResult)]),
+        .assistant(content: "", toolCalls: [AgentToolCall(id: "recent", name: "run_shell")]),
+        .tool(results: [.success(toolCallId: "recent", toolName: "run_shell", result: "RECENT_MARKER_kept")]),
+        .assistant("let me fix it"),
+        .user("continue"),
+    ]
+
+    let out = await manager.modelMessages(messages) { $0 }
+
+    #expect(out.contains { $0.role == .tool && $0.content.contains("RECENT_MARKER_kept") })
+    #expect(out.allSatisfy { !$0.content.contains("OLDTAIL") })
+    #expect(out.contains { $0.role == .system && $0.content.contains("ledger") })
+}
+
 @Test func testContextManagerKeepsActiveExchange() async {
     let manager = ContextManager(inlineBudgetChars: 0)
     // Conversation ends on a tool result the model still needs to act on.
