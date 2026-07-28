@@ -1482,6 +1482,58 @@ struct StreamingScriptedProvider: LLMProvider {
     }
 }
 
+/// Counts `complete()` calls to prove the streamed tool-call path doesn't re-issue.
+actor CompleteCallCounter {
+    private(set) var count = 0
+    func bump() { count += 1 }
+}
+
+/// In-process provider (like MLX) whose STREAM yields a complete tool call.
+/// `complete()` should never be called for such a turn.
+struct StreamToolCallProvider: LLMProvider {
+    static let name = "stream-toolcall-mock"
+    let configuration = LLMProviderConfiguration(name: StreamToolCallProvider.name, baseURL: URL(string: "inproc://x")!)
+    let counter: CompleteCallCounter
+
+    func complete(_ request: LLMRequest) async throws -> LLMResponse {
+        await counter.bump()
+        return LLMResponse(text: "should-not-be-used", finishReason: .stop, request: request, providerName: Self.name)
+    }
+
+    func stream(_ request: LLMRequest) -> AsyncThrowingStream<LLMStreamChunk, Error> {
+        let hasToolResult = request.messages.contains { $0.role == .tool }
+        return AsyncThrowingStream { continuation in
+            if hasToolResult {
+                continuation.yield(.text("done"))
+                continuation.yield(.finish(reason: .stop, usage: nil))
+            } else {
+                continuation.yield(.toolCall(LLMToolCall(name: "echo", arguments: "{\"message\":\"hi\"}")))
+                continuation.yield(.finish(reason: .toolCalls, usage: nil))
+            }
+            continuation.finish()
+        }
+    }
+}
+
+@Test func testStreamedToolCallsSkipCompleteReissue() async throws {
+    let counter = CompleteCallCounter()
+    let agent = Agent(config: AgentConfig(
+        provider: StreamToolCallProvider(counter: counter),
+        model: "mock",
+        maxTurns: 4
+    ))
+    agent.register(EchoTool())
+
+    var chunks: [String] = []
+    for try await chunk in agent.runStreaming("echo please") {
+        chunks.append(chunk)
+    }
+
+    #expect(chunks.joined() == "done")            // final answer streamed
+    let completeCalls = await counter.count
+    #expect(completeCalls == 0, "streamed tool calls must not trigger a complete() re-issue")
+}
+
 @Test func testRunStreamingStreamsFinalAnswerAfterToolCall() async throws {
     let agent = Agent(config: AgentConfig(
         provider: StreamingScriptedProvider(),
