@@ -881,6 +881,7 @@ public final class Agent: @unchecked Sendable {
         }
 
         var streamedText = ""
+        var streamedToolCalls: [LLMToolCall] = []
         var sawNativeToolSignal = false
         for try await chunk in config.provider.stream(request) {
             switch chunk {
@@ -888,7 +889,8 @@ public final class Agent: @unchecked Sendable {
                 streamedText += text
                 onText(text)
                 emit(.streamChunk(text))
-            case .toolCall:
+            case .toolCall(let call):
+                streamedToolCalls.append(call)
                 sawNativeToolSignal = true
             case .finish(let reason, _):
                 if reason == .toolCalls { sawNativeToolSignal = true }
@@ -898,8 +900,24 @@ public final class Agent: @unchecked Sendable {
         }
         emit(.streamFinished)
 
+        // If the stream already delivered complete tool calls (name present),
+        // use them directly — no re-issue. This avoids a second, possibly
+        // divergent generation for in-process providers (e.g. MLX at a non-zero
+        // temperature), which could otherwise return empty/different tool calls.
+        if !streamedToolCalls.isEmpty && streamedToolCalls.allSatisfy({ !$0.name.isEmpty }) {
+            let response = LLMResponse(
+                text: streamedText,
+                finishReason: .toolCalls,
+                toolCalls: streamedToolCalls,
+                request: request,
+                providerName: type(of: config.provider).name
+            )
+            return AgentLLMResponse.from(response)
+        }
+
         if sawNativeToolSignal {
-            // Re-issue non-streaming for accurate tool-call arguments.
+            // Signaled tool use but didn't stream usable args (e.g. an HTTP
+            // provider that only flags tool use) — re-issue non-streaming.
             let response = try await config.provider.complete(request)
             let parsed = AgentLLMResponse.from(response)
             // Keep any streamed preamble text if the re-issue returned none.
