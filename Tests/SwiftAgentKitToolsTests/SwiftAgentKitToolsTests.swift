@@ -130,6 +130,38 @@ private func tempDir() -> URL {
 }
 #endif
 
+// MARK: - ImportSkillTool
+
+@Test func importSkillRejectsNonHTTPScheme() async throws {
+    let tool = ImportSkillTool(fetch: { _ in (Data(), URLResponse()) })
+    let r = try await tool.execute(parameters: ["url": "file:///etc/passwd"])
+    #expect(r.isError == true)
+}
+
+@Test func importSkillReturnsParsedCandidateForSkillFile() async throws {
+    let md = "# demo\nTriggers: demo\n\nstep 1\n"
+    let tool = ImportSkillTool(fetch: { _ in (Data(md.utf8), URLResponse()) })
+    let r = try await tool.execute(parameters: ["url": "https://example.com/skill.md"])
+    #expect(r.isError == false)
+    #expect(r.result.contains("UNTRUSTED"))
+    #expect(r.result.contains("name: demo"))
+    #expect(r.result.contains("triggers: demo"))
+}
+
+@Test func importSkillReturnsRawForNonSkillContent() async throws {
+    let tool = ImportSkillTool(fetch: { _ in (Data("just an article".utf8), URLResponse()) })
+    let r = try await tool.execute(parameters: ["url": "https://example.com/x"])
+    #expect(r.result.contains("distill"))
+    #expect(r.result.contains("just an article"))
+}
+
+@Test func importSkillTruncatesOversizeBody() async throws {
+    let big = String(repeating: "a", count: 5_000)
+    let tool = ImportSkillTool(maxBytes: 1_000, fetch: { _ in (Data(big.utf8), URLResponse()) })
+    let r = try await tool.execute(parameters: ["url": "https://example.com/big"])
+    #expect(r.result.contains("truncated"))
+}
+
 // MARK: - PDF (PDFKit)
 
 #if canImport(PDFKit)
