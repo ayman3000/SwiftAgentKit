@@ -2160,3 +2160,17 @@ func liveAgentRecallsToolConclusionAfterCompaction() async throws {
         "Earlier you called the probe tool. What was the END_TOKEN value in its output? Answer with just that token.")
     #expect(answer.contains("RESULT_TOKEN_ZZ"))
 }
+
+// MARK: - FileAgentSkillStore Parser Tests
+
+@Test func parsesSkillMarkdownIntoFields() {
+    let md = "# scaffold view\nTriggers: scaffold, new view\n\n1. do X\n2. do Y\n"
+    let skill = FileAgentSkillStore.parse(md)
+    #expect(skill?.name == "scaffold view")
+    #expect(skill?.triggerKeywords == ["scaffold", "new view"])
+    #expect(skill?.instructions.contains("do X") == true)
+}
+
+@Test func parseReturnsNilForNonSkillText() {
+    #expect(FileAgentSkillStore.parse("just some prose with no header") == nil)
+}

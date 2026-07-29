@@ -83,7 +83,7 @@ public final class FileAgentSkillStore: AgentSkillStore, @unchecked Sendable {
 
     // MARK: - Parsing
 
-    static func parse(_ markdown: String) -> AgentSkill? {
+    public static func parse(_ markdown: String) -> AgentSkill? {
         var name: String?
         var triggers: [String] = []
         var instructionLines: [String] = []
