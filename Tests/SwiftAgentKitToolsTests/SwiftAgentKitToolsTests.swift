@@ -83,6 +83,51 @@ private func tempDir() -> URL {
     let result = try await ShellTool().execute(parameters: ["command": "ls", "working_directory": dir.path])
     #expect(result.result.contains("marker.txt"))
 }
+
+/// The hang bug: `sleep 30 &` orphans a child that keeps the stdout pipe's
+/// write-end open after zsh exits. Terminating only the direct child leaves
+/// the orphan holding stdout, so an EOF-based read blocks for the full 30s
+/// despite the 2s timeout. The fix kills the whole process group, so the read
+/// unblocks and we return promptly.
+@Test func shellTimesOutEvenWhenOrphanHoldsStdout() async throws {
+    let start = Date()
+    let result = try await ShellTool(timeoutSeconds: 2).execute(
+        parameters: ["command": "echo started; sleep 30 &"]
+    )
+    let elapsed = Date().timeIntervalSince(start)
+    #expect(elapsed < 8)                            // must not wait out the 30s orphan
+    #expect(result.result.contains("started"))      // captured output before the kill
+    #expect(result.result.contains("timeout"))      // reported as a timeout, not a clean exit
+}
+
+/// The Stop button: cancelling the surrounding task must SIGKILL the process
+/// group and return promptly (not wait out the command or the timeout).
+@Test func shellCancellationStopsPromptly() async throws {
+    let start = Date()
+    let task = Task {
+        try await ShellTool(timeoutSeconds: 60).execute(parameters: ["command": "sleep 30"])
+    }
+    try await Task.sleep(nanoseconds: 400_000_000)   // let it spawn
+    task.cancel()
+    let result = try await task.value
+    let elapsed = Date().timeIntervalSince(start)
+    #expect(elapsed < 8)
+    #expect(result.result.contains("stopped by user"))
+}
+
+/// Long-lived servers (`npm start`, `ng serve`) should not block the agent.
+/// With `background: true` the tool returns promptly, leaving the process
+/// running, and reports its pid.
+@Test func shellBackgroundReturnsPromptlyWithPid() async throws {
+    let start = Date()
+    let result = try await ShellTool().execute(
+        parameters: ["command": "sleep 5", "background": true]
+    )
+    let elapsed = Date().timeIntervalSince(start)
+    #expect(elapsed < 4)
+    #expect(result.isError == false)
+    #expect(result.result.lowercased().contains("pid"))
+}
 #endif
 
 // MARK: - PDF (PDFKit)
