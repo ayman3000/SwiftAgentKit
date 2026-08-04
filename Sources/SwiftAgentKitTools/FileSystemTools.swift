@@ -103,6 +103,79 @@ public struct FileWriteTool: AgentTool {
     }
 }
 
+/// Apply a git-style unified diff to a single existing file. Confirmation
+/// required — it mutates the disk. Applies by matching each hunk's context
+/// (line numbers are treated as hints), so a diff whose `@@` numbers drifted
+/// still applies. Prefer this over rewriting a whole file with `write_file`.
+public struct PatchFileTool: AgentTool {
+    public let name = "apply_patch"
+    public let description = """
+    Edit an existing file by applying a unified diff (git / `diff -u` format). \
+    Provide the smallest diff that makes the change — one or more `@@` hunks with \
+    a few lines of surrounding context; `-` lines are removed, `+` lines added. \
+    Line numbers in `@@` headers may be approximate (matched by context). Prefer \
+    this over `write_file` for changes to an existing file. Requires approval.
+    """
+    public let parameters = ToolParameters(
+        properties: [
+            "path": ToolParameterProperty(type: "string", description: "File to patch (a leading ~ is expanded)."),
+            "patch": ToolParameterProperty(type: "string", description: "A unified diff (git/diff -u). Only text hunks; no binary/rename."),
+        ],
+        required: ["path", "patch"]
+    )
+
+    public var requiresConfirmation: Bool { true }
+
+    public init() {}
+
+    public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
+        guard let raw = (parameters["path"] as? String), !raw.isEmpty else {
+            return .error(toolCallId: "", toolName: name, message: "apply_patch requires a `path`.")
+        }
+        guard let patch = parameters["patch"] as? String, !patch.isEmpty else {
+            return .error(toolCallId: "", toolName: name, message: "apply_patch requires a `patch` (a unified diff).")
+        }
+        let path = expandPath(raw)
+        guard let data = FileManager.default.contents(atPath: path) else {
+            return .error(toolCallId: "", toolName: name,
+                message: "Cannot read file to patch: \(raw). Use write_file to create a new file.")
+        }
+        guard let source = String(data: data, encoding: .utf8) else {
+            return .error(toolCallId: "", toolName: name, message: "Not a UTF-8 text file: \(raw)")
+        }
+        guard let hunks = UnifiedDiff.parse(patch) else {
+            return .error(toolCallId: "", toolName: name,
+                message: "The `patch` isn't a valid unified diff (no @@ hunks found).")
+        }
+
+        switch UnifiedDiff.apply(hunks, to: source) {
+        case .failure(let err):
+            switch err {
+            case .hunkNotFound(let index, let preview):
+                return .error(toolCallId: "", toolName: name, message: """
+                Hunk \(index + 1) didn't match \(raw) — the surrounding lines weren't found: "\(preview)". \
+                Re-read the file and regenerate the diff against its current contents. Nothing was changed.
+                """)
+            case .cannotAnchor(let index):
+                return .error(toolCallId: "", toolName: name, message: """
+                Hunk \(index + 1) is an insertion whose line number is past the end of \(raw). \
+                Add a line of context so it can be anchored. Nothing was changed.
+                """)
+            }
+        case .success(let patched):
+            do {
+                try Data(patched.utf8).write(to: URL(fileURLWithPath: path), options: .atomic)
+            } catch {
+                return .error(toolCallId: "", toolName: name, message: "Write failed: \(error.localizedDescription)")
+            }
+            let added = hunks.reduce(0) { $0 + $1.lines.filter { if case .add = $0 { return true }; return false }.count }
+            let removed = hunks.reduce(0) { $0 + $1.lines.filter { if case .remove = $0 { return true }; return false }.count }
+            return .success(toolCallId: "", toolName: name,
+                result: "Applied \(hunks.count) hunk\(hunks.count == 1 ? "" : "s") (+\(added)/-\(removed)) to \(raw).")
+        }
+    }
+}
+
 /// List a directory's entries. Unconfirmed (read-only).
 public struct ListDirTool: AgentTool {
     public let name = "list_dir"
