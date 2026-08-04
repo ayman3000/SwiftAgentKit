@@ -38,6 +38,41 @@ private func tempDir() -> URL {
     #expect(FileReadTool().requiresConfirmation == false)
 }
 
+@Test func applyPatchEditsFileInPlace() async throws {
+    let dir = tempDir()
+    let path = dir.appendingPathComponent("code.txt").path
+    _ = try await FileWriteTool().execute(parameters: ["path": path, "content": "alpha\nbeta\ngamma\n"])
+
+    let patch = "@@ -1,3 +1,3 @@\n alpha\n-beta\n+BETA\n gamma\n"
+    let result = try await PatchFileTool().execute(parameters: ["path": path, "patch": patch])
+    #expect(result.isError == false)
+
+    let read = try await FileReadTool().execute(parameters: ["path": path])
+    #expect(read.result == "alpha\nBETA\ngamma\n")
+}
+
+@Test func applyPatchMissingFileErrors() async throws {
+    let path = tempDir().appendingPathComponent("nope.txt").path
+    let result = try await PatchFileTool().execute(parameters: ["path": path, "patch": "@@ -1 +1 @@\n-x\n+y\n"])
+    #expect(result.isError == true)
+}
+
+@Test func applyPatchNonMatchingHunkLeavesFileUnchanged() async throws {
+    let dir = tempDir()
+    let path = dir.appendingPathComponent("code.txt").path
+    _ = try await FileWriteTool().execute(parameters: ["path": path, "content": "a\nb\nc\n"])
+
+    let result = try await PatchFileTool().execute(parameters: ["path": path, "patch": "@@ -1,2 +1,2 @@\n x\n-y\n+Y\n"])
+    #expect(result.isError == true)
+
+    let read = try await FileReadTool().execute(parameters: ["path": path])
+    #expect(read.result == "a\nb\nc\n")   // untouched
+}
+
+@Test func applyPatchRequiresConfirmation() {
+    #expect(PatchFileTool().requiresConfirmation == true)
+}
+
 @Test func readMissingFileErrors() async throws {
     let result = try await FileReadTool().execute(parameters: ["path": "/no/such/file.xyz"])
     #expect(result.isError == true)
