@@ -1,5 +1,6 @@
 import Foundation
 import SwiftAgentKit
+import LLMProviderKit
 import MCP
 
 /// Bridges an MCP server tool into SwiftAgentKit's `AgentTool` protocol.
@@ -40,19 +41,30 @@ public struct MCPToolBridge: AgentTool {
             try await mcpClient.callTool(name: toolName, arguments: arguments)
         }
 
-        // Extract text from content items
-        let textParts = content.compactMap { item -> String? in
-            if case .text(let text, _, _) = item {
-                return text
+        // Extract text and images from content items. Images (e.g. a browser
+        // tool's screenshot) are carried through so a vision model can see them
+        // instead of being dropped.
+        var textParts: [String] = []
+        var images: [LLMImage] = []
+        for item in content {
+            switch item {
+            case .text(let text, _, _):
+                textParts.append(text)
+            case .image(let data, let mimeType, _, _):
+                if let bytes = Data(base64Encoded: data) {
+                    images.append(LLMImage(data: bytes, mimeType: mimeType))
+                }
+            default:
+                break
             }
-            return nil
         }
         let result = textParts.joined(separator: "\n")
 
         if isError ?? false {
             return .error(toolCallId: "", toolName: name, message: result.isEmpty ? "MCP tool error" : result)
         }
-        return .success(toolCallId: "", toolName: name, result: result)
+        let text = result.isEmpty && !images.isEmpty ? "[image returned]" : result
+        return .success(toolCallId: "", toolName: name, result: text, images: images)
     }
 
     public func execute(context: ToolContext) async throws -> AgentToolResult {
