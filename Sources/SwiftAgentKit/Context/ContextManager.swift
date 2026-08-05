@@ -49,18 +49,33 @@ public final class ContextManager: @unchecked Sendable {
     /// before. A single huge tool result still trips the budget (so it's offloaded).
     public var inlineBudgetChars: Int
 
+    /// Keep the most-recent read of each distinct file inline instead of
+    /// externalizing it, so the agent stops re-reading the same file in a loop.
+    /// Only the newest read per path is protected, and only if it's not an error
+    /// and is within `maxActiveResultChars` (large reads still externalize).
+    public var keepLatestReadsInline: Bool
+
+    /// Tool names whose (non-error) result is a file read whose latest-per-path
+    /// output should be kept inline. A set so the generic manager isn't coupled to
+    /// any particular tools product.
+    public var readToolNames: Set<String>
+
     public init(
         store: any ArtifactStore = InMemoryArtifactStore(),
         maxActiveResultChars: Int = 8_000,
         ledgerEntries: Int = 20,
         summaryLength: Int = 320,
-        inlineBudgetChars: Int = 16_000
+        inlineBudgetChars: Int = 16_000,
+        keepLatestReadsInline: Bool = true,
+        readToolNames: Set<String> = ["read_file"]
     ) {
         self.store = store
         self.maxActiveResultChars = maxActiveResultChars
         self.ledgerEntries = ledgerEntries
         self.summaryLength = summaryLength
         self.inlineBudgetChars = inlineBudgetChars
+        self.keepLatestReadsInline = keepLatestReadsInline
+        self.readToolNames = readToolNames
     }
 
     /// The retrieval tools the model uses to pull full outputs back from the
@@ -102,6 +117,22 @@ public final class ContextManager: @unchecked Sendable {
 
         let activeStart = activeExchangeStart(in: rest) ?? rest.count
 
+        // Map each tool-call id → its call, so a receipt can name the invocation
+        // (e.g. the shell command), not just the tool. Built here (before the
+        // eviction loop) so we can look up a read's file path while deciding what
+        // to keep.
+        var callsByID: [String: AgentToolCall] = [:]
+        for message in rest where message.role == .assistant {
+            for call in message.toolCalls ?? [] { callsByID[call.id] = call }
+        }
+
+        // The `rest` index of the most-recent read of each distinct file path —
+        // these exchanges are kept inline so the model doesn't re-read the file.
+        let latestReadIndexByPath = keepLatestReadsInline
+            ? latestReadIndices(in: rest, upTo: activeStart, callsByID: callsByID)
+            : [:]
+        let protectedIndices = Set(latestReadIndexByPath.values)
+
         // Over budget: externalize whole tool exchanges OLDEST-FIRST until we're
         // back under budget, keeping the most RECENT tool results inline. This
         // preserves the working set an iterative task needs (run → read error →
@@ -114,12 +145,20 @@ public final class ContextManager: @unchecked Sendable {
         while i < activeStart && remaining > inlineBudgetChars {
             if rest[i].role == .assistant, rest[i].toolCalls?.isEmpty == false {
                 var j = i + 1
-                var exchangeChars = rest[i].content.count
                 var span = [i]
                 while j < activeStart, rest[j].role == .tool {
                     span.append(j)
-                    exchangeChars += rest[j].toolResults?.reduce(0) { $0 + $1.result.count } ?? 0
                     j += 1
+                }
+                // Keep the whole exchange inline if it holds a latest-per-path
+                // read (preserving tool_call/result pairing); evict the rest.
+                if span.contains(where: { protectedIndices.contains($0) }) {
+                    i = j
+                    continue
+                }
+                let exchangeChars = span.reduce(0) { sum, idx in
+                    sum + rest[idx].content.count
+                        + (rest[idx].toolResults?.reduce(0) { $0 + $1.result.count } ?? 0)
                 }
                 span.forEach { externalized.insert($0) }
                 remaining -= exchangeChars
@@ -127,13 +166,6 @@ public final class ContextManager: @unchecked Sendable {
             } else {
                 i += 1
             }
-        }
-
-        // Map each tool-call id → its call, so a receipt can name the invocation
-        // (e.g. the shell command), not just the tool.
-        var callsByID: [String: AgentToolCall] = [:]
-        for message in rest where message.role == .assistant {
-            for call in message.toolCalls ?? [] { callsByID[call.id] = call }
         }
 
         // Receipts for the externalized (older) tool results only.
@@ -232,6 +264,42 @@ public final class ContextManager: @unchecked Sendable {
         )
         cache(receipt)
         return receipt
+    }
+
+    /// For each distinct file path, the highest `rest` index (< `activeStart`) of a
+    /// keep-worthy read of that path: a `readToolNames` result that isn't an error
+    /// and is within `maxActiveResultChars`. Reads appear in order, so the last
+    /// seen per path wins.
+    private func latestReadIndices(
+        in rest: [AgentMessage],
+        upTo activeStart: Int,
+        callsByID: [String: AgentToolCall]
+    ) -> [String: Int] {
+        var byPath: [String: Int] = [:]
+        var index = 0
+        while index < activeStart {
+            let message = rest[index]
+            if message.role == .tool {
+                for result in message.toolResults ?? [] {
+                    guard readToolNames.contains(result.toolName ?? ""),
+                          !result.isError,
+                          result.result.count <= maxActiveResultChars,
+                          let call = callsByID[result.toolCallId],
+                          let path = Self.pathArgument(for: call)
+                    else { continue }
+                    byPath[path] = index   // ascending index → newest per path
+                }
+            }
+            index += 1
+        }
+        return byPath
+    }
+
+    /// The file path a call targets (the `path` argument), trimmed; nil if absent.
+    private static func pathArgument(for call: AgentToolCall) -> String? {
+        guard let value = call.parameters["path"]?.value as? String else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     /// A short, single-line hint of a call's most salient argument (the command,

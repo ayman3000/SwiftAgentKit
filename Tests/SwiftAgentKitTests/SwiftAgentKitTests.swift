@@ -1882,6 +1882,117 @@ private func firstArtifactID(in text: String) -> String? {
     #expect(out.contains { $0.role == .assistant && ($0.toolCalls?.isEmpty == false) })
 }
 
+// MARK: - ContextManager: keep the latest read of each file inline
+
+private func readCall(_ id: String, path: String) -> AgentToolCall {
+    AgentToolCall(id: id, name: "read_file", parameters: ["path": AnyCodable(path)])
+}
+
+@Test func testKeepsLatestReadWhileEvictingOlderShell() async {
+    // Over budget: the older read of a file is KEPT inline (so the model doesn't
+    // re-read it) and the newer run_shell exchange is externalized instead.
+    let manager = ContextManager(inlineBudgetChars: 900)
+    let readResult = "READ_KEPT " + String(repeating: "r", count: 300)
+    let shellResult = "SHELL_MARKER " + String(repeating: "s", count: 600)
+    let messages: [AgentMessage] = [
+        .user("start"),
+        .assistant(content: "", toolCalls: [readCall("r1", path: "/config.json")]),
+        .tool(results: [.success(toolCallId: "r1", toolName: "read_file", result: readResult)]),
+        .assistant(content: "", toolCalls: [AgentToolCall(id: "s1", name: "run_shell")]),
+        .tool(results: [.success(toolCallId: "s1", toolName: "run_shell", result: shellResult)]),
+        .assistant("thinking"),
+        .user("continue"),
+    ]
+
+    let out = await manager.modelMessages(messages) { $0 }
+
+    #expect(out.contains { $0.role == .tool && $0.content.contains("READ_KEPT") })     // read kept inline
+    #expect(!out.contains { $0.role == .tool && $0.content.contains("SHELL_MARKER") }) // shell externalized
+    #expect(out.contains { $0.role == .system && $0.content.contains("ledger") })
+}
+
+@Test func testKeepsOnlyNewestReadOfSamePath() async {
+    let manager = ContextManager(inlineBudgetChars: 700)
+    let messages: [AgentMessage] = [
+        .user("start"),
+        .assistant(content: "", toolCalls: [readCall("r1", path: "/a.txt")]),
+        .tool(results: [.success(toolCallId: "r1", toolName: "read_file",
+                                 result: "OLD_A " + String(repeating: "o", count: 400))]),
+        .assistant(content: "", toolCalls: [readCall("r2", path: "/a.txt")]),
+        .tool(results: [.success(toolCallId: "r2", toolName: "read_file",
+                                 result: "NEW_A " + String(repeating: "n", count: 400))]),
+        .assistant("done"),
+        .user("continue"),
+    ]
+
+    let out = await manager.modelMessages(messages) { $0 }
+
+    #expect(out.contains { $0.role == .tool && $0.content.contains("NEW_A") })   // newest kept
+    #expect(!out.contains { $0.role == .tool && $0.content.contains("OLD_A") })  // older read externalized
+}
+
+@Test func testKeepsNewestReadOfEachDistinctPath() async {
+    let manager = ContextManager(inlineBudgetChars: 900)
+    let messages: [AgentMessage] = [
+        .user("start"),
+        .assistant(content: "", toolCalls: [readCall("r1", path: "/a.txt")]),
+        .tool(results: [.success(toolCallId: "r1", toolName: "read_file", result: "AAA_" + String(repeating: "a", count: 300))]),
+        .assistant(content: "", toolCalls: [readCall("r2", path: "/b.txt")]),
+        .tool(results: [.success(toolCallId: "r2", toolName: "read_file", result: "BBB_" + String(repeating: "b", count: 300))]),
+        .assistant(content: "", toolCalls: [AgentToolCall(id: "s1", name: "run_shell")]),
+        .tool(results: [.success(toolCallId: "s1", toolName: "run_shell", result: "SHELL_" + String(repeating: "s", count: 600))]),
+        .assistant("done"),
+        .user("continue"),
+    ]
+
+    let out = await manager.modelMessages(messages) { $0 }
+
+    #expect(out.contains { $0.role == .tool && $0.content.contains("AAA_") })    // /a.txt kept
+    #expect(out.contains { $0.role == .tool && $0.content.contains("BBB_") })    // /b.txt kept
+    #expect(!out.contains { $0.role == .tool && $0.content.contains("SHELL_") }) // shell externalized
+}
+
+@Test func testLargeReadStillExternalized() async {
+    // A read bigger than maxActiveResultChars is NOT protected (already paged).
+    let manager = ContextManager(maxActiveResultChars: 100, inlineBudgetChars: 300)
+    let big = "BIGREAD_" + String(repeating: "x", count: 500)
+    let messages: [AgentMessage] = [
+        .user("start"),
+        .assistant(content: "", toolCalls: [readCall("r1", path: "/huge.txt")]),
+        .tool(results: [.success(toolCallId: "r1", toolName: "read_file", result: big)]),
+        .assistant(content: "", toolCalls: [AgentToolCall(id: "s1", name: "run_shell")]),
+        .tool(results: [.success(toolCallId: "s1", toolName: "run_shell", result: "RECENT_kept")]),
+        .assistant("done"),
+        .user("continue"),
+    ]
+
+    let out = await manager.modelMessages(messages) { $0 }
+
+    #expect(!out.contains { $0.role == .tool && $0.content.contains("BIGREAD_") })  // size guard → externalized
+    #expect(out.contains { $0.role == .system && $0.content.contains("ledger") })
+}
+
+@Test func testKeepLatestReadsDisabledRestoresOldBehavior() async {
+    let manager = ContextManager(inlineBudgetChars: 900, keepLatestReadsInline: false)
+    let readResult = "READ_OLD " + String(repeating: "r", count: 300)
+    let messages: [AgentMessage] = [
+        .user("start"),
+        .assistant(content: "", toolCalls: [readCall("r1", path: "/config.json")]),
+        .tool(results: [.success(toolCallId: "r1", toolName: "read_file", result: readResult)]),
+        .assistant(content: "", toolCalls: [AgentToolCall(id: "s1", name: "run_shell")]),
+        .tool(results: [.success(toolCallId: "s1", toolName: "run_shell",
+                                 result: "SHELL_recent " + String(repeating: "s", count: 600))]),
+        .assistant("done"),
+        .user("continue"),
+    ]
+
+    let out = await manager.modelMessages(messages) { $0 }
+
+    // Old behavior: oldest exchange (the read) is externalized, recent shell kept.
+    #expect(!out.contains { $0.role == .tool && $0.content.contains("READ_OLD") })
+    #expect(out.contains { $0.role == .tool && $0.content.contains("SHELL_recent") })
+}
+
 // MARK: - Skill store + learn_skill (self-improvement)
 
 private func tempSkillDir() -> URL {
