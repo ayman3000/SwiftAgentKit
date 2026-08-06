@@ -119,9 +119,9 @@ actor GateCounter { private(set) var n = 0; func bump() { n += 1 } }
         provider: PlainAnswerProvider(text: "x"),
         tools: [EchoTool()],
         enableSubAgents: true))
-    // Registration goes through Agent.register (fire-and-forget); a run awaits
-    // it, but for a direct registry check give the task a beat to land.
-    try await Task.sleep(nanoseconds: 100_000_000)
+    // Registration goes through Agent.register (fire-and-forget); flush the
+    // pending registration tasks so the registry check is deterministic.
+    await agent.flushRegistrations()
     #expect(await agent.tools.contains("delegate_task"))
 
     let child = await (try #require(agent.subAgentSpawner)).makeChild()
