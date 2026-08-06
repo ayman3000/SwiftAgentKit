@@ -151,3 +151,113 @@ actor GateCounter { private(set) var n = 0; func bump() { n += 1 } }
     agent.cancel()
     #expect(child.isCancelled)
 }
+
+// MARK: - End-to-end (scripted provider)
+
+/// Returns scripted responses in order. Parent and child share the instance;
+/// calls are sequential (parent turn → child turns → parent turn), so a flat
+/// script drives the whole nested run.
+final class SequenceProvider: LLMProvider, @unchecked Sendable {
+    enum Step { case text(String); case toolCall(name: String, arguments: String) }
+
+    static let name = "sequence-mock"
+    static let providerName = "sequence-mock"
+    let configuration = LLMProviderConfiguration(
+        name: SequenceProvider.providerName, baseURL: URL(string: "inproc://x")!)
+
+    private let lock = NSLock()
+    private var steps: [Step]
+
+    init(steps: [Step]) { self.steps = steps }
+
+    func complete(_ request: LLMRequest) async throws -> LLMResponse {
+        let step: Step = lock.withLock {
+            steps.isEmpty ? Step.text("(script exhausted)") : steps.removeFirst()
+        }
+        switch step {
+        case .text(let text):
+            return LLMResponse(text: text, finishReason: .stop,
+                               request: request, providerName: Self.providerName)
+        case .toolCall(let name, let arguments):
+            return LLMResponse(
+                text: "", finishReason: .toolCalls,
+                toolCalls: [LLMToolCall(id: UUID().uuidString, name: name, arguments: arguments)],
+                request: request, providerName: Self.providerName)
+        }
+    }
+
+    func stream(_ request: LLMRequest) -> AsyncThrowingStream<LLMStreamChunk, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                let response = try await self.complete(request)
+                if !response.text.isEmpty { continuation.yield(.text(response.text)) }
+                continuation.yield(.finish(reason: .stop, usage: nil))
+                continuation.finish()
+            }
+        }
+    }
+}
+
+/// Thread-safe event recorder.
+final class EventRecorder: AgentObserver, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _events: [AgentEvent] = []
+    var events: [AgentEvent] { lock.lock(); defer { lock.unlock() }; return _events }
+    func onEvent(_ event: AgentEvent) { lock.lock(); _events.append(event); lock.unlock() }
+}
+
+private let delegateArgs = #"{"description": "echo task", "prompt": "answer the sub-question"}"#
+
+@Test func testDelegateTaskEndToEnd() async throws {
+    let provider = SequenceProvider(steps: [
+        .toolCall(name: "delegate_task", arguments: delegateArgs),  // parent turn 1
+        .text("CHILD ANSWER"),                                      // child turn 1
+        .text("final: composed from child")                         // parent turn 2
+    ])
+    let agent = Agent(config: AgentConfig(
+        provider: provider, maxTurns: 6, tools: [EchoTool()], enableSubAgents: true))
+    let recorder = EventRecorder()
+    agent.addObserver(recorder)
+
+    let answer = try await agent.run("do the big task")
+    #expect(answer.contains("final: composed from child"))
+
+    var startedLabel: String?
+    var finishedSummary: String?
+    var wrappedCount = 0
+    for event in recorder.events {
+        switch event {
+        case .subAgentStarted(_, let label): startedLabel = label
+        case .subAgentFinished(_, let summary): finishedSummary = summary
+        case .subAgentEvent: wrappedCount += 1
+        default: break
+        }
+    }
+    #expect(startedLabel == "echo task")
+    #expect(finishedSummary == "CHILD ANSWER")
+    #expect(wrappedCount > 0)   // child lifecycle events were forwarded
+}
+
+@Test func testDelegateTaskEmptyAnswerIsToolError() async throws {
+    let provider = SequenceProvider(steps: [
+        .toolCall(name: "delegate_task", arguments: delegateArgs),  // parent turn 1
+        .text(""),                                                  // child: empty
+        .text("recovered without the child")                        // parent turn 2
+    ])
+    let agent = Agent(config: AgentConfig(
+        provider: provider, maxTurns: 6, enableRepairRetry: false,
+        tools: [EchoTool()], enableSubAgents: true))
+    let recorder = EventRecorder()
+    agent.addObserver(recorder)
+
+    let answer = try await agent.run("do it")
+    #expect(answer.contains("recovered"))
+
+    let errorResults = recorder.events.compactMap { event -> AgentToolResult? in
+        if case .toolExecutionFinished(let call, let result) = event,
+           call.name == "delegate_task" { return result }
+        return nil
+    }
+    #expect(errorResults.first?.isError == true)
+    #expect(errorResults.first?.result.contains("no answer") == true)
+}
