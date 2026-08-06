@@ -78,6 +78,7 @@ public struct AgentConfig: Sendable {
     /// model can spawn sub-agents: child agents with the parent's tools (minus
     /// delegation/memory/skill writes), a fresh context, and inherited
     /// confirmation gating. One level deep — children cannot delegate further.
+    /// Read at construction time — flipping it after init has no effect.
     public var enableSubAgents: Bool
 
     /// Max times an unsatisfied `AgentCallbacks.verifyCompletion` verdict may
@@ -460,6 +461,7 @@ public final class Agent: @unchecked Sendable {
         cancellationLock.lock()
         defer { cancellationLock.unlock() }
         _isCancelled = false
+        subAgentSpawner?.resetCancellation()
     }
 
     private func beginRunIfIdle() -> Bool {

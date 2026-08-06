@@ -14,6 +14,8 @@ import Foundation
 ///
 /// Held by the parent when `AgentConfig.enableSubAgents` is on. Tracks live
 /// children so `Agent.cancel()` can propagate into running sub-agent tools.
+///
+/// Constructed only by `Agent` when `enableSubAgents` is on; do not create directly.
 public final class SubAgentSpawner: @unchecked Sendable {
 
     /// Tools a child never inherits: no recursive delegation, and memory/skill
@@ -26,8 +28,9 @@ public final class SubAgentSpawner: @unchecked Sendable {
     private unowned let parent: Agent
     private let lock = NSLock()
     private var liveChildren: [UUID: Agent] = [:]
+    private var _cancelled = false
 
-    public init(parent: Agent) {
+    init(parent: Agent) {
         self.parent = parent
     }
 
@@ -72,11 +75,18 @@ public final class SubAgentSpawner: @unchecked Sendable {
         }
 
         let child = Agent(config: config)
+        // Flush the child's own fire-and-forget registrations (e.g. artifact
+        // tools registered by ContextManager in Agent.init) before we snapshot
+        // the parent's tool list — so the dedup filter below can see them.
+        await child.flushRegistrations()
 
         // Direct actor calls (not Agent's fire-and-forget register) so the
         // child is fully wired when this method returns.
         let inherited = await parent.tools.allTools()
             .filter { !Self.excludedToolNames.contains($0.name) }
+            // When the child has its own ContextManager it registers artifact_read /
+            // artifact_search over the same shared store — skip the parent's copies.
+            .filter { config.contextManager == nil || !["artifact_read", "artifact_search"].contains($0.name) }
         await child.tools.registerAll(inherited)
         await child.skillRegistry.registerAll(parent.skillRegistry.allSkills())
 
@@ -93,13 +103,20 @@ public final class SubAgentSpawner: @unchecked Sendable {
     }
 
     /// Track a live child so `cancelAll()` reaches it.
-    public func track(_ id: UUID, _ child: Agent) {
-        lock.lock(); defer { lock.unlock() }
+    func track(_ id: UUID, _ child: Agent) {
+        lock.lock()
         liveChildren[id] = child
+        let alreadyCancelled = _cancelled
+        lock.unlock()
+        // Close the cancel-vs-track race: if cancelAll() fired before this child
+        // was registered, cancel it now so it does not run unguarded.
+        if alreadyCancelled {
+            child.cancel()
+        }
     }
 
     /// Stop tracking a finished child.
-    public func untrack(_ id: UUID) {
+    func untrack(_ id: UUID) {
         lock.lock(); defer { lock.unlock() }
         liveChildren.removeValue(forKey: id)
     }
@@ -107,10 +124,17 @@ public final class SubAgentSpawner: @unchecked Sendable {
     /// Cancel every live child (called from `Agent.cancel()`).
     public func cancelAll() {
         lock.lock()
+        _cancelled = true
         let children = Array(liveChildren.values)
         lock.unlock()
         for child in children {
             child.cancel()
         }
+    }
+
+    /// Reset the cancellation flag so this spawner can be reused across runs.
+    func resetCancellation() {
+        lock.lock(); defer { lock.unlock() }
+        _cancelled = false
     }
 }

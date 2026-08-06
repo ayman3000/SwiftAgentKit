@@ -88,6 +88,16 @@ actor GateCounter { private(set) var n = 0; func bump() { n += 1 } }
     #expect(child.isCancelled)
 }
 
+@Test func testTrackAfterCancelAllCancelsChildImmediately() async throws {
+    let agent = Agent(config: AgentConfig(
+        provider: PlainAnswerProvider(text: "x"), enableSubAgents: true))
+    let spawner = try #require(agent.subAgentSpawner)
+    spawner.cancelAll()                       // cancel lands before the child is tracked
+    let child = await spawner.makeChild()
+    spawner.track(UUID(), child)
+    #expect(child.isCancelled)                // late-tracked child is cancelled on arrival
+}
+
 // MARK: - Event cases
 
 @Test func testSubAgentEventCasesExist() {
@@ -139,7 +149,8 @@ actor GateCounter { private(set) var n = 0; func bump() { n += 1 } }
 
     let missing = try await tool.execute(parameters: ["description": "only a label"])
     #expect(missing.isError)
-    #expect(missing.result.contains("required"))
+    #expect(missing.result.contains("`description`"))
+    #expect(missing.result.contains("`prompt`"))
 }
 
 @Test func testParentCancelReachesLiveChildren() async throws {
