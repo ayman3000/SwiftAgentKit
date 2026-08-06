@@ -38,7 +38,7 @@ public final class SubAgentSpawner: @unchecked Sendable {
         await parent.flushRegistrations()
 
         var config = parent.config
-        // TODO(Task 3): config.enableSubAgents = false   // defense in depth vs. recursion
+        config.enableSubAgents = false   // defense in depth vs. recursion
         config.maxTurns = min(config.maxTurns, Self.maxChildTurns)
         config.tools = []                       // registered explicitly below
 

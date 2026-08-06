@@ -57,7 +57,7 @@ actor GateCounter { private(set) var n = 0; func bump() { n += 1 } }
     let child = await SubAgentSpawner(parent: agent).makeChild()
 
     #expect(child.config.maxTurns == 15)
-    // TODO(Task 3): #expect(child.config.enableSubAgents == false)
+    #expect(child.config.enableSubAgents == false)
     #expect(child.conversation.messages.filter { $0.role == .user }.isEmpty)
     // Child system prompt keeps the parent base and adds the sub-agent preamble.
     #expect(child.config.systemPrompt?.contains("You are Naseem.") == true)
@@ -110,4 +110,44 @@ actor GateCounter { private(set) var n = 0; func bump() { n += 1 } }
         #expect(eid == id)
         #expect(summary == "done")
     } else { Issue.record("expected subAgentFinished") }
+}
+
+// MARK: - DelegateTaskTool registration & recursion guard
+
+@Test func testEnableSubAgentsRegistersDelegateTool() async throws {
+    let agent = Agent(config: AgentConfig(
+        provider: PlainAnswerProvider(text: "x"),
+        tools: [EchoTool()],
+        enableSubAgents: true))
+    // Registration goes through Agent.register (fire-and-forget); a run awaits
+    // it, but for a direct registry check give the task a beat to land.
+    try await Task.sleep(nanoseconds: 100_000_000)
+    #expect(await agent.tools.contains("delegate_task"))
+
+    let child = await (try #require(agent.subAgentSpawner)).makeChild()
+    #expect(child.config.enableSubAgents == false)
+    #expect(await child.tools.contains("delegate_task") == false)
+    #expect(child.subAgentSpawner == nil)
+}
+
+@Test func testDelegateToolRequiresBothParameters() async throws {
+    let agent = Agent(config: AgentConfig(
+        provider: PlainAnswerProvider(text: "x"), enableSubAgents: true))
+    let spawner = try #require(agent.subAgentSpawner)
+    let tool = DelegateTaskTool(spawner: spawner, emit: { _ in })
+
+    let missing = try await tool.execute(parameters: ["description": "only a label"])
+    #expect(missing.isError)
+    #expect(missing.result.contains("required"))
+}
+
+@Test func testParentCancelReachesLiveChildren() async throws {
+    let agent = Agent(config: AgentConfig(
+        provider: PlainAnswerProvider(text: "x"), enableSubAgents: true))
+    let spawner = try #require(agent.subAgentSpawner)
+    let child = await spawner.makeChild()
+    spawner.track(UUID(), child)
+
+    agent.cancel()
+    #expect(child.isCancelled)
 }

@@ -74,6 +74,12 @@ public struct AgentConfig: Sendable {
     /// `agent.setAutonomousMode(_:)`.
     public var autonomousMode: Bool
 
+    /// When `true`, the agent auto-registers the `delegate_task` tool so the
+    /// model can spawn sub-agents: child agents with the parent's tools (minus
+    /// delegation/memory/skill writes), a fresh context, and inherited
+    /// confirmation gating. One level deep — children cannot delegate further.
+    public var enableSubAgents: Bool
+
     /// Max times an unsatisfied `AgentCallbacks.verifyCompletion` verdict may
     /// re-nudge the model to keep working before the agent stops anyway. Bounds
     /// goal-driven looping (also bounded by `maxTurns`). Default 3.
@@ -95,6 +101,7 @@ public struct AgentConfig: Sendable {
         tools: [any AgentTool] = [],
         contextManager: ContextManager? = nil,
         autonomousMode: Bool = false,
+        enableSubAgents: Bool = false,
         maxVerificationRetries: Int = 3
     ) {
         self.provider = provider
@@ -112,6 +119,7 @@ public struct AgentConfig: Sendable {
         self.tools = tools
         self.contextManager = contextManager
         self.autonomousMode = autonomousMode
+        self.enableSubAgents = enableSubAgents
         self.maxVerificationRetries = maxVerificationRetries
     }
 }
@@ -204,6 +212,9 @@ public final class Agent: @unchecked Sendable {
 
     /// Skill registry for progressive disclosure (optional).
     public let skillRegistry: SkillRegistry
+
+    /// Spawner for sub-agents; non-nil when `config.enableSubAgents` is on.
+    public private(set) var subAgentSpawner: SubAgentSpawner?
 
     /// Optional persistent skill store. When set, the agent loads previously
     /// authored skills into `skillRegistry` and auto-registers `LearnSkillTool`,
@@ -309,6 +320,17 @@ public final class Agent: @unchecked Sendable {
         if config.autonomousMode {
             setAutonomousMode(true)
         }
+
+        // Sub-agents: register the delegation tool. The spawner strips this
+        // tool (and sets enableSubAgents=false) on children, so delegation is
+        // one level deep.
+        if config.enableSubAgents {
+            let spawner = SubAgentSpawner(parent: self)
+            self.subAgentSpawner = spawner
+            register(DelegateTaskTool(spawner: spawner, emit: { [weak self] event in
+                self?.emitEvent(event)
+            }))
+        }
     }
 
     // MARK: - Tools
@@ -412,13 +434,19 @@ public final class Agent: @unchecked Sendable {
         }
     }
 
+    /// Internal event entry point for sub-agent machinery (forwards to observers).
+    func emitEvent(_ event: AgentEvent) {
+        emit(event)
+    }
+
     // MARK: - Cancellation
 
-    /// Cancel the current agent run.
+    /// Cancel the current agent run (and any live sub-agents).
     public func cancel() {
         cancellationLock.lock()
-        defer { cancellationLock.unlock() }
         _isCancelled = true
+        cancellationLock.unlock()
+        subAgentSpawner?.cancelAll()
     }
 
     /// Check if cancelled.
