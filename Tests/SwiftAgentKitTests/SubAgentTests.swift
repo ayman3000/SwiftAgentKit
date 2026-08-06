@@ -241,11 +241,14 @@ private let delegateArgs = #"{"description": "echo task", "prompt": "answer the 
 @Test func testDelegateTaskEmptyAnswerIsToolError() async throws {
     let provider = SequenceProvider(steps: [
         .toolCall(name: "delegate_task", arguments: delegateArgs),  // parent turn 1
-        .text(""),                                                  // child: empty
-        .text("recovered without the child")                        // parent turn 2
+        .text(""),                                                  // child: empty answer (creates tool error)
+        .text("first reply after tool error"),                      // parent turn 2 (no tool calls) — repair-retry sees the tool error and nudges
+        .toolCall(name: "delegate_task", arguments: delegateArgs),  // parent turn 3 — retries after repair nudge
+        .text("CHILD ANSWER AFTER RETRY"),                          // child: second attempt
+        .text("recovered WITH the child")                           // parent turn 4 — final answer after retry succeeds
     ])
     let agent = Agent(config: AgentConfig(
-        provider: provider, maxTurns: 6, enableRepairRetry: false,
+        provider: provider, maxTurns: 6,
         tools: [EchoTool()], enableSubAgents: true))
     let recorder = EventRecorder()
     agent.addObserver(recorder)
