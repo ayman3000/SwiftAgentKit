@@ -59,7 +59,10 @@ public struct ArtifactMatch: Sendable, Equatable {
 /// Lossless external store for full tool outputs. Implement to back it with the
 /// filesystem, a database, etc. The default `InMemoryArtifactStore` keeps them
 /// in memory for the process lifetime.
-public protocol ArtifactStore: Sendable {
+///
+/// A store is shared by reference between agents (parent and sub-agents), so
+/// conformers must be reference types (classes or actors).
+public protocol ArtifactStore: AnyObject, Sendable {
     /// Store a full output and return its artifact record (with a fresh id).
     func save(_ content: String, description: String, toolCallID: String?) async -> Artifact
     /// Fetch a stored artifact by id.

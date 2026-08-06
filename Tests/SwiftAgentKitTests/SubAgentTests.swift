@@ -73,12 +73,7 @@ actor GateCounter { private(set) var n = 0; func bump() { n += 1 } }
 
     let childCM = try #require(child.config.contextManager)
     #expect(childCM !== parentCM)                                   // fresh manager
-    // Verify shared store: both CMs were constructed with the same store instance.
-    // ArtifactStore is a Sendable protocol (actors), not AnyObject-constrained —
-    // compare via unsafeBitCast to get the raw pointer identity.
-    let parentStoreID = unsafeBitCast(parentCM.store as AnyObject, to: Int.self)
-    let childStoreID  = unsafeBitCast(childCM.store  as AnyObject, to: Int.self)
-    #expect(parentStoreID == childStoreID)                           // shared store
+    #expect(childCM.store === parentCM.store)                       // shared store
     #expect(await child.tools.contains("artifact_read"))
 }
 

@@ -367,11 +367,10 @@ public final class Agent: @unchecked Sendable {
     /// Flush any pending fire-and-forget tool/skill registrations that were
     /// enqueued synchronously (e.g. via `register(_:)` or `AgentConfig.tools`).
     ///
-    /// `run(_:)` does this automatically before the first model call. Call this
-    /// explicitly when you need the registries to be fully populated before
-    /// reading them — for example, in `SubAgentSpawner.makeChild()` when
-    /// snapshotting the parent's tool list.
-    public func flushRegistrations() async {
+    /// Module-internal machinery: called by `SubAgentSpawner.makeChild()` when
+    /// snapshotting the parent's tool list, and by `run(_:)` before the first
+    /// model call. Not public API.
+    func flushRegistrations() async {
         await awaitPendingRegistrations()
     }
 
