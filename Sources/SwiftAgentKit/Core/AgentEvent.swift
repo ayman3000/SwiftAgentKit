@@ -102,6 +102,19 @@ public enum AgentEvent: Sendable {
 
     /// Streaming completed.
     case streamFinished
+
+    // MARK: - Sub-agents
+
+    /// A sub-agent run started (spawned via the `delegate_task` tool).
+    case subAgentStarted(id: UUID, label: String)
+
+    /// An event from a running sub-agent, wrapped and forwarded to the
+    /// parent's observers. One level deep only — sub-agents cannot spawn
+    /// sub-agents, so wrapped events are never themselves `subAgentEvent`.
+    indirect case subAgentEvent(id: UUID, event: AgentEvent)
+
+    /// A sub-agent run finished; `summary` is a truncated form of its final answer.
+    case subAgentFinished(id: UUID, summary: String)
 }
 
 /// A summary of a completed agent run.
