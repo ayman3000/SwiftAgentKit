@@ -9,6 +9,7 @@
 import Testing
 import Foundation
 import LLMProviderKit
+import LLMProviderKitOllama
 @testable import SwiftAgentKit
 
 // MARK: - SubAgentSpawner inheritance rules
@@ -263,4 +264,30 @@ private let delegateArgs = #"{"description": "echo task", "prompt": "answer the 
     }
     #expect(errorResults.first?.isError == true)
     #expect(errorResults.first?.result.contains("no answer") == true)
+}
+
+// MARK: - Live integration (SAK_LIVE_TESTS=1, local Ollama with glm-5.2:cloud)
+
+@Test(.enabled(if: ProcessInfo.processInfo.environment["SAK_LIVE_TESTS"] == "1"))
+func liveDelegateTask() async throws {
+    let provider = OllamaProvider(configuration: OllamaProvider.local(model: "glm-5.2:cloud"))
+    let agent = Agent(config: AgentConfig(
+        provider: provider,
+        model: "glm-5.2:cloud",
+        systemPrompt: "You are a helpful assistant. Use delegate_task for the research step.",
+        maxTurns: 8,
+        tools: [EchoTool()],
+        enableSubAgents: true))
+    let recorder = EventRecorder()
+    agent.addObserver(recorder)
+
+    let answer = try await agent.run(
+        "Delegate this to a sub-agent: use the echo tool to echo the word " +
+        "'pineapple', then report what it returned. Then tell me the sub-agent's answer.")
+
+    #expect(answer.lowercased().contains("pineapple"))
+    let sawStart = recorder.events.contains { if case .subAgentStarted = $0 { return true }; return false }
+    let sawFinish = recorder.events.contains { if case .subAgentFinished = $0 { return true }; return false }
+    #expect(sawStart)
+    #expect(sawFinish)
 }
