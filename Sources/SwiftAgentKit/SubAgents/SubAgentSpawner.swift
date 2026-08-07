@@ -98,6 +98,16 @@ public final class SubAgentSpawner: @unchecked Sendable {
             // verifyCompletion deliberately NOT inherited: the parent verifies
             // the overall goal; a child verifier would double-loop.
         }
+        // Built-in minimal verifier (distinct from the parent's goal verifier):
+        // reasoning-heavy models sometimes end a turn with reasoning only —
+        // empty content, no tool calls — which would otherwise terminate the
+        // delegation with "". Nudge until the child produces an actual answer
+        // (bounded by maxVerificationRetries).
+        childCallbacks.verifyCompletion = { _, answer, _ in
+            answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? .unsatisfied(reason: "You returned an empty answer. Produce your final, self-contained answer now — it is returned to the caller as data.")
+                : .satisfied
+        }
         child.callbacks = childCallbacks
         return child
     }
