@@ -337,6 +337,70 @@ private let delegateArgs = #"{"description": "echo task", "prompt": "answer the 
     #expect(finishedSummaries.first == "real child answer")
 }
 
+/// Fails `failures` times with a transient error, then delegates to scripted steps.
+final class FlakyProvider: LLMProvider, @unchecked Sendable {
+    static let name = "flaky-mock"
+    static let providerName = "flaky-mock"
+    let configuration = LLMProviderConfiguration(
+        name: FlakyProvider.providerName, baseURL: URL(string: "inproc://x")!)
+    private let lock = NSLock()
+    private var failuresLeft: Int
+    private let inner: SequenceProvider
+
+    init(failures: Int, then steps: [SequenceProvider.Step]) {
+        self.failuresLeft = failures
+        self.inner = SequenceProvider(steps: steps)
+    }
+
+    func complete(_ request: LLMRequest) async throws -> LLMResponse {
+        let shouldFail: Bool = lock.withLock {
+            if failuresLeft > 0 { failuresLeft -= 1; return true }
+            return false
+        }
+        if shouldFail { throw LLMError.providerError("transient upstream failure") }
+        return try await inner.complete(request)
+    }
+
+    func stream(_ request: LLMRequest) -> AsyncThrowingStream<LLMStreamChunk, Error> {
+        inner.stream(request)
+    }
+}
+
+@Test func testTransientLLMErrorsAreRetriedWithBackoff() async throws {
+    // Two transient failures, then a real answer: the loop must retry (with
+    // backoff) instead of aborting the run on the first provider error.
+    let provider = FlakyProvider(failures: 2, then: [.text("answer after retries")])
+    let agent = Agent(config: AgentConfig(provider: provider, maxTurns: 4, tools: [EchoTool()]))
+    agent.llmRetryBaseDelay = 0.01   // fast backoff for tests
+    let recorder = EventRecorder()
+    agent.addObserver(recorder)
+
+    let answer = try await agent.run("do it")
+    #expect(answer.contains("answer after retries"))
+
+    let retryAttempts = recorder.events.compactMap { event -> Int? in
+        if case .llmCallRetrying(_, let attempt, _) = event { return attempt }
+        return nil
+    }
+    #expect(retryAttempts == [1, 2])
+}
+
+@Test func testPersistentLLMErrorStillThrowsAfterRetries() async throws {
+    let provider = FlakyProvider(failures: 10, then: [.text("never reached")])
+    let agent = Agent(config: AgentConfig(provider: provider, maxTurns: 4, tools: [EchoTool()]))
+    agent.llmRetryBaseDelay = 0.01
+    let recorder = EventRecorder()
+    agent.addObserver(recorder)
+
+    await #expect(throws: AgentError.self) {
+        _ = try await agent.run("do it")
+    }
+    let retryCount = recorder.events.filter {
+        if case .llmCallRetrying = $0 { return true }; return false
+    }.count
+    #expect(retryCount == 3)   // capped retries, then the error surfaces
+}
+
 @Test func testReasoningOnlyTurnAutoContinues() async throws {
     // A turn with empty content but non-empty reasoning is "mid-thought", not
     // "done" — the loop must continue instead of returning "".
