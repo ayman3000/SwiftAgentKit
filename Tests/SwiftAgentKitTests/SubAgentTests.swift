@@ -180,7 +180,13 @@ actor GateCounter { private(set) var n = 0; func bump() { n += 1 } }
 /// calls are sequential (parent turn → child turns → parent turn), so a flat
 /// script drives the whole nested run.
 final class SequenceProvider: LLMProvider, @unchecked Sendable {
-    enum Step { case text(String); case toolCall(name: String, arguments: String) }
+    enum Step {
+        case text(String)
+        case toolCall(name: String, arguments: String)
+        /// Empty content with separated reasoning — the GLM/Kimi "mid-thought
+        /// stop" shape (Ollama `thinking` field, surfaced as `reasoning`).
+        case reasoningOnly(String)
+    }
 
     static let name = "sequence-mock"
     static let providerName = "sequence-mock"
@@ -205,6 +211,9 @@ final class SequenceProvider: LLMProvider, @unchecked Sendable {
                 text: "", finishReason: .toolCalls,
                 toolCalls: [LLMToolCall(id: UUID().uuidString, name: name, arguments: arguments)],
                 request: request, providerName: Self.providerName)
+        case .reasoningOnly(let thinking):
+            return LLMResponse(text: "", reasoning: thinking, finishReason: .stop,
+                               request: request, providerName: Self.providerName)
         }
     }
 
@@ -326,6 +335,51 @@ private let delegateArgs = #"{"description": "echo task", "prompt": "answer the 
         return nil
     }
     #expect(finishedSummaries.first == "real child answer")
+}
+
+@Test func testReasoningOnlyTurnAutoContinues() async throws {
+    // A turn with empty content but non-empty reasoning is "mid-thought", not
+    // "done" — the loop must continue instead of returning "".
+    let provider = SequenceProvider(steps: [
+        .reasoningOnly("let me think about this"),
+        .text("done answer")
+    ])
+    let agent = Agent(config: AgentConfig(provider: provider, maxTurns: 6, tools: [EchoTool()]))
+    let answer = try await agent.run("do the thing")
+    #expect(answer.contains("done answer"))
+}
+
+@Test func testChildSurvivesMoreReasoningTurnsThanVerifierRetries() async throws {
+    // GLM's real failure shape: SEVERAL consecutive reasoning-only stops.
+    // 5 of them exceed maxVerificationRetries (3) — the empty-answer verifier
+    // alone cannot save this; reasoning-aware continuation must, without
+    // consuming the verifier budget.
+    let provider = SequenceProvider(steps: [
+        .toolCall(name: "delegate_task", arguments: delegateArgs),  // parent turn 1
+        .reasoningOnly("thinking 1"),                               // child turns 1-5:
+        .reasoningOnly("thinking 2"),                               // mid-thought stops
+        .reasoningOnly("thinking 3"),
+        .reasoningOnly("thinking 4"),
+        .reasoningOnly("thinking 5"),
+        .text("real child answer after thinking"),                  // child turn 6
+        .text("final: composed from child")                         // parent turn 2
+    ])
+    let agent = Agent(config: AgentConfig(
+        provider: provider, maxTurns: 20,
+        tools: [EchoTool()], enableSubAgents: true))
+    let recorder = EventRecorder()
+    agent.addObserver(recorder)
+
+    let answer = try await agent.run("do the big task")
+    #expect(answer.contains("final: composed from child"))
+
+    let delegateResults = recorder.events.compactMap { event -> AgentToolResult? in
+        if case .toolExecutionFinished(let call, let result) = event,
+           call.name == "delegate_task" { return result }
+        return nil
+    }
+    #expect(delegateResults.first?.isError == false)
+    #expect(delegateResults.first?.result == "real child answer after thinking")
 }
 
 // MARK: - Live integration (SAK_LIVE_TESTS=1, local Ollama with glm-5.2:cloud)

@@ -276,6 +276,11 @@ public final class Agent: @unchecked Sendable {
     private let runLock = NSLock()
     private var _isRunActive = false
 
+    /// Cap on consecutive-or-not reasoning-only continuations per run. These
+    /// turns don't consume repair/verification budgets, so they need their own
+    /// bound (also bounded by `maxTurns`).
+    static let maxReasoningContinuations = 8
+
     // MARK: - Init
 
     public init(config: AgentConfig) {
@@ -584,6 +589,7 @@ public final class Agent: @unchecked Sendable {
         var repairAttempts = 0
         var planContinuationAttempts = 0
         var verificationAttempts = 0
+        var reasoningContinuations = 0
 
         // 1. Planning phase (optional)
         if let planner, planner.shouldPlan(for: query) {
@@ -701,6 +707,23 @@ public final class Agent: @unchecked Sendable {
                 // Check for tool calls
                 guard agentResponse.hasToolCalls, let toolCalls = agentResponse.toolCalls else {
                     // No tool calls — model is done (or needs nudging)
+
+                    // Reasoning-only turn: the model thought but produced no
+                    // answer and no tool calls (GLM/Kimi habit via Ollama).
+                    // That's "mid-thought", not "done" — continue WITHOUT
+                    // consuming the repair or verification budgets. Bounded by
+                    // its own cap (and maxTurns) so a stuck model can't loop.
+                    if agentResponse.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                       let reasoning = agentResponse.reasoning,
+                       !reasoning.isEmpty,
+                       reasoningContinuations < Self.maxReasoningContinuations {
+                        conversation.append(.assistant(agentResponse.text))
+                        conversation.append(.user(
+                            "You produced internal reasoning but no answer and no tool calls. Continue: call tools if you need information, then give your final answer."))
+                        reasoningContinuations += 1
+                        emit(.reasoningOnlyContinuation(attempt: reasoningContinuations))
+                        continue
+                    }
 
                     // Repair-retry check
                     if config.enableRepairRetry {

@@ -115,6 +115,14 @@ public enum AgentEvent: Sendable {
 
     /// A sub-agent run finished; `summary` is a truncated form of its final answer.
     case subAgentFinished(id: UUID, summary: String)
+
+    // MARK: - Reasoning
+
+    /// The model produced reasoning but no answer and no tool calls (a
+    /// "mid-thought stop", common for GLM/Kimi via Ollama). The loop nudged it
+    /// to continue — this is NOT a completion and does not consume
+    /// verification retries.
+    case reasoningOnlyContinuation(attempt: Int)
 }
 
 /// A summary of a completed agent run.
