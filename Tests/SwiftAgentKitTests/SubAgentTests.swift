@@ -33,9 +33,10 @@ actor GateCounter { private(set) var n = 0; func bump() { n += 1 } }
 @Test func testChildInheritsGateNotVerifier() async throws {
     let agent = Agent(config: AgentConfig(provider: PlainAnswerProvider(text: "x")))
     let counter = GateCounter()
+    let verifierCounter = GateCounter()
     var callbacks = AgentCallbacks()
     callbacks.onToolConfirmation = { _, _ in await counter.bump(); return false }
-    callbacks.verifyCompletion = { _, _, _ in .satisfied }
+    callbacks.verifyCompletion = { _, _, _ in await verifierCounter.bump(); return .satisfied }
     agent.callbacks = callbacks
 
     let child = await SubAgentSpawner(parent: agent).makeChild()
@@ -46,7 +47,16 @@ actor GateCounter { private(set) var n = 0; func bump() { n += 1 } }
     let approved = await gate(call, context)
     #expect(approved == false)
     #expect(await counter.n == 1)                       // parent's handler ran
-    #expect(child.callbacks?.verifyCompletion == nil)   // verifier NOT inherited
+
+    // The child carries the BUILT-IN empty-answer verifier, not the parent's
+    // goal verifier: non-empty answers satisfy it, empty answers get nudged,
+    // and the parent's verifier is never invoked.
+    let verifier = try #require(child.callbacks?.verifyCompletion)
+    let onAnswer = await verifier("q", "a real answer", child.state)
+    let onEmpty = await verifier("q", "   \n", child.state)
+    #expect({ if case .satisfied = onAnswer { return true }; return false }())
+    #expect({ if case .unsatisfied = onEmpty { return true }; return false }())
+    #expect(await verifierCounter.n == 0)               // parent's verifier NOT inherited
 }
 
 @Test func testChildFreshConversationAndCappedTurns() async throws {
@@ -253,10 +263,16 @@ private let delegateArgs = #"{"description": "echo task", "prompt": "answer the 
 @Test func testDelegateTaskEmptyAnswerIsToolError() async throws {
     let provider = SequenceProvider(steps: [
         .toolCall(name: "delegate_task", arguments: delegateArgs),  // parent turn 1
-        .text(""),                                                  // child: empty answer (creates tool error)
+        // Child is PERSISTENTLY empty: initial turn + 3 empty-answer nudges
+        // (maxVerificationRetries) — only then does the child give up with ""
+        // and the delegation surface the "no answer" tool error.
+        .text(""),                                                  // child turn 1
+        .text(""),                                                  // child turn 2 (after nudge 1)
+        .text(""),                                                  // child turn 3 (after nudge 2)
+        .text(""),                                                  // child turn 4 (after nudge 3, cap reached)
         .text("first reply after tool error"),                      // parent turn 2 (no tool calls) — repair-retry sees the tool error and nudges
         .toolCall(name: "delegate_task", arguments: delegateArgs),  // parent turn 3 — retries after repair nudge
-        .text("CHILD ANSWER AFTER RETRY"),                          // child: second attempt
+        .text("CHILD ANSWER AFTER RETRY"),                          // child: second attempt succeeds
         .text("recovered WITH the child")                           // parent turn 4 — final answer after retry succeeds
     ])
     let agent = Agent(config: AgentConfig(
@@ -275,6 +291,41 @@ private let delegateArgs = #"{"description": "echo task", "prompt": "answer the 
     }
     #expect(errorResults.first?.isError == true)
     #expect(errorResults.first?.result.contains("no answer") == true)
+}
+
+@Test func testChildEmptyAnswerIsNudgedToRetry() async throws {
+    // Reasoning-heavy models (GLM/Kimi via Ollama) sometimes end a turn with
+    // reasoning only — empty content, no tool calls. The child's built-in
+    // empty-answer verifier must nudge it to produce a real answer instead of
+    // terminating the delegation with "".
+    let provider = SequenceProvider(steps: [
+        .toolCall(name: "delegate_task", arguments: delegateArgs),  // parent turn 1
+        .text(""),                                                  // child turn 1: reasoning-only stop (empty)
+        .text("real child answer"),                                 // child turn 2: after empty-answer nudge
+        .text("final: built on the child")                          // parent turn 2
+    ])
+    let agent = Agent(config: AgentConfig(
+        provider: provider, maxTurns: 6,
+        tools: [EchoTool()], enableSubAgents: true))
+    let recorder = EventRecorder()
+    agent.addObserver(recorder)
+
+    let answer = try await agent.run("do it")
+    #expect(answer.contains("final: built on the child"))
+
+    let delegateResults = recorder.events.compactMap { event -> AgentToolResult? in
+        if case .toolExecutionFinished(let call, let result) = event,
+           call.name == "delegate_task" { return result }
+        return nil
+    }
+    #expect(delegateResults.first?.isError == false)
+    #expect(delegateResults.first?.result == "real child answer")
+
+    let finishedSummaries = recorder.events.compactMap { event -> String? in
+        if case .subAgentFinished(_, let summary) = event { return summary }
+        return nil
+    }
+    #expect(finishedSummaries.first == "real child answer")
 }
 
 // MARK: - Live integration (SAK_LIVE_TESTS=1, local Ollama with glm-5.2:cloud)
