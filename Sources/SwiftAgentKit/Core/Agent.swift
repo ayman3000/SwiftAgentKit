@@ -281,6 +281,14 @@ public final class Agent: @unchecked Sendable {
     /// bound (also bounded by `maxTurns`).
     static let maxReasoningContinuations = 8
 
+    /// Retries per LLM call on transient provider errors (network blips,
+    /// proxy 5xx, Ollama cloud degenerate bodies), with exponential backoff.
+    static let maxLLMRetries = 3
+
+    /// Base backoff delay in seconds for LLM-call retries (doubles per
+    /// attempt: base, 2×base, 4×base). Internal so tests can shrink it.
+    var llmRetryBaseDelay: TimeInterval = 1.0
+
     // MARK: - Init
 
     public init(config: AgentConfig) {
@@ -668,31 +676,46 @@ public final class Agent: @unchecked Sendable {
                 // Build LLM request (with state-templated system prompt)
                 let request = await makeLLMRequest(messagesForLLM: messagesForLLM, tools: llmToolDefs)
 
-                // Call the provider (streamed when onText is set)
+                // Call the provider (streamed when onText is set). Transient
+                // provider errors — network blips, proxy 5xx, Ollama cloud
+                // degenerate bodies — are retried with exponential backoff
+                // before failing the run.
                 var agentResponse: AgentLLMResponse
-                do {
-                    agentResponse = try await executeTurn(request: request, onText: onText)
-                } catch {
-                    // onModelError callback — can provide fallback
-                    if let onModelError = callbacks?.onModelError {
-                        if let fallback = await onModelError(error, state) {
-                            emit(.llmCallCompleted(turn: totalTurns, response: fallback))
-                            conversation.append(.assistant(fallback.text))
-                            let summary = makeRunSummary(
-                                query: query,
-                                totalTurns: totalTurns,
-                                toolsExecuted: toolsExecuted,
-                                toolErrors: toolErrors,
-                                plan: plan,
-                                finalResponse: fallback.text,
-                                startTime: startTime
-                            )
-                            emit(.finished(summary: summary))
-                            return fallback.text
+                var llmAttempt = 0
+                while true {
+                    do {
+                        agentResponse = try await executeTurn(request: request, onText: onText)
+                        break
+                    } catch is CancellationError {
+                        throw AgentError.cancelled
+                    } catch {
+                        llmAttempt += 1
+                        if llmAttempt <= Self.maxLLMRetries, !isCancelled {
+                            emit(.llmCallRetrying(turn: totalTurns, attempt: llmAttempt, error: error.localizedDescription))
+                            let delay = llmRetryBaseDelay * pow(2, Double(llmAttempt - 1))
+                            try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                            continue
                         }
+                        // Retries exhausted — onModelError callback can provide a fallback
+                        if let onModelError = callbacks?.onModelError {
+                            if let fallback = await onModelError(error, state) {
+                                emit(.llmCallCompleted(turn: totalTurns, response: fallback))
+                                conversation.append(.assistant(fallback.text))
+                                let summary = makeRunSummary(
+                                    query: query,
+                                    totalTurns: totalTurns,
+                                    toolsExecuted: toolsExecuted,
+                                    toolErrors: toolErrors,
+                                    plan: plan,
+                                    finalResponse: fallback.text,
+                                    startTime: startTime
+                                )
+                                emit(.finished(summary: summary))
+                                return fallback.text
+                            }
+                        }
+                        throw AgentError.providerError(error.localizedDescription)
                     }
-                    emit(.llmCallRetrying(turn: totalTurns, attempt: 1, error: error.localizedDescription))
-                    throw AgentError.providerError(error.localizedDescription)
                 }
 
                 // afterModel callback — can modify the response
