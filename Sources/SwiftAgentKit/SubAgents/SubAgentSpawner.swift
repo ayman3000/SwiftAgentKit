@@ -10,6 +10,40 @@
 
 import Foundation
 
+/// An async counting gate that bounds how many sub-agents run at once.
+///
+/// The LLM backend is a single shared resource. Firing several sub-agents at a
+/// single model in parallel (especially a cloud-hosted one) causes a
+/// model-eviction reload storm — every request thrashes the others and they
+/// all fail with load responses. Serializing sub-agent execution (limit 1)
+/// makes each child hit a settled model; tool execution within a child still
+/// runs freely. Raise the limit only when the backend genuinely serves
+/// concurrent requests without thrashing.
+public actor SubAgentGate {
+    private let limit: Int
+    private var active = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    public init(limit: Int) { self.limit = max(1, limit) }
+
+    public func acquire() async {
+        if active < limit {
+            active += 1
+            return
+        }
+        await withCheckedContinuation { waiters.append($0) }
+        active += 1
+    }
+
+    public func release() {
+        active -= 1
+        if !waiters.isEmpty {
+            let next = waiters.removeFirst()
+            next.resume()
+        }
+    }
+}
+
 /// Spawns and tracks sub-agents for a parent `Agent`.
 ///
 /// Held by the parent when `AgentConfig.enableSubAgents` is on. Tracks live
@@ -30,8 +64,14 @@ public final class SubAgentSpawner: @unchecked Sendable {
     private var liveChildren: [UUID: Agent] = [:]
     private var _cancelled = false
 
-    init(parent: Agent) {
+    /// Serializes sub-agent execution so parallel `delegate_task` calls don't
+    /// thrash a single model backend. `DelegateTaskTool` acquires/releases it
+    /// around each child run.
+    public let gate: SubAgentGate
+
+    init(parent: Agent, concurrencyLimit: Int = 1) {
         self.parent = parent
+        self.gate = SubAgentGate(limit: concurrencyLimit)
     }
 
     /// Build a child agent per the inheritance rules in the sub-agents spec.
