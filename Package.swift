@@ -17,7 +17,7 @@ let package = Package(
         .library(name: "SwiftAgentKitMCP", targets: ["SwiftAgentKitMCP"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/ayman3000/LLMProviderKit.git", from: "0.1.0-alpha.9"),
+        .package(url: "https://github.com/ayman3000/LLMProviderKit.git", from: "0.1.0-alpha.11"),
         .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "603.0.0"),
         .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.12.1"),
         .package(url: "https://github.com/swiftlang/swift-docc-plugin.git", branch: "main"),

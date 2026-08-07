@@ -59,6 +59,13 @@ public final class DelegateTaskTool: AgentTool, @unchecked Sendable {
         }
 
         let id = UUID()
+
+        // Serialize sub-agent execution (default limit 1): parallel children
+        // hammering a single model backend cause a load-storm that fails them
+        // all. Acquire the gate before spawning/running; release when done.
+        await spawner.gate.acquire()
+        defer { Task { await spawner.gate.release() } }
+
         let child = await spawner.makeChild()
         spawner.track(id, child)
         defer { spawner.untrack(id) }

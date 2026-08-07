@@ -81,6 +81,13 @@ public struct AgentConfig: Sendable {
     /// Read at construction time — flipping it after init has no effect.
     public var enableSubAgents: Bool
 
+    /// How many sub-agents may run concurrently. Default 1 (serialized): the LLM
+    /// backend is a single shared resource, and firing parallel sub-agents at
+    /// one model — a cloud model especially — triggers a model-eviction reload
+    /// storm that fails them all. Raise only for a backend that truly serves
+    /// concurrent requests. Tool execution within a child is unaffected.
+    public var maxSubAgentConcurrency: Int
+
     /// Max times an unsatisfied `AgentCallbacks.verifyCompletion` verdict may
     /// re-nudge the model to keep working before the agent stops anyway. Bounds
     /// goal-driven looping (also bounded by `maxTurns`). Default 3.
@@ -103,6 +110,7 @@ public struct AgentConfig: Sendable {
         contextManager: ContextManager? = nil,
         autonomousMode: Bool = false,
         enableSubAgents: Bool = false,
+        maxSubAgentConcurrency: Int = 1,
         maxVerificationRetries: Int = 3
     ) {
         self.provider = provider
@@ -121,6 +129,7 @@ public struct AgentConfig: Sendable {
         self.contextManager = contextManager
         self.autonomousMode = autonomousMode
         self.enableSubAgents = enableSubAgents
+        self.maxSubAgentConcurrency = maxSubAgentConcurrency
         self.maxVerificationRetries = maxVerificationRetries
     }
 }
@@ -282,11 +291,21 @@ public final class Agent: @unchecked Sendable {
     static let maxReasoningContinuations = 8
 
     /// Retries per LLM call on transient provider errors (network blips,
-    /// proxy 5xx, Ollama cloud degenerate bodies), with exponential backoff.
-    static let maxLLMRetries = 3
+    /// proxy 5xx, Ollama cloud model-load storms). Needs enough headroom for a
+    /// concurrent model load to finish — with N sub-agents hammering a cold
+    /// cloud model, several consecutive requests get `done_reason:"load"`.
+    static let maxLLMRetries = 5
 
-    /// Base backoff delay in seconds for LLM-call retries (doubles per
-    /// attempt: base, 2×base, 4×base). Internal so tests can shrink it.
+    /// Backoff is capped at this many seconds. A recovering cloud model can
+    /// become ready at any point; capping the delay means we re-poll it
+    /// frequently in the tail instead of sleeping through a long exponential
+    /// gap and missing the ready window. Worst-case per call: 1+2+4+8+8 ≈ 23s.
+    static let maxLLMRetryBackoff: TimeInterval = 8.0
+
+    /// Base backoff delay in seconds for LLM-call retries. Grows exponentially
+    /// (base, 2×, 4×…) with random jitter added, so concurrent sub-agents don't
+    /// retry in lockstep and re-collide on the still-loading model. Internal so
+    /// tests can shrink it.
     var llmRetryBaseDelay: TimeInterval = 1.0
 
     // MARK: - Init
@@ -339,7 +358,7 @@ public final class Agent: @unchecked Sendable {
         // tool (and sets enableSubAgents=false) on children, so delegation is
         // one level deep.
         if config.enableSubAgents {
-            let spawner = SubAgentSpawner(parent: self)
+            let spawner = SubAgentSpawner(parent: self, concurrencyLimit: config.maxSubAgentConcurrency)
             self.subAgentSpawner = spawner
             register(DelegateTaskTool(spawner: spawner, emit: { [weak self] event in
                 self?.emitEvent(event)
@@ -692,8 +711,13 @@ public final class Agent: @unchecked Sendable {
                         llmAttempt += 1
                         if llmAttempt <= Self.maxLLMRetries, !isCancelled {
                             emit(.llmCallRetrying(turn: totalTurns, attempt: llmAttempt, error: error.localizedDescription))
-                            let delay = llmRetryBaseDelay * pow(2, Double(llmAttempt - 1))
-                            try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                            // Exponential backoff + jitter (0…base) so concurrent
+                            // sub-agents desynchronize instead of re-colliding on
+                            // the still-loading model each round.
+                            let raw = llmRetryBaseDelay * pow(2, Double(llmAttempt - 1))
+                            let backoff = min(raw, Self.maxLLMRetryBackoff)
+                            let jitter = llmRetryBaseDelay * Double.random(in: 0...1)
+                            try await Task.sleep(nanoseconds: UInt64((backoff + jitter) * 1_000_000_000))
                             continue
                         }
                         // Retries exhausted — onModelError callback can provide a fallback

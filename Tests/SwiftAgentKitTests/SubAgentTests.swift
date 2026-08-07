@@ -398,7 +398,7 @@ final class FlakyProvider: LLMProvider, @unchecked Sendable {
     let retryCount = recorder.events.filter {
         if case .llmCallRetrying = $0 { return true }; return false
     }.count
-    #expect(retryCount == 3)   // capped retries, then the error surfaces
+    #expect(retryCount == 5)   // capped at maxLLMRetries, then the error surfaces
 }
 
 @Test func testReasoningOnlyTurnAutoContinues() async throws {
@@ -444,6 +444,29 @@ final class FlakyProvider: LLMProvider, @unchecked Sendable {
     }
     #expect(delegateResults.first?.isError == false)
     #expect(delegateResults.first?.result == "real child answer after thinking")
+}
+
+@Test func testSubAgentGateSerializesExecution() async throws {
+    // With limit 1, a second acquire must block until the first releases.
+    let gate = SubAgentGate(limit: 1)
+    await gate.acquire()
+
+    let secondAcquired = LockedBool()
+    let task = Task { await gate.acquire(); secondAcquired.set(true) }
+    try await Task.sleep(nanoseconds: 50_000_000)
+    #expect(secondAcquired.value == false)   // blocked while first holds the gate
+
+    await gate.release()
+    try await Task.sleep(nanoseconds: 50_000_000)
+    #expect(secondAcquired.value == true)    // proceeds once released
+    await gate.release()
+    _ = await task.value
+}
+
+final class LockedBool: @unchecked Sendable {
+    private let lock = NSLock(); private var v = false
+    func set(_ b: Bool) { lock.lock(); v = b; lock.unlock() }
+    var value: Bool { lock.lock(); defer { lock.unlock() }; return v }
 }
 
 // MARK: - Live integration (SAK_LIVE_TESTS=1, local Ollama with glm-5.2:cloud)
