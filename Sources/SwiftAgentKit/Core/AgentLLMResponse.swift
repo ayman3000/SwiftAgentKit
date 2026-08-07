@@ -19,6 +19,10 @@ import LLMProviderKit
 public struct AgentLLMResponse: Sendable {
 
     public let text: String
+    /// Separated model reasoning (e.g. Ollama's `thinking`). Not part of the
+    /// answer — but empty `text` with non-empty `reasoning` means the model is
+    /// mid-thought, not done, and the loop continues instead of stopping.
+    public let reasoning: String?
     public let toolCalls: [AgentToolCall]?
     public let finishReason: AgentFinishReason
     public let usage: AgentTokenUsage?
@@ -26,12 +30,14 @@ public struct AgentLLMResponse: Sendable {
 
     public init(
         text: String,
+        reasoning: String? = nil,
         toolCalls: [AgentToolCall]? = nil,
         finishReason: AgentFinishReason = .stop,
         usage: AgentTokenUsage? = nil,
         providerName: String
     ) {
         self.text = text
+        self.reasoning = reasoning
         self.toolCalls = toolCalls
         self.finishReason = finishReason
         self.usage = usage
@@ -66,6 +72,7 @@ public struct AgentLLMResponse: Sendable {
             }
             return AgentLLMResponse(
                 text: response.text,
+                reasoning: response.reasoning,
                 toolCalls: agentToolCalls,
                 finishReason: .toolCalls,
                 usage: AgentTokenUsage.from(response.usage),
@@ -78,6 +85,7 @@ public struct AgentLLMResponse: Sendable {
 
         return AgentLLMResponse(
             text: response.text,
+            reasoning: response.reasoning,
             toolCalls: textToolCalls,
             finishReason: AgentFinishReason.from(response.finishReason),
             usage: AgentTokenUsage.from(response.usage),
