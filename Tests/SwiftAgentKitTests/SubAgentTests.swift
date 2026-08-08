@@ -358,10 +358,13 @@ final class FlakyProvider: LLMProvider, @unchecked Sendable {
         name: FlakyProvider.providerName, baseURL: URL(string: "inproc://x")!)
     private let lock = NSLock()
     private var failuresLeft: Int
+    private let error: Error
     private let inner: SequenceProvider
 
-    init(failures: Int, then steps: [SequenceProvider.Step]) {
+    init(failures: Int, error: Error = LLMError.providerError("transient upstream failure"),
+         then steps: [SequenceProvider.Step]) {
         self.failuresLeft = failures
+        self.error = error
         self.inner = SequenceProvider(steps: steps)
     }
 
@@ -370,7 +373,7 @@ final class FlakyProvider: LLMProvider, @unchecked Sendable {
             if failuresLeft > 0 { failuresLeft -= 1; return true }
             return false
         }
-        if shouldFail { throw LLMError.providerError("transient upstream failure") }
+        if shouldFail { throw error }
         return try await inner.complete(request)
     }
 
@@ -396,6 +399,34 @@ final class FlakyProvider: LLMProvider, @unchecked Sendable {
         return nil
     }
     #expect(retryAttempts == [1, 2])
+}
+
+@Test func testRetryClassifierFailsFastOnPermanentErrors() {
+    // Permanent client errors must NOT be retried (they'd only stall the run).
+    #expect(Agent.isRetryableLLMError(LLMError.httpError(400, nil)) == false)
+    #expect(Agent.isRetryableLLMError(LLMError.httpError(404, nil)) == false)
+    #expect(Agent.isRetryableLLMError(LLMError.httpError(401, nil)) == false)
+    #expect(Agent.isRetryableLLMError(LLMError.invalidRequest("bad")) == false)
+    #expect(Agent.isRetryableLLMError(LLMError.unsupportedOperation("x")) == false)
+    // Transient failures ARE retried.
+    #expect(Agent.isRetryableLLMError(LLMError.httpError(429, nil)) == true)   // rate limit
+    #expect(Agent.isRetryableLLMError(LLMError.httpError(503, nil)) == true)   // server
+    #expect(Agent.isRetryableLLMError(LLMError.networkError("timeout")) == true)
+    #expect(Agent.isRetryableLLMError(LLMError.invalidResponse("ollama load")) == true)
+    #expect(Agent.isRetryableLLMError(LLMError.providerError("upstream")) == true)
+}
+
+@Test func testPermanentErrorNotRetried() async throws {
+    // A 400 must surface immediately without cycling through retries.
+    let provider = FlakyProvider(failures: 10, error: LLMError.httpError(400, nil), then: [.text("never")])
+    let agent = Agent(config: AgentConfig(provider: provider, maxTurns: 4, tools: [EchoTool()]))
+    agent.llmRetryBaseDelay = 0.01
+    let recorder = EventRecorder()
+    agent.addObserver(recorder)
+
+    await #expect(throws: AgentError.self) { _ = try await agent.run("do it") }
+    let retries = recorder.events.filter { if case .llmCallRetrying = $0 { return true }; return false }.count
+    #expect(retries == 0)   // failed fast, no retries
 }
 
 @Test func testPersistentLLMErrorStillThrowsAfterRetries() async throws {
