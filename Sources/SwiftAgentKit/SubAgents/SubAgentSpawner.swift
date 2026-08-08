@@ -128,7 +128,12 @@ public final class SubAgentSpawner: @unchecked Sendable {
             // artifact_search over the same shared store — skip the parent's copies.
             .filter { config.contextManager == nil || !["artifact_read", "artifact_search"].contains($0.name) }
         await child.tools.registerAll(inherited)
-        await child.skillRegistry.registerAll(parent.skillRegistry.allSkills())
+        // Sub-agents deliberately do NOT inherit skills. A child runs one bounded,
+        // self-contained delegated task; matched skills would bloat its system
+        // prompt (some skills are 6–28 KB), crowding a modest context window and
+        // causing trim churn — which lost the child's working memory (turn-cap
+        // loops, wrong answers) and, before the trim fix, emptied the request. The
+        // parent keeps the skills; the child gets a lean, focused prompt.
 
         var childCallbacks = AgentCallbacks()
         if let parentCallbacks = parent.callbacks {
