@@ -209,6 +209,21 @@ public class Conversation: @unchecked Sendable {
         return true
     }
 
+    /// Guarantee at least one non-system message survives trimming. Every
+    /// provider requires a non-system message, and Gemini rejects an empty
+    /// `contents` with HTTP 400 ("contents is not specified"). This bites
+    /// sub-agents whose system prompt (injected skills + memory) is large
+    /// relative to the context window: oldest-first trimming can remove the
+    /// current user turn (it's the oldest non-system message) and every tool
+    /// exchange, leaving only the system message. If that happened, restore the
+    /// most recent user turn (a valid, self-contained request) even if it
+    /// exceeds budget.
+    private func guaranteeNonSystemMessage(_ trimmed: [AgentMessage], from original: [AgentMessage]) -> [AgentMessage] {
+        guard !trimmed.contains(where: { $0.role != .system }) else { return trimmed }
+        guard let lastUser = original.last(where: { $0.role == .user }) else { return trimmed }
+        return trimmed + [lastUser]
+    }
+
     /// Trim to fit within 80% of the context window.
     private func ensureContextWindowFits(messages: [AgentMessage]) -> [AgentMessage] {
         let budget = max(0, Int(Double(contextWindow - outputReserve) * 0.8))
@@ -218,7 +233,7 @@ public class Conversation: @unchecked Sendable {
             if !removeOldestNonSystemUnit(from: &trimmed) { break }
         }
 
-        return trimmed
+        return guaranteeNonSystemMessage(trimmed, from: messages)
     }
 
     /// Trim oldest non-system messages until under token budget.
@@ -230,6 +245,6 @@ public class Conversation: @unchecked Sendable {
             if !removeOldestNonSystemUnit(from: &trimmed) { break }
         }
 
-        return trimmed
+        return guaranteeNonSystemMessage(trimmed, from: messages)
     }
 }
