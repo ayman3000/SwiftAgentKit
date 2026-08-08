@@ -98,7 +98,13 @@ public struct AgentMessage: Identifiable, @unchecked Sendable, Codable {
                 let status = result.isError ? "ERROR" : "OK"
                 let toolName = result.toolName ?? "unknown"
                 let content = "[Tool: \(toolName)] \(status)\n\(result.result)"
-                return .tool(content, toolCallId: result.toolCallId)
+                if result.images.isEmpty {
+                    return .tool(content, toolCallId: result.toolCallId)
+                }
+                // Full initializer (available in the released LLMProviderKit) so
+                // this compiles without the newer `.tool(_:images:)` convenience.
+                return LLMMessage(role: .tool, content: content,
+                                  images: result.images, toolCallId: result.toolCallId)
             }
 
         default:
@@ -224,24 +230,34 @@ public struct AgentToolResult: Sendable, Identifiable, Equatable, Codable {
     public let toolName: String?
     public let result: String
     public let isError: Bool
+    /// Images the tool produced (e.g. a browser screenshot). Fed back to a
+    /// vision-capable model alongside the text result so it can "see" them.
+    public let images: [LLMImage]
 
     public init(
         id: String = UUID().uuidString,
         toolCallId: String,
         toolName: String? = nil,
         result: String,
-        isError: Bool = false
+        isError: Bool = false,
+        images: [LLMImage] = []
     ) {
         self.id = id
         self.toolCallId = toolCallId
         self.toolName = toolName
         self.result = result
         self.isError = isError
+        self.images = images
     }
 
     /// Create a successful result.
     public static func success(toolCallId: String, toolName: String?, result: String) -> AgentToolResult {
         AgentToolResult(toolCallId: toolCallId, toolName: toolName, result: result, isError: false)
+    }
+
+    /// Create a successful result carrying images (e.g. a screenshot).
+    public static func success(toolCallId: String, toolName: String?, result: String, images: [LLMImage]) -> AgentToolResult {
+        AgentToolResult(toolCallId: toolCallId, toolName: toolName, result: result, isError: false, images: images)
     }
 
     /// Create an error result.
