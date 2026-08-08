@@ -16,6 +16,19 @@ import LLMProviderKitOllama
 
 actor GateCounter { private(set) var n = 0; func bump() { n += 1 } }
 
+@Test func testChildDoesNotInheritSkills() async throws {
+    // Children run a focused delegated task and must stay lean — inheriting the
+    // parent's skills would bloat the child's system prompt and starve its
+    // context window.
+    let agent = Agent(config: AgentConfig(provider: PlainAnswerProvider(text: "x")))
+    agent.registerSkill(AgentSkill(name: "big-skill", triggerKeywords: ["x"], instructions: String(repeating: "step ", count: 5000)))
+    await agent.flushRegistrations()
+    #expect(await agent.skillRegistry.allSkills().count == 1)   // parent has it
+
+    let child = await SubAgentSpawner(parent: agent).makeChild()
+    #expect(await child.skillRegistry.allSkills().isEmpty)      // child does not
+}
+
 @Test func testChildInheritsToolsMinusExcluded() async throws {
     let agent = Agent(config: AgentConfig(
         provider: PlainAnswerProvider(text: "x"),
