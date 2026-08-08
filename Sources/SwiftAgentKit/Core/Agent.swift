@@ -496,6 +496,27 @@ public final class Agent: @unchecked Sendable {
         subAgentSpawner?.resetCancellation()
     }
 
+    /// Whether an LLM-call error is worth retrying. Transient failures (network
+    /// blips, 5xx, 429 rate-limit, Ollama load/degenerate bodies) are retried;
+    /// permanent client errors (4xx other than 429, malformed request,
+    /// unsupported op) are not — retrying them only burns the backoff schedule
+    /// before surfacing the same error.
+    static func isRetryableLLMError(_ error: Error) -> Bool {
+        switch error {
+        case let llm as LLMError:
+            switch llm {
+            case .httpError(let code, _):
+                return code == 429 || code >= 500   // rate-limit + server errors
+            case .invalidRequest, .unsupportedOperation, .unknownProvider:
+                return false                          // permanent client errors
+            case .invalidResponse, .streamingError, .providerError, .networkError:
+                return true                           // transient (incl. Ollama load bodies)
+            }
+        default:
+            return true                               // unknown/network errors: retry
+        }
+    }
+
     private func beginRunIfIdle() -> Bool {
         runLock.lock()
         defer { runLock.unlock() }
@@ -709,7 +730,12 @@ public final class Agent: @unchecked Sendable {
                         throw AgentError.cancelled
                     } catch {
                         llmAttempt += 1
-                        if llmAttempt <= Self.maxLLMRetries, !isCancelled {
+                        // Only retry TRANSIENT failures. A permanent client error
+                        // (HTTP 4xx except 429 rate-limit, bad request, unsupported)
+                        // will never succeed on retry — retrying it just stalls the
+                        // run through the whole backoff schedule (~30s) before
+                        // surfacing the same error. Fail fast on those.
+                        if Self.isRetryableLLMError(error), llmAttempt <= Self.maxLLMRetries, !isCancelled {
                             emit(.llmCallRetrying(turn: totalTurns, attempt: llmAttempt, error: error.localizedDescription))
                             // Exponential backoff + jitter (0…base) so concurrent
                             // sub-agents desynchronize instead of re-colliding on
