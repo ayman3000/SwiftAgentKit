@@ -440,6 +440,23 @@ actor VerifyCounter { private(set) var n = 0; func bump() { n += 1 } }
     }
 }
 
+@Test func testMessagesForLLMCallNeverStripsToSystemOnly() {
+    // A huge system prompt (e.g. a sub-agent bloated with injected skills) plus
+    // a small context window must NOT trim away every user/tool message — that
+    // leaves a system-only message set, which Gemini rejects with HTTP 400
+    // "contents is not specified". The most recent user turn must survive.
+    let hugeSystem = String(repeating: "skill instructions ", count: 3000)   // ~57k chars
+    let conv = Conversation(contextWindow: 8192, maxMessages: 50)
+    conv.setSystemMessage(.system(hugeSystem))
+    conv.append(.user("analyze the SwiftAgentKit package"))
+    conv.append(.assistant(content: "", toolCalls: [AgentToolCall(id: "c1", name: "run_shell", parameters: ["command": AnyCodable("ls")])]))
+    conv.append(.tool(results: [.success(toolCallId: "c1", toolName: "run_shell", result: String(repeating: "file ", count: 2000))]))
+
+    let forLLM = conv.messagesForLLMCall()
+    // At least one non-system message must remain, so `contents` is never empty.
+    #expect(forLLM.contains { $0.role != .system })
+}
+
 @Test func testConversationTokenEstimation() {
     let conv = Conversation()
     let message = AgentMessage.user("This is a test message with some content")
