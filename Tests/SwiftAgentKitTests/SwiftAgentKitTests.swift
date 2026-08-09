@@ -76,6 +76,21 @@ struct EchoTool: AgentTool {
     }
 }
 
+struct ScreenshotTool: AgentTool {
+    let name = "screenshot"
+    let description = "Returns an image, like an MCP screenshot tool."
+    let parameters = ToolParameters.empty
+
+    func execute(parameters: [String: Any]) async throws -> AgentToolResult {
+        .success(
+            toolCallId: "",
+            toolName: name,
+            result: "captured",
+            images: [LLMImage(data: Data([0xAB, 0xCD]), mimeType: "image/png")]
+        )
+    }
+}
+
 struct FailingTool: AgentTool {
     let name = "fail"
     let description = "Always fails."
@@ -150,6 +165,26 @@ struct DangerousTool: AgentTool {
     #expect(results[0].toolCallId == "call_strict_provider_1")
     #expect(results[0].toolName == "echo")
     #expect(results[0].result == "strict correlation")
+}
+
+@Test func testToolDispatcherPreservesImagesThroughStamp() async {
+    // Regression: stamp() canonicalizes tool-call identity but must NOT drop
+    // images captured by the tool (e.g. an MCP screenshot). Before the fix,
+    // stamp rebuilt the result without images, silently discarding them on
+    // the only live execution path.
+    let registry = ToolRegistry()
+    await registry.register(ScreenshotTool())
+    let dispatcher = ToolDispatcher(registry: registry)
+    let state = AgentState()
+
+    let call = AgentToolCall(id: "call_shot_1", name: "screenshot", parameters: [:])
+    let results = await dispatcher.dispatch(calls: [call], state: state, observer: nil)
+
+    #expect(results.count == 1)
+    #expect(results[0].toolCallId == "call_shot_1")  // still stamped with call identity
+    #expect(results[0].images.count == 1)            // images survive the stamp
+    #expect(results[0].images.first?.mimeType == "image/png")
+    #expect(results[0].images.first?.base64 == Data([0xAB, 0xCD]).base64EncodedString())
 }
 
 @Test func testToolDispatcherStampsCallbackInterceptedResult() async {

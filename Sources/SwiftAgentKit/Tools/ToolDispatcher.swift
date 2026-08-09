@@ -320,7 +320,8 @@ public actor ToolDispatcher {
             toolCallId: call.id,
             toolName: result.toolName ?? call.name,
             result: result.result,
-            isError: result.isError
+            isError: result.isError,
+            images: result.images
         )
     }
 
