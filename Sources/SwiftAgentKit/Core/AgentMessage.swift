@@ -98,7 +98,7 @@ public struct AgentMessage: Identifiable, @unchecked Sendable, Codable {
                 let status = result.isError ? "ERROR" : "OK"
                 let toolName = result.toolName ?? "unknown"
                 let content = "[Tool: \(toolName)] \(status)\n\(result.result)"
-                return .tool(content, toolCallId: result.toolCallId)
+                return LLMMessage(role: .tool, content: content, images: result.images, toolCallId: result.toolCallId)
             }
 
         default:
@@ -224,29 +224,33 @@ public struct AgentToolResult: Sendable, Identifiable, Equatable, Codable {
     public let toolName: String?
     public let result: String
     public let isError: Bool
+    /// Images the tool returned (e.g. a screenshot), for vision-capable models.
+    public let images: [LLMImage]
 
     public init(
         id: String = UUID().uuidString,
         toolCallId: String,
         toolName: String? = nil,
         result: String,
-        isError: Bool = false
+        isError: Bool = false,
+        images: [LLMImage] = []
     ) {
         self.id = id
         self.toolCallId = toolCallId
         self.toolName = toolName
         self.result = result
         self.isError = isError
+        self.images = images
     }
 
     /// Create a successful result.
-    public static func success(toolCallId: String, toolName: String?, result: String) -> AgentToolResult {
-        AgentToolResult(toolCallId: toolCallId, toolName: toolName, result: result, isError: false)
+    public static func success(toolCallId: String, toolName: String?, result: String, images: [LLMImage] = []) -> AgentToolResult {
+        AgentToolResult(toolCallId: toolCallId, toolName: toolName, result: result, isError: false, images: images)
     }
 
     /// Create an error result.
-    public static func error(toolCallId: String, toolName: String?, message: String) -> AgentToolResult {
-        AgentToolResult(toolCallId: toolCallId, toolName: toolName, result: message, isError: true)
+    public static func error(toolCallId: String, toolName: String?, message: String, images: [LLMImage] = []) -> AgentToolResult {
+        AgentToolResult(toolCallId: toolCallId, toolName: toolName, result: message, isError: true, images: images)
     }
 }
 

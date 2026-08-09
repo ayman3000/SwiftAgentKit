@@ -2302,3 +2302,15 @@ func liveAgentRecallsToolConclusionAfterCompaction() async throws {
 @Test func parseReturnsNilForNonSkillText() {
     #expect(FileAgentSkillStore.parse("just some prose with no header") == nil)
 }
+
+@Test func toolResultForwardsImagesToLLMMessage() {
+    let img = LLMImage(data: Data([0x9, 0x9]), mimeType: "image/png")
+    let result = AgentToolResult.success(toolCallId: "c1", toolName: "take_screenshot", result: "done", images: [img])
+    #expect(result.images.map(\.base64) == [img.base64])
+
+    let message = AgentMessage.tool(results: [result])
+    let llm = message.toLLMMessages()
+    #expect(llm.count == 1)
+    #expect(llm[0].role == .tool)
+    #expect(llm[0].images.map(\.base64) == [img.base64])
+}

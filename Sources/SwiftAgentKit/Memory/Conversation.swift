@@ -170,6 +170,8 @@ public class Conversation: @unchecked Sendable {
         if let toolResults = message.toolResults {
             for result in toolResults {
                 chars += result.result.count
+                // coarse fixed budget per tool-result image (~800 tokens each)
+                chars += result.images.count * Int(800 * charsPerToken)
             }
         }
 
