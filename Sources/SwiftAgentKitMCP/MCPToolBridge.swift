@@ -1,6 +1,7 @@
 import Foundation
 import SwiftAgentKit
 import MCP
+import LLMProviderKit
 
 /// Bridges an MCP server tool into SwiftAgentKit's `AgentTool` protocol.
 ///
@@ -49,14 +50,27 @@ public struct MCPToolBridge: AgentTool {
         }
         let result = textParts.joined(separator: "\n")
 
+        let images = Self.imagesFrom(content)
+
         if isError ?? false {
-            return .error(toolCallId: "", toolName: name, message: result.isEmpty ? "MCP tool error" : result)
+            return .error(toolCallId: "", toolName: name, message: result.isEmpty ? "MCP tool error" : result, images: images)
         }
-        return .success(toolCallId: "", toolName: name, result: result)
+        return .success(toolCallId: "", toolName: name, result: result, images: images)
     }
 
     public func execute(context: ToolContext) async throws -> AgentToolResult {
         try await execute(parameters: context.parameters)
+    }
+
+    // MARK: - Image Extraction
+
+    /// MCP `.image` content items → `LLMImage`s (base64 payload decoded).
+    static func imagesFrom(_ content: [Tool.Content]) -> [LLMImage] {
+        content.compactMap { item -> LLMImage? in
+            guard case .image(let data, let mimeType, _, _) = item,
+                  let bytes = Data(base64Encoded: data) else { return nil }
+            return LLMImage(data: bytes, mimeType: mimeType)
+        }
     }
 
     // MARK: - Schema Conversion

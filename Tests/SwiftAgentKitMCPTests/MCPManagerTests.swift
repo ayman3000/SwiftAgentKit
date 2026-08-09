@@ -1,5 +1,6 @@
 import XCTest
 import SwiftAgentKit
+import MCP
 @testable import SwiftAgentKitMCP
 
 final class MCPManagerTests: XCTestCase {
@@ -179,5 +180,16 @@ final class MCPManagerTests: XCTestCase {
                 "MCP executable not found: definitely-not-an-mcp-command. Install it or provide an absolute path."
             )
         }
+    }
+
+    func testMCPBridgeExtractsImagesFromContent() {
+        let content: [Tool.Content] = [
+            .text(text: "here is the page", annotations: nil, _meta: nil),
+            .image(data: Data([0xAB, 0xCD]).base64EncodedString(), mimeType: "image/png", annotations: nil, _meta: nil),
+        ]
+        let images = MCPToolBridge.imagesFrom(content)
+        XCTAssertEqual(images.count, 1)
+        XCTAssertEqual(images[0].mimeType, "image/png")
+        XCTAssertEqual(images[0].base64, Data([0xAB, 0xCD]).base64EncodedString())
     }
 }
