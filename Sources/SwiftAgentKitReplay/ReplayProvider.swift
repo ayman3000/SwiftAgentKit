@@ -4,6 +4,9 @@ import LLMProviderKit
 /// An `LLMProvider` that never touches the network: it returns the scenario's
 /// scripted responses in order (Nth call → Nth turn) and records every incoming
 /// request so tests can assert on what the agent loop built.
+///
+/// **Single-use**: the internal cursor advances once per call and never resets.
+/// Create a fresh `ReplayProvider` for each test run.
 public final class ReplayProvider: LLMProvider, @unchecked Sendable {
     public static let name = "replay"
     public let configuration: LLMProviderConfiguration

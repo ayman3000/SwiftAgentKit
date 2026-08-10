@@ -1,5 +1,7 @@
 import Testing
 import Foundation
+import LLMProviderKit
+import LLMProviderKitGemini
 @testable import SwiftAgentKitReplay
 
 @Test func canonicalJSONSortsKeysStably() throws {
@@ -13,4 +15,26 @@ import Foundation
     #expect(throws: (any Error).self) {
         _ = try canonicalJSONString(from: Data("not json".utf8))
     }
+}
+
+@Test func assertWireSnapshotFailsWhenGoldenMissingAndNotUpdating() throws {
+    let provider = GeminiProvider(configuration: LLMProviderConfiguration(
+        name: "gemini",
+        baseURL: URL(string: "https://example.invalid/v1beta/models")!,
+        apiKey: "TEST-KEY-NOT-REAL",
+        defaultModel: "gemini-2.5-flash"))
+    let request = LLMRequest(
+        model: "gemini-2.5-flash",
+        messages: [.user("hello")])
+
+    let tempPath = FileManager.default.temporaryDirectory
+        .appendingPathComponent("sak-wire-missing-\(UUID().uuidString).json")
+
+    // The golden does not exist and update is false — must throw missingGolden.
+    #expect(throws: WireSnapshotError.self) {
+        try assertWireSnapshot(request, provider: provider, goldenPath: tempPath, update: false)
+    }
+
+    // Confirm no file was written at the temp path.
+    #expect(!FileManager.default.fileExists(atPath: tempPath.path))
 }

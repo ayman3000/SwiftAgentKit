@@ -9,12 +9,15 @@ public var shouldUpdateSnapshots: Bool {
 public enum WireSnapshotError: Error, CustomStringConvertible {
     case noBody
     case mismatch(golden: String, actual: String)
+    case missingGolden(path: String)
 
     public var description: String {
         switch self {
         case .noBody: return "prepareRequest produced no httpBody to snapshot."
         case .mismatch(let golden, let actual):
             return "Wire snapshot mismatch.\n--- golden ---\n\(golden)\n--- actual ---\n\(actual)\n(Set SAK_UPDATE_SNAPSHOTS=1 to accept the new output.)"
+        case .missingGolden(let path):
+            return "Wire golden does not exist at \(path). Run `SAK_UPDATE_SNAPSHOTS=1 swift test` to generate it."
         }
     }
 }
@@ -44,7 +47,8 @@ public func assertWireSnapshot(
     let actual = try canonicalJSONString(from: body)
 
     let exists = FileManager.default.fileExists(atPath: goldenPath.path)
-    if update || !exists {
+
+    if update {
         try FileManager.default.createDirectory(
             at: goldenPath.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data(actual.utf8).write(to: goldenPath)
@@ -52,6 +56,10 @@ public func assertWireSnapshot(
             "Wrote wire golden \(goldenPath.lastPathComponent). Re-run without SAK_UPDATE_SNAPSHOTS to verify.",
             sourceLocation: sourceLocation)
         return
+    }
+
+    guard exists else {
+        throw WireSnapshotError.missingGolden(path: goldenPath.path)
     }
 
     let golden = String(decoding: try Data(contentsOf: goldenPath), as: UTF8.self)

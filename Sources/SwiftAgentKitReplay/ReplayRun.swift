@@ -4,6 +4,9 @@ import SwiftAgentKit
 
 /// Drives an `Agent` whose LLM backend is a `ReplayProvider`, capturing the
 /// events and built requests a test needs to assert on.
+///
+/// **Single-use**: call `run(_:)` once per instance — events accumulate and the
+/// underlying scripted responses are consumed once. Create a fresh `ReplayRun` for each test.
 public final class ReplayRun: @unchecked Sendable {
     private let provider: ReplayProvider
     private let agent: Agent
