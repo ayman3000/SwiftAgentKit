@@ -1,0 +1,6 @@
+{
+  "name": "say-hi",
+  "turns": [
+    { "text": "Hi there!", "toolCalls": [] }
+  ]
+}
