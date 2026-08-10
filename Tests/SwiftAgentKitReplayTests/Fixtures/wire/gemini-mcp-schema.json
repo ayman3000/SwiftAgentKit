@@ -1,0 +1,39 @@
+{
+  "contents" : [
+    {
+      "parts" : [
+        {
+          "text" : "call the tool"
+        }
+      ],
+      "role" : "user"
+    }
+  ],
+  "tools" : [
+    {
+      "functionDeclarations" : [
+        {
+          "description" : "Edit op",
+          "name" : "edit",
+          "parameters" : {
+            "properties" : {
+              "count" : {
+                "type" : "integer"
+              },
+              "tags" : {
+                "items" : {
+                  "type" : "string"
+                },
+                "type" : "array"
+              }
+            },
+            "required" : [
+              "tags"
+            ],
+            "type" : "object"
+          }
+        }
+      ]
+    }
+  ]
+}
