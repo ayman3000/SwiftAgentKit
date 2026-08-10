@@ -15,6 +15,7 @@ let package = Package(
         .library(name: "SwiftAgentKit", targets: ["SwiftAgentKit"]),
         .library(name: "SwiftAgentKitTools", targets: ["SwiftAgentKitTools"]),
         .library(name: "SwiftAgentKitMCP", targets: ["SwiftAgentKitMCP"]),
+        .library(name: "SwiftAgentKitReplay", targets: ["SwiftAgentKitReplay"]),
     ],
     dependencies: [
         .package(url: "https://github.com/ayman3000/LLMProviderKit.git", from: "0.1.0-alpha.14"),
@@ -86,6 +87,28 @@ let package = Package(
             dependencies: [
                 "SwiftAgentKitMCP",
                 "SwiftAgentKit",
+            ]
+        ),
+
+        // Deterministic offline replay/eval harness for the runtime.
+        .target(
+            name: "SwiftAgentKitReplay",
+            dependencies: [
+                "SwiftAgentKit",
+                .product(name: "LLMProviderKit", package: "LLMProviderKit"),
+            ]
+        ),
+
+        // Replay-harness tests + the four seed regression scenarios. Depends on the
+        // concrete providers whose wire encoding the seeds snapshot (Gemini, Anthropic).
+        .testTarget(
+            name: "SwiftAgentKitReplayTests",
+            dependencies: [
+                "SwiftAgentKitReplay",
+                "SwiftAgentKit",
+                .product(name: "LLMProviderKit", package: "LLMProviderKit"),
+                .product(name: "LLMProviderKitGemini", package: "LLMProviderKit"),
+                .product(name: "LLMProviderKitAnthropic", package: "LLMProviderKit"),
             ]
         ),
 
