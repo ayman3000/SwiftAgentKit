@@ -1,0 +1,12 @@
+{
+  "name": "tool-image-survives",
+  "turns": [
+    {
+      "text": "",
+      "toolCalls": [
+        { "id": "call_shot_1", "name": "screenshot", "arguments": "{}", "providerMetadata": {} }
+      ]
+    },
+    { "text": "The page shows a login form.", "finishReason": "stop", "toolCalls": [] }
+  ]
+}
