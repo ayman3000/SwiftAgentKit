@@ -1,0 +1,47 @@
+{
+  "max_tokens" : 4096,
+  "messages" : [
+    {
+      "content" : "screenshot the page",
+      "role" : "user"
+    },
+    {
+      "content" : [
+        {
+          "id" : "call_shot_1",
+          "input" : {
+
+          },
+          "name" : "screenshot",
+          "type" : "tool_use"
+        }
+      ],
+      "role" : "assistant"
+    },
+    {
+      "content" : [
+        {
+          "content" : [
+            {
+              "text" : "screenshot captured",
+              "type" : "text"
+            },
+            {
+              "source" : {
+                "data" : "AQID",
+                "media_type" : "image\/png",
+                "type" : "base64"
+              },
+              "type" : "image"
+            }
+          ],
+          "tool_use_id" : "call_shot_1",
+          "type" : "tool_result"
+        }
+      ],
+      "role" : "user"
+    }
+  ],
+  "model" : "claude-sonnet-4-6",
+  "stream" : false
+}
