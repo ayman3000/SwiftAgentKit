@@ -33,7 +33,13 @@ final class DriverServer {
     private let queue = DispatchQueue(label: "sim-driver")
 
     init(port: UInt16) {
-        listener = try! NWListener(using: .tcp, on: NWEndpoint.Port(rawValue: port)!)
+        // Bind to loopback only — reachable from the host Mac (simulator shares the Mac's
+        // network stack) but invisible to other machines on the LAN.
+        let params = NWParameters.tcp
+        params.requiredLocalEndpoint = NWEndpoint.hostPort(
+            host: "127.0.0.1",
+            port: NWEndpoint.Port(rawValue: port)!)
+        listener = try! NWListener(using: params)
     }
 
     func start() throws {

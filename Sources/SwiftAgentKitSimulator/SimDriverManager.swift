@@ -22,12 +22,16 @@ public actor SimDriverManager {
 
     public var isRunning: Bool { child?.isRunning ?? false }
 
+    /// Bump whenever anything under Resources/SimDriverProject changes.
+    /// v2 = loopback-only bind in DriverMain.swift.
+    static let driverSourceVersion = 2
+
     public static func cacheDirectory(xcodeVersion: String, runtime: String) -> URL {
         let shortRuntime = runtime.replacingOccurrences(
             of: "com.apple.CoreSimulator.SimRuntime.", with: "")
         return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("SwiftAgentKitSimulator")
-            .appendingPathComponent("\(xcodeVersion)-\(shortRuntime)")
+            .appendingPathComponent("\(xcodeVersion)-\(shortRuntime)-v\(driverSourceVersion)")
     }
 
     static func xcodeVersion() async throws -> String {

@@ -9,7 +9,7 @@ final class SimDriverManagerTests: XCTestCase {
         let b = SimDriverManager.cacheDirectory(xcodeVersion: "26.2",
                     runtime: "com.apple.CoreSimulator.SimRuntime.iOS-26-1")
         XCTAssertNotEqual(a, b)
-        XCTAssertTrue(a.path.contains("SwiftAgentKitSimulator/26.1-iOS-26-1"))
+        XCTAssertTrue(a.path.contains("SwiftAgentKitSimulator/26.1-iOS-26-1-v\(SimDriverManager.driverSourceVersion)"))
         XCTAssertFalse(a.path.contains("com.apple.CoreSimulator"), "runtime prefix stripped for readability")
     }
 }

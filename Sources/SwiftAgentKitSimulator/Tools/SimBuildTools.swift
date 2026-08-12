@@ -139,6 +139,45 @@ public struct SimBuildInstallTool: AgentTool {
     }
 }
 
+// MARK: - SimLogsRegistry
+
+/// Lock-protected registry of pids spawned by SimLogsTool.
+/// Only pids in this registry are reaped or accepted for stop requests.
+/// NEVER call waitpid(-1,…) — it steals Foundation.Process exit statuses.
+enum SimLogsRegistry {
+    static let lock = NSLock()
+    // nonisolated(unsafe): all accesses are serialised through `lock`.
+    nonisolated(unsafe) static var pids = Set<pid_t>()
+
+    static func insert(_ pid: pid_t) {
+        lock.lock(); defer { lock.unlock() }
+        pids.insert(pid)
+    }
+
+    static func remove(_ pid: pid_t) {
+        lock.lock(); defer { lock.unlock() }
+        pids.remove(pid)
+    }
+
+    static func contains(_ pid: pid_t) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return pids.contains(pid)
+    }
+
+    /// Non-blocking reap of any already-exited children in the registry.
+    static func reapExited() {
+        lock.lock()
+        let snapshot = pids
+        lock.unlock()
+        for pid in snapshot {
+            let result = waitpid(pid, nil, WNOHANG)
+            if result > 0 {
+                lock.lock(); pids.remove(pid); lock.unlock()
+            }
+        }
+    }
+}
+
 // MARK: - SimLogsTool
 
 /// Spawns a detached `xcrun simctl spawn … log stream` writing to a temp file.
@@ -173,16 +212,20 @@ public struct SimLogsTool: AgentTool {
                 return .error(toolCallId: "", toolName: name, message: "sim_logs stop=true requires `pid`.")
             }
             let pid = Int32(rawPid)
-            // Fix 3: guard pid > 0
             guard pid > 0 else {
                 return .error(toolCallId: "", toolName: name, message: "sim_logs: invalid pid \(rawPid).")
             }
-            // Fix 2: SIGTERM, brief wait, then non-blocking reap
+            // Only accept pids that were started by sim_logs in this process.
+            guard SimLogsRegistry.contains(pid) else {
+                return .error(toolCallId: "", toolName: name,
+                    message: "pid \(pid) was not started by sim_logs.")
+            }
             kill(-pid, SIGTERM)   // terminate the process group
             kill(pid, SIGTERM)    // belt-and-suspenders for single-process case
             usleep(20_000)        // 20 ms — give child a moment to exit
-            // Non-blocking reap attempt; a still-running child is reaped on next stop or process exit.
+            // Non-blocking reap of this specific pid only.
             waitpid(pid, nil, WNOHANG)
+            SimLogsRegistry.remove(pid)
             return .success(toolCallId: "", toolName: name, result: "Stopped log stream (pid \(pid)).")
         }
 
@@ -207,9 +250,9 @@ public struct SimLogsTool: AgentTool {
                 message: "sim_logs: bundle_id must not contain a double-quote character.")
         }
 
-        // Fix 2: Opportunistically reap any previously exited children before spawning a new one.
-        // This prevents zombie accumulation when the caller forgets to call stop.
-        while waitpid(-1, nil, WNOHANG) > 0 {}
+        // Opportunistically reap any previously exited registry children before spawning a new one.
+        // Only reaps pids we own — never calls waitpid(-1,…) which would steal Foundation.Process statuses.
+        SimLogsRegistry.reapExited()
 
         // Fix 4: Create a unique temp log file via mkstemps, keeping the fd open for dup2.
         // We do NOT close the fd before spawn — it is dup2'd into the child's stdout/stderr
@@ -270,6 +313,9 @@ public struct SimLogsTool: AgentTool {
             return .error(toolCallId: "", toolName: name,
                 message: "Failed to spawn log stream: \(String(cString: strerror(rc)))")
         }
+
+        // Register pid so the stop path and reapExited() can operate on it safely.
+        SimLogsRegistry.insert(pid)
 
         return .success(toolCallId: "", toolName: name,
             result: "Log stream started (pid \(pid)). Logs → \(logPath)\nCall sim_logs with stop=true and pid=\(pid) to stop.")

@@ -272,7 +272,7 @@ public struct SimWaitTool: AgentTool {
         properties: [
             "label": ToolParameterProperty(type: "string", description: "Accessibility label to wait for."),
             "identifier": ToolParameterProperty(type: "string", description: "Accessibility identifier to wait for."),
-            "timeout_seconds": ToolParameterProperty(type: "number", description: "Max wait, default 10."),
+            "timeout_seconds": ToolParameterProperty(type: "number", description: "Max wait in seconds, default 10, capped at 100."),
             "for_disappearance": ToolParameterProperty(type: "boolean", description: "Wait for the element to go away."),
             "bundle_id": ToolParameterProperty(type: "string", description: "Defaults to the launched app."),
         ],
@@ -288,8 +288,12 @@ public struct SimWaitTool: AgentTool {
         case .resolved(let b): bundleId = b
         }
         do {
+            // Clamp to 100s: SimClient's URLSession request timeout is 120s; an uncapped
+            // wait would misread as a transport failure and trigger a driver relaunch + duplicate wait.
+            let requestedTimeout = (parameters["timeout_seconds"] as? Double) ?? 10
+            let effectiveTimeout = min(requestedTimeout, 100)
             let tree = try await client.waitFor(bundleId: bundleId, target: .from(parameters),
-                timeoutSeconds: (parameters["timeout_seconds"] as? Double) ?? 10,
+                timeoutSeconds: effectiveTimeout,
                 forDisappearance: (parameters["for_disappearance"] as? Bool) ?? false)
             return .success(toolCallId: "", toolName: name, result: tree.renderCompact())
         } catch let e as SimDriverError {
