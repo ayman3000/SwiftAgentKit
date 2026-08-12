@@ -349,5 +349,97 @@ final class SimToolsTests: XCTestCase {
                                      "sim_press", "sim_wait", "sim_alert", "sim_screenshot"]
         XCTAssertEqual(names, expected)
     }
+
+    // MARK: - SimBuildInstallTool tests
+
+    func testBuildInstallRequiresBootedDevice() async throws {
+        let session = SimSession()   // udid is nil
+        let tool = SimBuildInstallTool(session: session)
+        let result = try await tool.execute(parameters: [
+            "project_path": "/tmp/Test.xcodeproj",
+            "scheme": "MyScheme",
+        ])
+        XCTAssertTrue(result.isError, "Should return error when no device is booted")
+        XCTAssertTrue(result.result.contains("sim_boot"),
+            "Error should mention sim_boot; got: \(result.result)")
+    }
+
+    func testBuildInstallRequiresConfirmation() {
+        let session = SimSession()
+        let tool = SimBuildInstallTool(session: session)
+        XCTAssertTrue(tool.requiresConfirmation)
+    }
+
+    func testFindNewestApp() throws {
+        let fm = FileManager.default
+        let base = fm.temporaryDirectory.appendingPathComponent("newestApp-\(UUID().uuidString)")
+        let simDir = base.appendingPathComponent("iPhone-iphonesimulator")
+        try fm.createDirectory(at: simDir, withIntermediateDirectories: true)
+
+        // Create A.app (older)
+        let aApp = simDir.appendingPathComponent("A.app")
+        try fm.createDirectory(at: aApp, withIntermediateDirectories: true)
+        let oldDate = Date(timeIntervalSinceNow: -3600)
+        try fm.setAttributes([.modificationDate: oldDate], ofItemAtPath: aApp.path)
+
+        // Create B.app (newer)
+        let bApp = simDir.appendingPathComponent("B.app")
+        try fm.createDirectory(at: bApp, withIntermediateDirectories: true)
+        let newDate = Date(timeIntervalSinceNow: -60)
+        try fm.setAttributes([.modificationDate: newDate], ofItemAtPath: bApp.path)
+
+        defer { try? fm.removeItem(at: base) }
+
+        let result = SimBuildInstallTool.newestApp(in: base.path)
+        XCTAssertNotNil(result, "newestApp should find an app")
+        XCTAssertEqual(result?.lastPathComponent, "B.app",
+            "Should pick the newer B.app; got \(result?.lastPathComponent ?? "nil")")
+    }
+
+    func testFindNewestAppReturnsNilForEmptyDir() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("newestApp-empty-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+
+        let result = SimBuildInstallTool.newestApp(in: base.path)
+        XCTAssertNil(result, "Should return nil when no .app bundles are found")
+    }
+
+    // MARK: - SimLogsTool tests
+
+    func testLogsRequiresBootedDevice() async throws {
+        let session = SimSession()   // udid is nil
+        let tool = SimLogsTool(session: session)
+        let result = try await tool.execute(parameters: [:])
+        XCTAssertTrue(result.isError, "Should return error when no device is booted")
+        XCTAssertTrue(result.result.contains("sim_boot"),
+            "Error should mention sim_boot; got: \(result.result)")
+    }
+
+    func testLogsDoesNotRequireConfirmation() {
+        let session = SimSession()
+        let tool = SimLogsTool(session: session)
+        XCTAssertFalse(tool.requiresConfirmation)
+    }
+
+    func testLogsStopRequiresPid() async throws {
+        let session = SimSession()
+        session.udid = "FAKE-UDID"
+        let tool = SimLogsTool(session: session)
+        let result = try await tool.execute(parameters: ["stop": true])
+        XCTAssertTrue(result.isError)
+        XCTAssertTrue(result.result.contains("pid"))
+    }
+
+    func testLogsRequiresActiveBundleId() async throws {
+        let session = SimSession()
+        session.udid = "FAKE-UDID"
+        // No currentBundleId, no explicit bundle_id
+        let tool = SimLogsTool(session: session)
+        let result = try await tool.execute(parameters: [:])
+        XCTAssertTrue(result.isError)
+        XCTAssertTrue(result.result.contains("bundle_id") || result.result.contains("sim_launch"))
+    }
 }
 #endif
