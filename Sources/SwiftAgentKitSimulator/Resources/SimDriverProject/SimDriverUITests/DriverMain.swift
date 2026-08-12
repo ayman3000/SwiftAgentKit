@@ -20,7 +20,16 @@ final class DriverMain: XCTestCase {
 final class DriverServer {
     private let listener: NWListener
     private let routes = DriverRoutes()
-    private(set) var lastActivity = Date()
+    private let activityLock = NSLock()
+    private var _lastActivity = Date()
+    var lastActivity: Date {
+        activityLock.lock(); defer { activityLock.unlock() }
+        return _lastActivity
+    }
+    private func touchActivity() {
+        activityLock.lock(); defer { activityLock.unlock() }
+        _lastActivity = Date()
+    }
     private let queue = DispatchQueue(label: "sim-driver")
 
     init(port: UInt16) {
@@ -40,7 +49,7 @@ final class DriverServer {
             guard let self, error == nil, let data else { conn.cancel(); return }
             var buf = buffer; buf.append(data)
             if let request = HTTPRequest(parsing: buf) {
-                self.lastActivity = Date()
+                self.touchActivity()
                 let response = self.routes.handle(request)   // synchronous: XCUITest calls must stay on this thread
                 conn.send(content: response.serialized(), completion: .contentProcessed { _ in conn.cancel() })
             } else if done {
@@ -95,8 +104,14 @@ struct HTTPResponse {
     static func png(_ data: Data) -> HTTPResponse {
         HTTPResponse(status: 200, contentType: "image/png", body: data)
     }
+    static func reason(_ status: Int) -> String {
+        switch status {
+        case 200: return "OK"; case 400: return "Bad Request"; case 404: return "Not Found"
+        case 408: return "Request Timeout"; case 409: return "Conflict"; default: return "Error"
+        }
+    }
     func serialized() -> Data {
-        var head = "HTTP/1.1 \(status) \(status == 200 ? "OK" : "ERR")\r\n"
+        var head = "HTTP/1.1 \(status) \(Self.reason(status))\r\n"
         head += "Content-Type: \(contentType)\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
         var out = Data(head.utf8); out.append(body); return out
     }
