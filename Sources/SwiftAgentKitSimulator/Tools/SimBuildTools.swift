@@ -160,7 +160,8 @@ public struct SimLogsTool: AgentTool {
                 description: "PID returned by a previous sim_logs call; required when stop=true."),
         ],
         required: [])
-    // No requiresConfirmation — read-only log tap.
+    /// Read-only log tap — no destructive side effects.
+    public var requiresConfirmation: Bool { false }
 
     let session: SimSession
     public init(session: SimSession) { self.session = session }
@@ -168,12 +169,21 @@ public struct SimLogsTool: AgentTool {
     public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
         // Handle stop request
         if (parameters["stop"] as? Bool) == true {
-            if let pid = parameters["pid"].flatMap({ $0 as? Int }).map({ Int32($0) }) {
-                kill(-pid, SIGTERM)   // terminate the process group
-                kill(pid, SIGTERM)    // belt-and-suspenders for single-process case
-                return .success(toolCallId: "", toolName: name, result: "Stopped log stream (pid \(pid)).")
+            guard let rawPid = parameters["pid"].flatMap({ $0 as? Int }) else {
+                return .error(toolCallId: "", toolName: name, message: "sim_logs stop=true requires `pid`.")
             }
-            return .error(toolCallId: "", toolName: name, message: "sim_logs stop=true requires `pid`.")
+            let pid = Int32(rawPid)
+            // Fix 3: guard pid > 0
+            guard pid > 0 else {
+                return .error(toolCallId: "", toolName: name, message: "sim_logs: invalid pid \(rawPid).")
+            }
+            // Fix 2: SIGTERM, brief wait, then non-blocking reap
+            kill(-pid, SIGTERM)   // terminate the process group
+            kill(pid, SIGTERM)    // belt-and-suspenders for single-process case
+            usleep(20_000)        // 20 ms — give child a moment to exit
+            // Non-blocking reap attempt; a still-running child is reaped on next stop or process exit.
+            waitpid(pid, nil, WNOHANG)
+            return .success(toolCallId: "", toolName: name, result: "Stopped log stream (pid \(pid)).")
         }
 
         guard let udid = session.udid else {
@@ -191,44 +201,52 @@ public struct SimLogsTool: AgentTool {
                 message: "No active app. Provide `bundle_id` or call sim_launch first.")
         }
 
-        // Build the predicate — filter by process image path containing the bundle ID
-        let predicate = "processImagePath CONTAINS[c] \"\(bundleId)\""
+        // Fix 1: Defensively reject bundle IDs containing a double-quote (would break the predicate argument).
+        guard !bundleId.contains("\"") else {
+            return .error(toolCallId: "", toolName: name,
+                message: "sim_logs: bundle_id must not contain a double-quote character.")
+        }
 
-        // Create a unique temp log file via mkstemp
+        // Fix 2: Opportunistically reap any previously exited children before spawning a new one.
+        // This prevents zombie accumulation when the caller forgets to call stop.
+        while waitpid(-1, nil, WNOHANG) > 0 {}
+
+        // Fix 4: Create a unique temp log file via mkstemps, keeping the fd open for dup2.
+        // We do NOT close the fd before spawn — it is dup2'd into the child's stdout/stderr
+        // via posix_spawn_file_actions, eliminating the close-then-reopen TOCTTOU window.
         let templateStr = FileManager.default.temporaryDirectory.path + "/sim_logs-XXXXXX.log"
-        let logPath: String = templateStr.withCString { src in
+        var logPath: String = ""
+        var logFD: Int32 = -1
+        templateStr.withCString { src in
             let buf = UnsafeMutablePointer<CChar>.allocate(capacity: strlen(src) + 1)
-            defer { buf.deallocate() }
             _ = strcpy(buf, src)
-            let fd = mkstemps(buf, 4)   // 4 = length of ".log"
-            if fd >= 0 { close(fd) }
-            return String(cString: buf)
+            logFD = mkstemps(buf, 4)   // 4 = length of ".log"; fd stays open
+            logPath = String(cString: buf)
+            buf.deallocate()
         }
 
-        // Build full xcrun command string
-        let command = """
-        xcrun simctl spawn \(udid) log stream \
-        --style compact \
-        --predicate '\(predicate)'
-        """
-
-        // Open log file for writing
-        let logFD = open(logPath, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
         guard logFD >= 0 else {
-            return .error(toolCallId: "", toolName: name, message: "Failed to open log file at \(logPath).")
+            return .error(toolCallId: "", toolName: name, message: "Failed to create temp log file.")
         }
 
-        // Set close-on-exec so unrelated spawns don't inherit the FD
-        let flags = fcntl(logFD, F_GETFD)
-        if flags != -1 { _ = fcntl(logFD, F_SETFD, flags | FD_CLOEXEC) }
+        // Fix 1: Eliminate the shell layer entirely — posix_spawn xcrun directly with an argv array.
+        // The predicate is passed as a single argv element; no shell parsing ever happens.
+        let predicate = "processImagePath CONTAINS[c] \"\(bundleId)\""
+        let argv: [String] = [
+            "xcrun", "simctl", "spawn", udid,
+            "log", "stream", "--style", "compact",
+            "--predicate", predicate,
+        ]
+        let xcrunPath = "/usr/bin/xcrun"
 
-        // Spawn detached in its own process group via posix_spawn
+        // Fix 4: dup2 the still-open logFD into child stdout/stderr via file actions.
         var fileActions: posix_spawn_file_actions_t?
         posix_spawn_file_actions_init(&fileActions)
         defer { posix_spawn_file_actions_destroy(&fileActions) }
-        posix_spawn_file_actions_adddup2(&fileActions, logFD, 1)
-        posix_spawn_file_actions_adddup2(&fileActions, logFD, 2)
-        posix_spawn_file_actions_addopen(&fileActions, 0, "/dev/null", O_RDONLY, 0)
+        posix_spawn_file_actions_adddup2(&fileActions, logFD, STDOUT_FILENO)
+        posix_spawn_file_actions_adddup2(&fileActions, logFD, STDERR_FILENO)
+        posix_spawn_file_actions_addopen(&fileActions, STDIN_FILENO, "/dev/null", O_RDONLY, 0)
+        // Close the original fd in the child after the dup2s (child only needs fds 0/1/2).
         posix_spawn_file_actions_addclose(&fileActions, logFD)
 
         var attr: posix_spawnattr_t?
@@ -237,14 +255,15 @@ public struct SimLogsTool: AgentTool {
         posix_spawnattr_setpgroup(&attr, 0)
         posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETPGROUP))
 
-        let argv = ["/bin/zsh", "-lc", command]
         var cStrings: [UnsafeMutablePointer<CChar>?] = argv.map { strdup($0) }
         cStrings.append(nil)
         var pid: pid_t = 0
         let rc = cStrings.withUnsafeBufferPointer { buf in
-            posix_spawn(&pid, "/bin/zsh", &fileActions, &attr, buf.baseAddress!, environ)
+            posix_spawn(&pid, xcrunPath, &fileActions, &attr, buf.baseAddress!, environ)
         }
         cStrings.forEach { free($0) }
+
+        // Fix 4: Close logFD in the parent after spawn (child has its own copy via dup2).
         close(logFD)
 
         guard rc == 0 else {

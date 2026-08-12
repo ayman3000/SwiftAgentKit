@@ -332,11 +332,11 @@ final class SimToolsTests: XCTestCase {
 
     // MARK: makeSimulatorTools
 
-    func testMakeSimulatorToolsReturns12Tools() {
+    func testMakeSimulatorToolsReturns14Tools() {
         let mock = MockDriver()
         let session = SimSession()
         let tools = makeSimulatorTools(session: session, client: mock)
-        XCTAssertEqual(tools.count, 12)
+        XCTAssertEqual(tools.count, 14)
     }
 
     func testMakeSimulatorToolsHasExpectedNames() {
@@ -346,7 +346,8 @@ final class SimToolsTests: XCTestCase {
         let names = Set(tools.map { $0.name })
         let expected: Set<String> = ["sim_list", "sim_boot", "sim_launch", "sim_terminate",
                                      "sim_ui", "sim_tap", "sim_type", "sim_swipe",
-                                     "sim_press", "sim_wait", "sim_alert", "sim_screenshot"]
+                                     "sim_press", "sim_wait", "sim_alert", "sim_screenshot",
+                                     "sim_build_install", "sim_logs"]
         XCTAssertEqual(names, expected)
     }
 

@@ -337,13 +337,14 @@ public struct SimAlertTool: AgentTool {
 
 // MARK: - makeSimulatorTools
 
-/// Returns the full set of simulator tools for one-call agent registration.
+/// Returns the full set of simulator tools (14) for one-call agent registration.
 public func makeSimulatorTools(session: SimSession, client: any SimDriving) -> [any AgentTool] {
     [SimListTool(), SimBootTool(session: session),
      SimLaunchTool(client: client, session: session), SimTerminateTool(client: client, session: session),
      SimUITool(client: client, session: session), SimTapTool(client: client, session: session),
      SimTypeTool(client: client, session: session), SimSwipeTool(client: client, session: session),
      SimPressTool(client: client, session: session), SimWaitTool(client: client, session: session),
-     SimAlertTool(client: client, session: session), SimScreenshotTool(client: client, session: session)]
+     SimAlertTool(client: client, session: session), SimScreenshotTool(client: client, session: session),
+     SimBuildInstallTool(session: session), SimLogsTool(session: session)]
 }
 #endif
