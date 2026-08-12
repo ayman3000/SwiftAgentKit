@@ -38,6 +38,7 @@ A modern AI agent framework for Swift. Native tool calling, conversation memory,
 - [Quick Start](#quick-start)
 - [Examples](#examples)
 - [MCP Server Integration](#mcp-server-integration)
+- [iOS Simulator Automation](#ios-simulator-automation-swiftagentkitsimulator)
 - [@Tool Macro (Optional)](#tool-macro-optional)
 - [Design Principles](#design-principles)
 - [Alpha Status](#alpha-status)
@@ -528,6 +529,60 @@ await mcp.disconnectAll()
 
 - MCP prompts, completions, sampling, elicitation — tools and resources only for now
 - MCP server hosting (SwiftAgentKit is a client, not a server)
+
+---
+
+## iOS Simulator Automation (SwiftAgentKitSimulator)
+
+`SwiftAgentKitSimulator` is a **macOS-only** optional product that gives your agent a set of tools for driving real iOS simulators — launch apps, inspect UI trees, tap elements, type text, install builds, and capture screenshots — all through an XCUITest-backed driver that runs inside the simulator.
+
+### Installation
+
+Add `SwiftAgentKitSimulator` to your target dependencies:
+
+```swift
+.target(name: "YourApp", dependencies: [
+    .product(name: "SwiftAgentKit", package: "SwiftAgentKit"),
+    .product(name: "SwiftAgentKitSimulator", package: "SwiftAgentKit"),
+])
+```
+
+### One-call registration
+
+```swift
+import SwiftAgentKit
+import SwiftAgentKitSimulator
+
+// Register all simulator tools with the agent in one call.
+// manager handles driver build + launch on first use.
+let manager = SimDriverManager()
+agent.registerAll(makeSimulatorTools(manager: manager))
+```
+
+The first time the driver is used for a given Xcode / runtime pair it builds the XCUITest harness (~30–60 s); subsequent runs reuse the cached build.
+
+### What the agent can do
+
+| Tool | Description |
+|---|---|
+| `sim_launch` | Launch / relaunch an app by bundle ID |
+| `sim_snapshot` | Return the full accessibility UI tree as compact text |
+| `sim_tap` | Tap (or long-press) an element by label/id/type |
+| `sim_type` | Type text into the focused element |
+| `sim_screenshot` | Capture a PNG screenshot |
+| `sim_wait_for` | Poll the tree until an element appears or disappears |
+| `sim_build_install` | Build an Xcode scheme and install the product on the simulator |
+| `sim_logs` | Stream the simulator's log output |
+
+### Live end-to-end test
+
+The live test is gated behind two environment variables so it never runs in CI without an attached simulator:
+
+```bash
+SAK_LIVE_TESTS=1 SAK_SIM_TESTS=1 swift test --filter SimLiveTests
+```
+
+The test launches the iOS Settings app, waits for the General row, taps it, waits for the About row, and asserts that a screenshot is a valid PNG (> 10 KB). First run includes the driver build.
 
 ---
 

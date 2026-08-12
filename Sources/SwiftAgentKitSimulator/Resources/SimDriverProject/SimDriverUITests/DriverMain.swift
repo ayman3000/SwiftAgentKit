@@ -50,7 +50,10 @@ final class DriverServer {
             var buf = buffer; buf.append(data)
             if let request = HTTPRequest(parsing: buf) {
                 self.touchActivity()
-                let response = self.routes.handle(request)   // synchronous: XCUITest calls must stay on this thread
+                // XCUITest APIs (launch, terminate, tap, snapshot, screenshot) must be
+                // called from the main thread. Dispatch synchronously so the response
+                // is computed on the main thread before we send it back.
+                let response = DispatchQueue.main.sync { self.routes.handle(request) }
                 conn.send(content: response.serialized(), completion: .contentProcessed { _ in conn.cancel() })
             } else if done {
                 conn.cancel()
