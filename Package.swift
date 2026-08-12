@@ -16,6 +16,7 @@ let package = Package(
         .library(name: "SwiftAgentKitTools", targets: ["SwiftAgentKitTools"]),
         .library(name: "SwiftAgentKitMCP", targets: ["SwiftAgentKitMCP"]),
         .library(name: "SwiftAgentKitReplay", targets: ["SwiftAgentKitReplay"]),
+        .library(name: "SwiftAgentKitSimulator", targets: ["SwiftAgentKitSimulator"]),
     ],
     dependencies: [
         .package(url: "https://github.com/ayman3000/LLMProviderKit.git", from: "0.1.0-alpha.14"),
@@ -110,6 +111,18 @@ let package = Package(
                 .product(name: "LLMProviderKitGemini", package: "LLMProviderKit"),
                 .product(name: "LLMProviderKitAnthropic", package: "LLMProviderKit"),
             ]
+        ),
+
+        // Native iOS-simulator driving — persistent XCUITest driver + sim_* tools.
+        // Host-side code is macOS-gated; the driver project ships as a resource.
+        .target(
+            name: "SwiftAgentKitSimulator",
+            dependencies: ["SwiftAgentKit"],
+            resources: [.copy("Resources/SimDriverProject")]
+        ),
+        .testTarget(
+            name: "SwiftAgentKitSimulatorTests",
+            dependencies: ["SwiftAgentKitSimulator", "SwiftAgentKit"]
         ),
 
         // Examples runner — `swift run Runner 01`, `swift run Runner 02`, etc.

@@ -38,6 +38,7 @@ A modern AI agent framework for Swift. Native tool calling, conversation memory,
 - [Quick Start](#quick-start)
 - [Examples](#examples)
 - [MCP Server Integration](#mcp-server-integration)
+- [iOS Simulator Automation](#ios-simulator-automation-swiftagentkitsimulator)
 - [@Tool Macro (Optional)](#tool-macro-optional)
 - [Design Principles](#design-principles)
 - [Alpha Status](#alpha-status)
@@ -528,6 +529,68 @@ await mcp.disconnectAll()
 
 - MCP prompts, completions, sampling, elicitation — tools and resources only for now
 - MCP server hosting (SwiftAgentKit is a client, not a server)
+
+---
+
+## iOS Simulator Automation (SwiftAgentKitSimulator)
+
+`SwiftAgentKitSimulator` is a **macOS-only** optional product that gives your agent a set of tools for driving real iOS simulators — launch apps, inspect UI trees, tap elements, type text, install builds, and capture screenshots — all through an XCUITest-backed driver that runs inside the simulator.
+
+### Installation
+
+Add `SwiftAgentKitSimulator` to your target dependencies:
+
+```swift
+.target(name: "YourApp", dependencies: [
+    .product(name: "SwiftAgentKit", package: "SwiftAgentKit"),
+    .product(name: "SwiftAgentKitSimulator", package: "SwiftAgentKit"),
+])
+```
+
+### One-call registration
+
+```swift
+import SwiftAgentKit
+import SwiftAgentKitSimulator
+
+// Register all simulator tools with the agent in one call.
+// manager handles driver build + launch on first use.
+let manager = SimDriverManager()
+let session = SimSession()
+let client = await SimClient(manager: manager, udid: udid, runtime: runtime)
+agent.registerAll(makeSimulatorTools(session: session, client: client))
+```
+
+The first time the driver is used for a given Xcode / runtime pair it builds the XCUITest harness (~30–60 s); subsequent runs reuse the cached build.
+
+### What the agent can do
+
+| Tool | Description |
+|---|---|
+| `sim_list` | List all available iOS simulators with their UDID, name, runtime, and boot state |
+| `sim_boot` | Boot an iOS simulator by UDID or name; sets the active device for subsequent sim_* calls |
+| `sim_launch` | Launch an app by bundle ID in the currently booted simulator |
+| `sim_terminate` | Terminate a running app in the simulator |
+| `sim_ui` | Read the current UI of the iOS simulator app as an accessibility tree with element refs and labels |
+| `sim_tap` | Tap (or long-press) an element in the simulator by ref/label/identifier |
+| `sim_type` | Type text into the focused field or a target element in the simulator |
+| `sim_swipe` | Swipe in a direction (up/down/left/right) on the simulator screen or a specific element |
+| `sim_press` | Press a hardware button on the simulator (currently supports home) |
+| `sim_wait` | Wait event-driven until an element exists or disappears, then return the fresh UI tree |
+| `sim_alert` | Accept or dismiss the currently visible system alert in the simulator |
+| `sim_screenshot` | Capture a PNG screenshot of the simulator screen |
+| `sim_build_install` | Build an Xcode project or workspace and install the resulting app on the simulator |
+| `sim_logs` | Stream simulator app logs to a temp file (non-blocking) or stop a previous stream |
+
+### Live end-to-end test
+
+The live test is gated behind two environment variables so it never runs in CI without an attached simulator:
+
+```bash
+SAK_LIVE_TESTS=1 SAK_SIM_TESTS=1 swift test --filter SimLiveTests
+```
+
+The test launches the iOS Settings app, waits for the General row, taps it, waits for the About row, and asserts that a screenshot is a valid PNG (> 10 KB). First run includes the driver build.
 
 ---
 
