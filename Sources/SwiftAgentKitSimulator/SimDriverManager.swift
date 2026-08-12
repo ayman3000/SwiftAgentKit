@@ -1,9 +1,22 @@
 #if os(macOS)
 import Foundation
 
+/// Holds a Process and terminates it when deallocated.
+/// Used so SimDriverManager (which targets macOS 13+) can guarantee port cleanup
+/// without requiring `isolated deinit` (available only from macOS 15.4).
+private final class ChildBox: @unchecked Sendable {
+    let process: Process
+    init(_ process: Process) { self.process = process }
+    deinit { process.terminate() }
+}
+
 public actor SimDriverManager {
     public let port: UInt16
-    private var child: Process?
+    // Stored as ChildBox so that if the actor is dropped without an explicit
+    // shutdown() call, the box's deinit terminates the child process and
+    // releases the port.
+    private var childBox: ChildBox?
+    private var child: Process? { childBox?.process }
 
     public init(port: UInt16 = 8722) { self.port = port }
 
@@ -19,10 +32,20 @@ public actor SimDriverManager {
 
     static func xcodeVersion() async throws -> String {
         let (status, out) = try await Simctl.run(["xcodebuild", "-version"], timeout: 30)
-        guard status == 0, let line = out.split(separator: "\n").first else {
+        guard status == 0, let firstLine = out.split(separator: "\n").first else {
             throw SimctlError.commandFailed("xcodebuild -version failed: \(out)")
         }
-        return line.replacingOccurrences(of: "Xcode ", with: "")   // "26.1"
+        // Parse "Xcode 16.0 (Build 16A242d)" → "16.0"
+        let tokens = firstLine.split(separator: " ")
+        guard let xcodeIdx = tokens.firstIndex(of: "Xcode"),
+              tokens.index(after: xcodeIdx) < tokens.endIndex else {
+            throw SimctlError.commandFailed("xcodebuild -version output unrecognised: \(firstLine)")
+        }
+        let version = String(tokens[tokens.index(after: xcodeIdx)])
+        guard !version.isEmpty else {
+            throw SimctlError.commandFailed("xcodebuild -version produced empty version string")
+        }
+        return version   // e.g. "16.0" or "26.1"
     }
 
     /// Copy the resource project into the cache dir (resources are read-only) and
@@ -31,9 +54,12 @@ public actor SimDriverManager {
         let xcode = try await Self.xcodeVersion()
         let dir = Self.cacheDirectory(xcodeVersion: xcode, runtime: runtime)
         let fm = FileManager.default
+
+        // Return a cached build if one exists. ANY failure to locate an xctestrun
+        // (missing dir, empty products, partial build) means we must rebuild from scratch.
         if let existing = try? findXCTestRun(in: dir) { return existing }
 
-        try? fm.removeItem(at: dir)   // stale partial build
+        try? fm.removeItem(at: dir)   // remove stale/partial build if present
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
         guard let src = Bundle.module.url(forResource: "SimDriverProject", withExtension: nil) else {
             throw SimctlError.commandFailed("SimDriverProject resource missing from bundle")
@@ -77,7 +103,7 @@ public actor SimDriverManager {
         p.standardOutput = FileHandle.nullDevice
         p.standardError = FileHandle.nullDevice
         try p.run()
-        child = p
+        childBox = ChildBox(p)
 
         try await waitForHealth(timeout: 90)
     }
@@ -85,7 +111,10 @@ public actor SimDriverManager {
     /// Set SIM_DRIVER_PORT in every test configuration's TestingEnvironmentVariables.
     private func injectPort(into xctestrun: URL) throws {
         let data = try Data(contentsOf: xctestrun)
-        var plist = try PropertyListSerialization.propertyList(from: data, format: nil) as! [String: Any]
+        let raw = try PropertyListSerialization.propertyList(from: data, format: nil)
+        guard var plist = raw as? [String: Any] else {
+            throw SimctlError.commandFailed("xctestrun plist root is not a dictionary")
+        }
         for (key, value) in plist {
             guard var config = value as? [String: Any] else { continue }
             var env = (config["TestingEnvironmentVariables"] as? [String: String]) ?? [:]
@@ -101,6 +130,11 @@ public actor SimDriverManager {
         let deadline = Date().addingTimeInterval(timeout)
         let url = URL(string: "http://127.0.0.1:\(port)/health")!
         while Date() < deadline {
+            // Fast-fail: if the child exited before becoming healthy, don't burn the full timeout.
+            if child?.isRunning == false {
+                shutdownNow()
+                throw SimctlError.commandFailed("SimDriver process exited before becoming healthy")
+            }
             if let (_, resp) = try? await URLSession.shared.data(from: url),
                (resp as? HTTPURLResponse)?.statusCode == 200 { return }
             try await Task.sleep(nanoseconds: 500_000_000)
@@ -110,6 +144,6 @@ public actor SimDriverManager {
     }
 
     public func shutdown() { shutdownNow() }
-    private func shutdownNow() { child?.terminate(); child = nil }
+    private func shutdownNow() { childBox?.process.terminate(); childBox = nil }
 }
 #endif
