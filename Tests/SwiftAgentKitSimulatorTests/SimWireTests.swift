@@ -7,7 +7,7 @@ final class SimWireTests: XCTestCase {
                           value: nil, frame: .init(x: 10, y: 100, width: 80, height: 44),
                           isHittable: true, isEnabled: true, children: [])
         let hidden = UINode(ref: "e3", type: "Other", label: nil, identifier: nil,
-                            value: nil, frame: .init(x: 0, y: 0, width: 0, height: 0), isHittable: false, isEnabled: true, children: [])
+                            value: nil, frame: .zero, isHittable: false, isEnabled: true, children: [])
         let root = UINode(ref: "e1", type: "Window", label: nil, identifier: nil,
                           value: nil, frame: .init(x: 0, y: 0, width: 390, height: 844),
                           isHittable: false, isEnabled: true, children: [save, hidden])
