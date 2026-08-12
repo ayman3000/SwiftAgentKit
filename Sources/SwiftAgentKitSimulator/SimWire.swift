@@ -4,36 +4,7 @@
 //  (the driver Xcode project compiles that one). SimWireSyncTests enforces identity.
 //
 import Foundation
-
-/// A Codable/Equatable representation of a rectangle frame.
-public struct CGRectCodable: Codable, Sendable, Equatable {
-    public var x: Double
-    public var y: Double
-    public var width: Double
-    public var height: Double
-
-    public init(x: Double, y: Double, width: Double, height: Double) {
-        self.x = x; self.y = y; self.width = width; self.height = height
-    }
-
-    /// Convert from a standard CGRect (used in tests and bridging).
-    public init(_ rect: CGRect) {
-        self.x = Double(rect.origin.x)
-        self.y = Double(rect.origin.y)
-        self.width = Double(rect.size.width)
-        self.height = Double(rect.size.height)
-    }
-
-    /// Convert to a standard CGRect for compatibility.
-    public var cgRect: CGRect {
-        CGRect(origin: CGPoint(x: x, y: y), size: CGSize(width: width, height: height))
-    }
-
-    /// Create from standard CGPoint and CGSize.
-    static var zero: CGRectCodable {
-        CGRectCodable(x: 0, y: 0, width: 0, height: 0)
-    }
-}
+import CoreGraphics
 
 /// One element in the accessibility hierarchy.
 public struct UINode: Codable, Sendable, Equatable {
@@ -42,13 +13,13 @@ public struct UINode: Codable, Sendable, Equatable {
     public var label: String?
     public var identifier: String?
     public var value: String?
-    public var frame: CGRectCodable
+    public var frame: CGRect
     public var isHittable: Bool
     public var isEnabled: Bool
     public var children: [UINode]
 
     public init(ref: String, type: String, label: String?, identifier: String?, value: String?,
-                frame: CGRectCodable, isHittable: Bool, isEnabled: Bool, children: [UINode]) {
+                frame: CGRect, isHittable: Bool, isEnabled: Bool, children: [UINode]) {
         self.ref = ref; self.type = type; self.label = label; self.identifier = identifier
         self.value = value; self.frame = frame; self.isHittable = isHittable
         self.isEnabled = isEnabled; self.children = children
