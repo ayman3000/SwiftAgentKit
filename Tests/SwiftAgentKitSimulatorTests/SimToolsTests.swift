@@ -260,6 +260,58 @@ final class SimToolsTests: XCTestCase {
         XCTAssertEqual(session.currentBundleId, "com.x", "should not clear session for a different bundle")
     }
 
+    // MARK: SimBootTool.resolveDevice
+
+    func makeDevice(name: String, udid: String = UUID().uuidString) -> Simctl.SimDevice {
+        Simctl.SimDevice(udid: udid, name: name, state: "Shutdown", runtime: "com.apple.CoreSimulator.SimRuntime.iOS-17-0")
+    }
+
+    func testResolveDeviceExactMatch() {
+        let devices = [makeDevice(name: "iPhone 15 Pro"), makeDevice(name: "iPhone 15 Pro Max")]
+        let result = SimBootTool.resolveDevice(name: "iPhone 15 Pro", in: devices)
+        guard case .found(let dev) = result else { return XCTFail("Expected found") }
+        XCTAssertEqual(dev.name, "iPhone 15 Pro", "Exact match should beat substring")
+    }
+
+    func testResolveDeviceExactMatchCaseInsensitive() {
+        let devices = [makeDevice(name: "iPhone 15 Pro"), makeDevice(name: "iPad Pro")]
+        let result = SimBootTool.resolveDevice(name: "iphone 15 pro", in: devices)
+        guard case .found(let dev) = result else { return XCTFail("Expected found") }
+        XCTAssertEqual(dev.name, "iPhone 15 Pro")
+    }
+
+    func testResolveDeviceUniqueSubstringMatch() {
+        let devices = [makeDevice(name: "iPhone 16"), makeDevice(name: "iPad Air")]
+        let result = SimBootTool.resolveDevice(name: "iPad", in: devices)
+        guard case .found(let dev) = result else { return XCTFail("Expected found") }
+        XCTAssertEqual(dev.name, "iPad Air")
+    }
+
+    func testResolveDeviceAmbiguousSubstringReturnsError() {
+        let devices = [makeDevice(name: "iPhone 15 Pro"), makeDevice(name: "iPhone 15 Pro Max")]
+        // Neither is an exact match for "iPhone 15"; both contain it as substring
+        let result = SimBootTool.resolveDevice(name: "iPhone 15", in: devices)
+        guard case .notFound(let msg) = result else { return XCTFail("Expected notFound for ambiguous match") }
+        XCTAssertTrue(msg.contains("matches multiple simulators"), "Error should list candidates; got: \(msg)")
+        XCTAssertTrue(msg.contains("iPhone 15 Pro"), "Error should name the ambiguous candidates")
+    }
+
+    func testResolveDeviceNoMatchReturnsError() {
+        let devices = [makeDevice(name: "iPhone 15 Pro")]
+        let result = SimBootTool.resolveDevice(name: "iPad Air", in: devices)
+        guard case .notFound(let msg) = result else { return XCTFail("Expected notFound") }
+        XCTAssertTrue(msg.contains("No simulator found"), "Should say not found; got: \(msg)")
+    }
+
+    func testResolveDeviceExactBeatsTwoSubstringMatches() {
+        // "iPhone 15 Pro" is an exact match; "iPhone 15 Pro Max" would also contain "iPhone 15 Pro"
+        // Exact match should win without ambiguity error
+        let devices = [makeDevice(name: "iPhone 15 Pro"), makeDevice(name: "iPhone 15 Pro Max")]
+        let result = SimBootTool.resolveDevice(name: "iPhone 15 Pro", in: devices)
+        guard case .found(let dev) = result else { return XCTFail("Expected found; exact match must win") }
+        XCTAssertEqual(dev.name, "iPhone 15 Pro")
+    }
+
     // MARK: requiresConfirmation
 
     func testLifecycleToolsRequireConfirmation() {

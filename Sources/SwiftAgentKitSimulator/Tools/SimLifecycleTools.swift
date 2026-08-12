@@ -37,42 +37,72 @@ public struct SimBootTool: AgentTool {
     public let name = "sim_boot"
     public let description = """
     Boot an iOS simulator. Provide either `udid` (exact match) or `name` \
-    (first matching device). Sets the active device for subsequent sim_* calls. \
-    Boots the Simulator.app automatically.
+    (case-insensitive; exact match preferred, then unique substring). \
+    Sets the active device for subsequent sim_* calls. Boots the Simulator.app automatically.
     """
     public let parameters = ToolParameters(
         properties: [
             "udid": ToolParameterProperty(type: "string", description: "Exact UDID of the simulator to boot."),
-            "name": ToolParameterProperty(type: "string", description: "Device name to match (first match), e.g. 'iPhone 15 Pro'."),
+            "name": ToolParameterProperty(type: "string", description: "Device name to match, e.g. 'iPhone 15 Pro'."),
         ],
         required: [])
     public var requiresConfirmation: Bool { true }
     let session: SimSession
     public init(session: SimSession) { self.session = session }
 
+    /// Resolve a device from a name string against a list of candidates.
+    /// - Exact case-insensitive match wins outright.
+    /// - If none, fall back to substring matches; return error if ambiguous (>1 match).
+    internal enum DeviceResolution {
+        case found(Simctl.SimDevice)
+        case notFound(String)
+    }
+
+    internal static func resolveDevice(name: String, in devices: [Simctl.SimDevice]) -> DeviceResolution {
+        let lower = name.lowercased()
+        // 1. Exact case-insensitive match
+        if let exact = devices.first(where: { $0.name.lowercased() == lower }) {
+            return .found(exact)
+        }
+        // 2. Substring match
+        let matches = devices.filter { $0.name.lowercased().contains(lower) }
+        switch matches.count {
+        case 0:
+            return .notFound("No simulator found matching '\(name)'. Run sim_list to see available devices.")
+        case 1:
+            return .found(matches[0])
+        default:
+            let candidates = matches.map { $0.name }.joined(separator: ", ")
+            return .notFound("'\(name)' matches multiple simulators: \(candidates). Use a more specific name or provide a udid.")
+        }
+    }
+
     public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
         do {
             let devices = try await Simctl.listDevices()
-            let device: Simctl.SimDevice?
+            let device: Simctl.SimDevice
             if let udid = parameters["udid"] as? String, !udid.isEmpty {
-                device = devices.first { $0.udid == udid }
-            } else if let name = parameters["name"] as? String, !name.isEmpty {
-                device = devices.first { $0.name.localizedCaseInsensitiveContains(name) }
+                guard let found = devices.first(where: { $0.udid == udid }) else {
+                    return .error(toolCallId: "", toolName: name,
+                        message: "No simulator found with udid '\(udid)'. Run sim_list to see available devices.")
+                }
+                device = found
+            } else if let nameParam = parameters["name"] as? String, !nameParam.isEmpty {
+                switch SimBootTool.resolveDevice(name: nameParam, in: devices) {
+                case .found(let dev): device = dev
+                case .notFound(let msg): return .error(toolCallId: "", toolName: name, message: msg)
+                }
             } else {
                 return .error(toolCallId: "", toolName: name,
                     message: "sim_boot requires either `udid` or `name`.")
             }
-            guard let dev = device else {
-                return .error(toolCallId: "", toolName: name,
-                    message: "No simulator found matching the given udid/name. Run sim_list to see available devices.")
+            if !device.isBooted {
+                try await Simctl.boot(udid: device.udid)
             }
-            if !dev.isBooted {
-                try await Simctl.boot(udid: dev.udid)
-            }
-            session.udid = dev.udid
-            session.runtime = dev.runtime
+            session.udid = device.udid
+            session.runtime = device.runtime
             return .success(toolCallId: "", toolName: name,
-                result: "Booted \(dev.name) [\(dev.udid)] (\(dev.runtime)).")
+                result: "Booted \(device.name) [\(device.udid)] (\(device.runtime)).")
         } catch {
             return .error(toolCallId: "", toolName: name, message: "sim_boot failed: \(error.localizedDescription)")
         }

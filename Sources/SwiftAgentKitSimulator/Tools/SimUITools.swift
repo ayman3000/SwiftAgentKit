@@ -9,12 +9,21 @@ import LLMProviderKit
 public final class SimSession: @unchecked Sendable {
     private let lock = NSLock()
     private var _currentBundleId: String?
+    private var _udid: String?
+    private var _runtime: String?
+
     public var currentBundleId: String? {
         get { lock.lock(); defer { lock.unlock() }; return _currentBundleId }
         set { lock.lock(); defer { lock.unlock() }; _currentBundleId = newValue }
     }
-    public var udid: String?
-    public var runtime: String?
+    public var udid: String? {
+        get { lock.lock(); defer { lock.unlock() }; return _udid }
+        set { lock.lock(); defer { lock.unlock() }; _udid = newValue }
+    }
+    public var runtime: String? {
+        get { lock.lock(); defer { lock.unlock() }; return _runtime }
+        set { lock.lock(); defer { lock.unlock() }; _runtime = newValue }
+    }
     public init() {}
 }
 
@@ -75,6 +84,8 @@ public struct SimUITool: AgentTool {
         } catch let e as SimDriverError {
             return .error(toolCallId: "", toolName: name,
                 message: e.localizedDescription + (e.tree.map { "\n\nCurrent UI:\n" + $0.renderCompact() } ?? ""))
+        } catch {
+            return .error(toolCallId: "", toolName: name, message: "Unexpected error: \(error.localizedDescription)")
         }
     }
 }
@@ -115,6 +126,8 @@ public struct SimTapTool: AgentTool {
         } catch let e as SimDriverError {
             return .error(toolCallId: "", toolName: name,
                 message: e.localizedDescription + (e.tree.map { "\n\nCurrent UI:\n" + $0.renderCompact() } ?? ""))
+        } catch {
+            return .error(toolCallId: "", toolName: name, message: "Unexpected error: \(error.localizedDescription)")
         }
     }
 }
@@ -158,6 +171,8 @@ public struct SimTypeTool: AgentTool {
         } catch let e as SimDriverError {
             return .error(toolCallId: "", toolName: name,
                 message: e.localizedDescription + (e.tree.map { "\n\nCurrent UI:\n" + $0.renderCompact() } ?? ""))
+        } catch {
+            return .error(toolCallId: "", toolName: name, message: "Unexpected error: \(error.localizedDescription)")
         }
     }
 }
@@ -202,6 +217,8 @@ public struct SimSwipeTool: AgentTool {
         } catch let e as SimDriverError {
             return .error(toolCallId: "", toolName: name,
                 message: e.localizedDescription + (e.tree.map { "\n\nCurrent UI:\n" + $0.renderCompact() } ?? ""))
+        } catch {
+            return .error(toolCallId: "", toolName: name, message: "Unexpected error: \(error.localizedDescription)")
         }
     }
 }
@@ -221,8 +238,7 @@ public struct SimPressTool: AgentTool {
         ],
         required: ["button"])
     let client: any SimDriving
-    let session: SimSession
-    public init(client: any SimDriving, session: SimSession) { self.client = client; self.session = session }
+    public init(client: any SimDriving, session: SimSession) { self.client = client }
 
     public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
         let button = (parameters["button"] as? String) ?? "home"
@@ -237,6 +253,8 @@ public struct SimPressTool: AgentTool {
         } catch let e as SimDriverError {
             return .error(toolCallId: "", toolName: name,
                 message: e.localizedDescription + (e.tree.map { "\n\nCurrent UI:\n" + $0.renderCompact() } ?? ""))
+        } catch {
+            return .error(toolCallId: "", toolName: name, message: "Unexpected error: \(error.localizedDescription)")
         }
     }
 }
@@ -277,6 +295,8 @@ public struct SimWaitTool: AgentTool {
         } catch let e as SimDriverError {
             return .error(toolCallId: "", toolName: name,
                 message: e.localizedDescription + (e.tree.map { "\n\nCurrent UI:\n" + $0.renderCompact() } ?? ""))
+        } catch {
+            return .error(toolCallId: "", toolName: name, message: "Unexpected error: \(error.localizedDescription)")
         }
     }
 }
@@ -309,6 +329,8 @@ public struct SimAlertTool: AgentTool {
         } catch let e as SimDriverError {
             return .error(toolCallId: "", toolName: name,
                 message: e.localizedDescription + (e.tree.map { "\n\nCurrent UI:\n" + $0.renderCompact() } ?? ""))
+        } catch {
+            return .error(toolCallId: "", toolName: name, message: "Unexpected error: \(error.localizedDescription)")
         }
     }
 }

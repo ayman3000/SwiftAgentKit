@@ -13,8 +13,7 @@ public struct SimScreenshotTool: AgentTool {
     """
     public let parameters = ToolParameters(properties: [:], required: [])
     let client: any SimDriving
-    let session: SimSession
-    public init(client: any SimDriving, session: SimSession) { self.client = client; self.session = session }
+    public init(client: any SimDriving, session: SimSession) { self.client = client }
 
     public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
         do {
