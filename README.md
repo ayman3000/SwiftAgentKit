@@ -556,7 +556,9 @@ import SwiftAgentKitSimulator
 // Register all simulator tools with the agent in one call.
 // manager handles driver build + launch on first use.
 let manager = SimDriverManager()
-agent.registerAll(makeSimulatorTools(manager: manager))
+let session = SimSession()
+let client = await SimClient(manager: manager, udid: udid, runtime: runtime)
+agent.registerAll(makeSimulatorTools(session: session, client: client))
 ```
 
 The first time the driver is used for a given Xcode / runtime pair it builds the XCUITest harness (~30–60 s); subsequent runs reuse the cached build.
@@ -565,14 +567,20 @@ The first time the driver is used for a given Xcode / runtime pair it builds the
 
 | Tool | Description |
 |---|---|
-| `sim_launch` | Launch / relaunch an app by bundle ID |
-| `sim_snapshot` | Return the full accessibility UI tree as compact text |
-| `sim_tap` | Tap (or long-press) an element by label/id/type |
-| `sim_type` | Type text into the focused element |
-| `sim_screenshot` | Capture a PNG screenshot |
-| `sim_wait_for` | Poll the tree until an element appears or disappears |
-| `sim_build_install` | Build an Xcode scheme and install the product on the simulator |
-| `sim_logs` | Stream the simulator's log output |
+| `sim_list` | List all available iOS simulators with their UDID, name, runtime, and boot state |
+| `sim_boot` | Boot an iOS simulator by UDID or name; sets the active device for subsequent sim_* calls |
+| `sim_launch` | Launch an app by bundle ID in the currently booted simulator |
+| `sim_terminate` | Terminate a running app in the simulator |
+| `sim_ui` | Read the current UI of the iOS simulator app as an accessibility tree with element refs and labels |
+| `sim_tap` | Tap (or long-press) an element in the simulator by ref/label/identifier |
+| `sim_type` | Type text into the focused field or a target element in the simulator |
+| `sim_swipe` | Swipe in a direction (up/down/left/right) on the simulator screen or a specific element |
+| `sim_press` | Press a hardware button on the simulator (currently supports home) |
+| `sim_wait` | Wait event-driven until an element exists or disappears, then return the fresh UI tree |
+| `sim_alert` | Accept or dismiss the currently visible system alert in the simulator |
+| `sim_screenshot` | Capture a PNG screenshot of the simulator screen |
+| `sim_build_install` | Build an Xcode project or workspace and install the resulting app on the simulator |
+| `sim_logs` | Stream simulator app logs to a temp file (non-blocking) or stop a previous stream |
 
 ### Live end-to-end test
 

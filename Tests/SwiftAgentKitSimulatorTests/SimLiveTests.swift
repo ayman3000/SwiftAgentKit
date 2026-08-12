@@ -26,8 +26,8 @@ final class SimLiveTests: XCTestCase {
 
         // 2. Build (first run ~30-60s) + launch the driver, wait healthy.
         let manager = SimDriverManager()
-        try await manager.launch(udid: dev.udid, runtime: dev.runtime)
         addTeardownBlock { await manager.shutdown() }
+        try await manager.launch(udid: dev.udid, runtime: dev.runtime)
 
         // 3. Connect the client.
         let client = await SimClient(manager: manager, udid: dev.udid, runtime: dev.runtime)
