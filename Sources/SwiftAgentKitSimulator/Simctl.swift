@@ -48,7 +48,8 @@ public enum Simctl {
         guard status == 0 || out.contains("current state: Booted") else {
             throw SimctlError.commandFailed("simctl boot failed: \(out)")
         }
-        _ = try await run(["simctl", "bootstatus", udid], timeout: 180)  // wait until usable
+        let (bsStatus, bsOut) = try await run(["simctl", "bootstatus", udid], timeout: 180)  // wait until usable
+        guard bsStatus == 0 else { throw SimctlError.commandFailed("simctl bootstatus failed: \(bsOut)") }
     }
 
     public static func install(udid: String, appPath: String) async throws {
@@ -77,6 +78,8 @@ public enum Simctl {
                 do { try p.run() } catch { cont.resume(throwing: error); return }
                 let timer = DispatchWorkItem { if p.isRunning { p.terminate() } }
                 DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: timer)
+                // Note: if a command emits > pipe-buffer output before the timeout fires,
+                // the read blocks until the process dies; fine for short simctl commands.
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 p.waitUntilExit()
                 timer.cancel()
