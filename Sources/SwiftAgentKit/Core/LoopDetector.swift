@@ -51,6 +51,9 @@ final class LoopDetector {
     /// nudges at most once before it later escalates to stop.
     func record(_ signatures: [String]) -> LoopAction {
         history.append(contentsOf: signatures)
+        if history.count > config.windowSize {
+            history.removeFirst(history.count - config.windowSize)
+        }
         let window = history.suffix(config.windowSize)
 
         var pendingNudge: LoopAction?

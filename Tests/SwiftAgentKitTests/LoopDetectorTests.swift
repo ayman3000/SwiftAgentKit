@@ -44,6 +44,19 @@ struct LoopDetectorTests {
         #expect(d.record(["s"]) == .none)   // window [a,b,s] → only 1 "s" → no trip
     }
 
+    @Test func windowingIsDiscriminative() {
+        // nudgeThreshold 2, windowSize 3. Record "s", then 3 non-"s" turns that
+        // push "s" out of the last-3 window, then one more "s". Whole-history
+        // count of "s" is 2 (would trip nudge if counting all history), but within
+        // the last-3 window there's only 1 "s" → must NOT trip. Proves suffix(window).
+        let d = LoopDetector(config: LoopDetectionConfig(windowSize: 3, nudgeThreshold: 2, stopThreshold: 5))
+        #expect(d.record(["s"]) == .none)   // history [s]
+        #expect(d.record(["a"]) == .none)   // [s,a]
+        #expect(d.record(["b"]) == .none)   // [s,a,b]
+        #expect(d.record(["c"]) == .none)   // window [a,b,c] — s fell out
+        #expect(d.record(["s"]) == .none)   // window [b,c,s] → only 1 "s" (whole-history=2). Must be .none.
+    }
+
     @Test func stopBeatsNudgeInSameTurn() {
         // "s" already at 4; a turn that pushes it to 5 AND introduces a fresh 3rd
         // of "t" must return .stop (for s), not .nudge.
