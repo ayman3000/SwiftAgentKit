@@ -17,6 +17,7 @@ let package = Package(
         .library(name: "SwiftAgentKitMCP", targets: ["SwiftAgentKitMCP"]),
         .library(name: "SwiftAgentKitReplay", targets: ["SwiftAgentKitReplay"]),
         .library(name: "SwiftAgentKitSimulator", targets: ["SwiftAgentKitSimulator"]),
+        .library(name: "SwiftAgentKitMac", targets: ["SwiftAgentKitMac"]),
     ],
     dependencies: [
         .package(url: "https://github.com/ayman3000/LLMProviderKit.git", from: "0.1.0-alpha.14"),
@@ -123,6 +124,16 @@ let package = Package(
         .testTarget(
             name: "SwiftAgentKitSimulatorTests",
             dependencies: ["SwiftAgentKitSimulator", "SwiftAgentKit"]
+        ),
+
+        // Native macOS app driving via the Accessibility APIs. macOS-gated.
+        .target(
+            name: "SwiftAgentKitMac",
+            dependencies: ["SwiftAgentKit"]
+        ),
+        .testTarget(
+            name: "SwiftAgentKitMacTests",
+            dependencies: ["SwiftAgentKitMac", "SwiftAgentKit"]
         ),
 
         // Examples runner — `swift run Runner 01`, `swift run Runner 02`, etc.
