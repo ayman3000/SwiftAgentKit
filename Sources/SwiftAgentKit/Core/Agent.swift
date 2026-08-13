@@ -93,6 +93,10 @@ public struct AgentConfig: Sendable {
     /// goal-driven looping (also bounded by `maxTurns`). Default 3.
     public var maxVerificationRetries: Int
 
+    /// Runtime guard against no-progress loops (repeated identical tool calls).
+    /// `nil` disables it (pre-change behavior). Default on.
+    public var loopDetection: LoopDetectionConfig?
+
     public init(
         provider: any LLMProvider,
         model: String? = nil,
@@ -111,7 +115,8 @@ public struct AgentConfig: Sendable {
         autonomousMode: Bool = false,
         enableSubAgents: Bool = false,
         maxSubAgentConcurrency: Int = 1,
-        maxVerificationRetries: Int = 3
+        maxVerificationRetries: Int = 3,
+        loopDetection: LoopDetectionConfig? = .default
     ) {
         self.provider = provider
         self.model = model
@@ -131,6 +136,7 @@ public struct AgentConfig: Sendable {
         self.enableSubAgents = enableSubAgents
         self.maxSubAgentConcurrency = maxSubAgentConcurrency
         self.maxVerificationRetries = maxVerificationRetries
+        self.loopDetection = loopDetection
     }
 }
 
@@ -638,6 +644,7 @@ public final class Agent: @unchecked Sendable {
         var planContinuationAttempts = 0
         var verificationAttempts = 0
         var reasoningContinuations = 0
+        let loopDetector = config.loopDetection.map { LoopDetector(config: $0) }
 
         // 1. Planning phase (optional)
         if let planner, planner.shouldPlan(for: query) {
@@ -694,6 +701,16 @@ public final class Agent: @unchecked Sendable {
                             toolErrors += results.filter(\.isError).count
                             lastTurnErrors = results.filter(\.isError)
                             conversation.append(.tool(results: results))
+                            try checkForLoop(
+                                toolCalls,
+                                detector: loopDetector,
+                                query: query,
+                                totalTurns: totalTurns,
+                                toolsExecuted: toolsExecuted,
+                                toolErrors: toolErrors,
+                                plan: plan,
+                                startTime: startTime
+                            )
                             _ = conversation.trim()
                             continue
                         }
@@ -909,6 +926,18 @@ public final class Agent: @unchecked Sendable {
                 // Add tool results to conversation
                 conversation.append(.tool(results: results))
 
+                // No-progress guard: same tool call repeating without progress.
+                try checkForLoop(
+                    toolCalls,
+                    detector: loopDetector,
+                    query: query,
+                    totalTurns: totalTurns,
+                    toolsExecuted: toolsExecuted,
+                    toolErrors: toolErrors,
+                    plan: plan,
+                    startTime: startTime
+                )
+
                 // Trim conversation
                 _ = conversation.trim()
             }
@@ -1016,6 +1045,49 @@ public final class Agent: @unchecked Sendable {
             }
 
             return agentResponse.text
+        }
+    }
+
+    /// Feed a completed turn's tool calls to the loop detector; nudge (append a
+    /// corrective user message) or throw AgentError.loopDetected on a stall.
+    /// No-op when loop detection is disabled. Call once per turn AFTER the turn's
+    /// tool results are appended to the conversation.
+    private func checkForLoop(
+        _ toolCalls: [AgentToolCall],
+        detector: LoopDetector?,
+        query: String,
+        totalTurns: Int,
+        toolsExecuted: Int,
+        toolErrors: Int,
+        plan: AgentPlan?,
+        startTime: Date
+    ) throws {
+        guard let detector else { return }
+        let signatures = toolCalls.map {
+            LoopDetector.signature(name: $0.name, arguments: $0.parameters)
+        }
+        switch detector.record(signatures) {
+        case .none:
+            break
+        case .nudge(let sig, let count):
+            emit(.loopDetected(signature: sig, count: count, action: .nudged))
+            conversation.append(.user(
+                "You've called the same tool with the same arguments \(count) times "
+                + "without new progress. Change your approach, or finish and summarize "
+                + "what you have. Do not repeat that call."))
+        case .stop(let sig, let count):
+            emit(.loopDetected(signature: sig, count: count, action: .stopped))
+            let summary = makeRunSummary(
+                query: query,
+                totalTurns: totalTurns,
+                toolsExecuted: toolsExecuted,
+                toolErrors: toolErrors,
+                plan: plan,
+                finalResponse: "Stopped: repeated the same action without progress.",
+                startTime: startTime
+            )
+            emit(.finished(summary: summary))
+            throw AgentError.loopDetected(signature: sig, count: count)
         }
     }
 
