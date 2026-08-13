@@ -38,6 +38,7 @@ A modern AI agent framework for Swift. Native tool calling, conversation memory,
 - [Quick Start](#quick-start)
 - [Examples](#examples)
 - [MCP Server Integration](#mcp-server-integration)
+- [Native macOS App Automation](#native-macos-app-automation-swiftagentkitmac)
 - [iOS Simulator Automation](#ios-simulator-automation-swiftagentkitsimulator)
 - [@Tool Macro (Optional)](#tool-macro-optional)
 - [Design Principles](#design-principles)
@@ -529,6 +530,88 @@ await mcp.disconnectAll()
 
 - MCP prompts, completions, sampling, elicitation — tools and resources only for now
 - MCP server hosting (SwiftAgentKit is a client, not a server)
+
+---
+
+## Native macOS App Automation (SwiftAgentKitMac)
+
+`SwiftAgentKitMac` is a **macOS-only** optional product that gives your agent a set of tools for driving native macOS applications via the Accessibility API — snapshot the UI tree, click elements, type text, press key combos, wait for UI changes, launch apps, and list running processes.
+
+### Installation
+
+Add `SwiftAgentKitMac` to your target dependencies:
+
+```swift
+.target(name: "YourApp", dependencies: [
+    .product(name: "SwiftAgentKit", package: "SwiftAgentKit"),
+    .product(name: "SwiftAgentKitMac", package: "SwiftAgentKit"),
+])
+```
+
+### One-call registration
+
+```swift
+import SwiftAgentKit
+import SwiftAgentKitMac
+
+// The allowlist provider returns the set of bundle IDs the current conversation
+// is permitted to drive. The toggle, allowlist, and confirmation UX all live
+// in your app — SwiftAgentKitMac enforces the boundary but does not own it.
+let client = AXClient()
+let tools = makeMacTools(
+    allowlistProvider: { conversationAllowlist },
+    client: client
+)
+agent.registerAll(tools)
+```
+
+### What the agent can do
+
+| Tool | Description |
+|---|---|
+| `mac_apps` | List running macOS applications (name + bundle ID) |
+| `mac_ui` | Snapshot the Accessibility tree of a running app |
+| `mac_click` | Click an element by ref, title, or identifier |
+| `mac_type` | Type text into the focused element or a targeted element |
+| `mac_key` | Press a key combo (e.g. `cmd+s`, `return`, `tab`) |
+| `mac_wait` | Wait event-driven until an element appears or disappears |
+| `mac_launch` | Launch an app by bundle ID |
+
+### Three-brake safety model
+
+Every mac_* tool passes through three independent safety gates before touching the Accessibility driver:
+
+- **Off-by-default toggle** — the consumer app controls whether mac automation is enabled at all; a disabled toggle blocks all tools before any AX call.
+- **Per-conversation allowlist** — each conversation maintains a set of permitted bundle IDs; a tool call for any app not in the set is denied with a model-facing error asking the user to approve it.
+- **Per-action confirmation** — the consuming app can require explicit user confirmation before any destructive action (click, type, key) is dispatched.
+
+The toggle, allowlist, and confirmation UX all live in the consuming application. `SwiftAgentKitMac` enforces the boundary but does not own the policy.
+
+### Accessibility permission
+
+macOS requires Accessibility access before any AX API call can succeed. The test runner (Terminal, your app's process) must be listed under **System Settings → Privacy & Security → Accessibility**. `AXPermission.isTrusted()` returns `false` and all AX tools fail with a model-facing error until this grant is present.
+
+```swift
+// Check trust status (nonisolated, safe to call from anywhere)
+guard AXPermission.isTrusted() else { /* prompt or inform the user */ }
+
+// Optionally prompt the user via the system dialog
+AXPermission.promptForTrust()
+```
+
+### Live end-to-end test
+
+The live test requires AX granted to the `swift test` runner **and** two environment variables:
+
+```bash
+SAK_LIVE_TESTS=1 SAK_MAC_TESTS=1 swift test --filter MacLiveTests
+```
+
+The test launches TextEdit, waits for the app's AX tree to appear, types into the focused text area, and takes a final snapshot asserting the AX tree is reachable. If Accessibility is not granted to the shell running `swift test`, the test XCTSkips automatically — no false pass.
+
+### Testing / known limitation
+
+The live test fully exercises snapshot/type/verify from a properly code-signed host (e.g. Naseem.app). Under `swift test` (ad-hoc signed) on macOS 26, the Accessibility server returns self-referential results for the AX root, hiding window content — the live test falls back to asserting the menu bar is captured, confirming real AX data is being read. Full window-content end-to-end verification is validated in the signed Naseem app.
 
 ---
 
