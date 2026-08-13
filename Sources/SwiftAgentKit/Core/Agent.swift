@@ -644,6 +644,7 @@ public final class Agent: @unchecked Sendable {
         var planContinuationAttempts = 0
         var verificationAttempts = 0
         var reasoningContinuations = 0
+        let loopDetector = config.loopDetection.map { LoopDetector(config: $0) }
 
         // 1. Planning phase (optional)
         if let planner, planner.shouldPlan(for: query) {
@@ -914,6 +915,36 @@ public final class Agent: @unchecked Sendable {
 
                 // Add tool results to conversation
                 conversation.append(.tool(results: results))
+
+                // No-progress guard: same tool call repeating without progress.
+                if let loopDetector {
+                    let signatures = toolCalls.map {
+                        LoopDetector.signature(name: $0.name, arguments: $0.parameters)
+                    }
+                    switch loopDetector.record(signatures) {
+                    case .none:
+                        break
+                    case .nudge(let sig, let count):
+                        emit(.loopDetected(signature: sig, count: count, action: .nudged))
+                        conversation.append(.user(
+                            "You've called the same tool with the same arguments \(count) times "
+                            + "without new progress. Change your approach, or finish and summarize "
+                            + "what you have. Do not repeat that call."))
+                    case .stop(let sig, let count):
+                        emit(.loopDetected(signature: sig, count: count, action: .stopped))
+                        let summary = makeRunSummary(
+                            query: query,
+                            totalTurns: totalTurns,
+                            toolsExecuted: toolsExecuted,
+                            toolErrors: toolErrors,
+                            plan: plan,
+                            finalResponse: "Stopped: repeated the same action without progress.",
+                            startTime: startTime
+                        )
+                        emit(.finished(summary: summary))
+                        throw AgentError.loopDetected(signature: sig, count: count)
+                    }
+                }
 
                 // Trim conversation
                 _ = conversation.trim()
