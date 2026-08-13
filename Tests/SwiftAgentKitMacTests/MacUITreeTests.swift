@@ -1,3 +1,4 @@
+#if os(macOS)
 import XCTest
 @testable import SwiftAgentKitMac
 
@@ -35,4 +36,18 @@ final class MacUITreeTests: XCTestCase {
         let lines = sampleTree().renderCompact().split(separator: "\n")
         XCTAssertTrue(lines.first { $0.contains("e2") }!.hasPrefix("  "))
     }
+
+    func testRenderPrunesNestedAnonymousGroups() {
+        let deep = UINode(ref: "g2", role: "AXGroup", title: nil, identifier: nil, value: nil,
+                          frame: .zero, isEnabled: true, actions: [], children: [])
+        let mid = UINode(ref: "g1", role: "AXGroup", title: nil, identifier: nil, value: nil,
+                         frame: .zero, isEnabled: true, actions: [], children: [deep])
+        let root = UINode(ref: "e1", role: "AXWindow", title: "W", identifier: nil, value: nil,
+                          frame: .init(x: 0, y: 0, width: 10, height: 10),
+                          isEnabled: true, actions: [], children: [mid])
+        let text = UITree(generation: 1, bundleId: "x", root: root).renderCompact()
+        XCTAssertFalse(text.contains("g1")); XCTAssertFalse(text.contains("g2"))
+        XCTAssertTrue(text.contains("e1"))
+    }
 }
+#endif

@@ -20,7 +20,7 @@ public struct UINode: Codable, Sendable, Equatable {
         self.actions = actions; self.children = children
     }
 
-    var isRenderable: Bool {
+    public var isRenderable: Bool {
         title != nil || identifier != nil || value != nil || !actions.isEmpty
             || frame.width * frame.height > 0
     }
@@ -34,17 +34,21 @@ public struct UITree: Codable, Sendable, Equatable {
         self.generation = generation; self.bundleId = bundleId; self.root = root
     }
 
+    private func hasRenderableSubtree(_ node: UINode) -> Bool {
+        node.isRenderable || node.children.contains(where: hasRenderableSubtree)
+    }
+
     public func renderCompact() -> String {
         var out = "UI of \(bundleId) — generation \(generation)\n"
         func walk(_ node: UINode, depth: Int) {
-            let kept = node.children.filter { $0.isRenderable || !$0.children.isEmpty }
+            let kept = node.children.filter(hasRenderableSubtree)
             guard node.isRenderable || !kept.isEmpty else { return }
             var line = String(repeating: "  ", count: depth) + "\(node.ref) \(node.role)"
             if let t = node.title { line += " \"\(t)\"" }
             if let i = node.identifier { line += " id=\(i)" }
             if let v = node.value { line += " value=\(v)" }
             if !node.isEnabled { line += " (disabled)" }
-            if !node.actions.isEmpty { line += " [\(node.actions.joined(separator: ","))]" }
+            if !node.actions.isEmpty { line += " [\(node.actions.joined(separator: ", "))]" }
             out += line + "\n"
             kept.forEach { walk($0, depth: depth + 1) }
         }
