@@ -8,6 +8,13 @@
 
 import Foundation
 
+/// The outcome of a loop detection action.
+///
+public enum LoopEventAction: Sendable, Equatable {
+    case nudged
+    case stopped
+}
+
 /// Events emitted during the agent lifecycle.
 ///
 /// Conform to `AgentObserver` and register an observer to receive these events.
@@ -89,6 +96,11 @@ public enum AgentEvent: Sendable {
 
     /// Goal verification hit a real blocker; the run stops early.
     case completionBlocked(reason: String)
+
+    /// The loop detector found a repeated tool call. `.nudged` = a corrective message was
+    /// injected; `.stopped` = the run was ended gracefully (paired with a `.finished`
+    /// and a thrown `AgentError.loopDetected`).
+    case loopDetected(signature: String, count: Int, action: LoopEventAction)
 
     // MARK: - Memory
 

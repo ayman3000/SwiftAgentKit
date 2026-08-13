@@ -93,6 +93,10 @@ public struct AgentConfig: Sendable {
     /// goal-driven looping (also bounded by `maxTurns`). Default 3.
     public var maxVerificationRetries: Int
 
+    /// Runtime guard against no-progress loops (repeated identical tool calls).
+    /// `nil` disables it (pre-change behavior). Default on.
+    public var loopDetection: LoopDetectionConfig?
+
     public init(
         provider: any LLMProvider,
         model: String? = nil,
@@ -111,7 +115,8 @@ public struct AgentConfig: Sendable {
         autonomousMode: Bool = false,
         enableSubAgents: Bool = false,
         maxSubAgentConcurrency: Int = 1,
-        maxVerificationRetries: Int = 3
+        maxVerificationRetries: Int = 3,
+        loopDetection: LoopDetectionConfig? = .default
     ) {
         self.provider = provider
         self.model = model
@@ -131,6 +136,7 @@ public struct AgentConfig: Sendable {
         self.enableSubAgents = enableSubAgents
         self.maxSubAgentConcurrency = maxSubAgentConcurrency
         self.maxVerificationRetries = maxVerificationRetries
+        self.loopDetection = loopDetection
     }
 }
 

@@ -42,6 +42,9 @@ public enum AgentError: Error, Sendable, Equatable, LocalizedError {
     /// Another run is already active on this agent instance.
     case runInProgress
 
+    /// The agent repeated the same tool call without progress and was stopped.
+    case loopDetected(signature: String, count: Int)
+
     /// An unexpected error.
     case unknown(String)
 
@@ -69,6 +72,8 @@ public enum AgentError: Error, Sendable, Equatable, LocalizedError {
             return "The operation was cancelled."
         case .runInProgress:
             return "This Agent instance already has an active run. Wait for it to finish, or create a separate Agent instance for concurrent work."
+        case .loopDetected(let signature, let count):
+            return "Stopped: repeated the same action (\(signature)) \(count) times without progress."
         case .unknown(let message):
             return "Unknown error: \(message)"
         }

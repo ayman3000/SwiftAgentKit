@@ -65,4 +65,15 @@ struct LoopDetectorTests {
         _ = d.record(["t"]); _ = d.record(["t"])                                              // t=2
         #expect(d.record(["s", "t"]) == .stop(signature: "s", count: 5))
     }
+
+    @Test func errorDescribesTheLoop() {
+        let e = AgentError.loopDetected(signature: "sim_ui:{\"bundle_id\":\"x\"}", count: 5)
+        #expect(e.errorDescription?.contains("sim_ui") == true)
+        #expect(e.errorDescription?.lowercased().contains("without progress") == true)
+    }
+
+    @Test func configDefaultsLoopDetectionOn() {
+        let cfg = AgentConfig(provider: PlainAnswerProvider(text: "test"))
+        #expect(cfg.loopDetection == .default)
+    }
 }
