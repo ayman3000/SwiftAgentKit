@@ -280,9 +280,8 @@ private let axObserverCallback: AXObserverCallback = { _, _, _, refcon in
 
 public actor AXClient: AXDriving {
 
-    // Per-call timeout hint (seconds). Kept for future use / documentation;
-    // not yet applied to individual AX attribute reads (those are typically fast
-    // but can hang on buggy apps — a future improvement can wrap them in a Task).
+    // Per-call timeout hint (seconds). Applied via AXUIElementSetMessagingTimeout on
+    // the app element so AX calls to a hung app return an error instead of blocking.
     private let callTimeout: Double
 
     // Monotonic generation counter; bumped on each snapshot call.
@@ -514,10 +513,12 @@ public actor AXClient: AXDriving {
                 var observer: AXObserver?
                 let createErr = AXObserverCreate(pid, axObserverCallback, &observer)
                 guard createErr == .success, let obs = observer else {
-                    state.releaseRetained()
-                    continuation.resume(throwing: MacDriverError(
-                        code: "ax_error",
-                        message: "AXObserverCreate failed: \(createErr.rawValue)"))
+                    if state.flag.tryResolve() {
+                        state.releaseRetained()
+                        continuation.resume(throwing: MacDriverError(
+                            code: "ax_error",
+                            message: "AXObserverCreate failed: \(createErr.rawValue)"))
+                    }
                     return
                 }
 
