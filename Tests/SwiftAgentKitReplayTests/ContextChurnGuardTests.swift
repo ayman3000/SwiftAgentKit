@@ -12,19 +12,16 @@ struct ContextChurnGuardTests {
             properties: ["bundle_id": ToolParameterProperty(type: "string", description: "app")],
             required: ["bundle_id"])
         // Returns a distinct marker per call so we can tell snapshots apart.
-        static let box = Marker()
         final class Marker: @unchecked Sendable { var n = 0 }
+        let counter = Marker()
         func execute(parameters: [String: Any]) async throws -> AgentToolResult {
-            Self.box.n += 1
+            counter.n += 1
             return .success(toolCallId: "", toolName: name,
-                            result: "SNAP\(Self.box.n) " + String(repeating: "u", count: 500))
+                            result: "SNAP\(counter.n) " + String(repeating: "u", count: 500))
         }
     }
 
     @Test func latestStructuredReadStaysInlineOverBudget() async throws {
-        // Reset the marker counter for a clean test run.
-        UITool.box.n = 0
-
         // Three sim_ui snapshots of the same app, then a final answer.
         // At the 4th request (for the final answer), the history contains:
         //   SNAP1 exchange (fully completed, old) → will be externalized
@@ -32,8 +29,10 @@ struct ContextChurnGuardTests {
         //   SNAP3 exchange (active) → kept inline
         // With a tiny inline budget, SNAP1 is externalized while SNAP2/SNAP3 stay.
         //
-        // Loop detector: 3 identical sim_ui calls will trip a *nudge* (threshold 3)
-        // but not a stop (threshold 5), so the scripted scenario completes normally.
+        // Loop detector: 3 identical sim_ui calls will trip a *nudge* (threshold 3).
+        // We disable detection to avoid it—a nudge injects a user message that corrupts
+        // activeExchangeStart's boundary detection, making it protect SNAP3 instead of
+        // SNAP2, which breaks the test's sifting assertions.
         let ui = { LLMToolCall(id: UUID().uuidString, name: "sim_ui", arguments: "{\"bundle_id\":\"com.x\"}") }
         let scenario = Scenario(name: "ui-churn", turns: [
             ScriptedTurn(text: "", finishReason: .toolCalls, toolCalls: [ui()]),
