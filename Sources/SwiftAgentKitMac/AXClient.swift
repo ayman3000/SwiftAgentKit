@@ -139,12 +139,17 @@ private func postMouseClick(at point: CGPoint) {
 }
 
 private func postUnicodeText(_ text: String) {
-    let src     = CGEventSource(stateID: .hidSystemState)
-    let scalars = Array(text.unicodeScalars)
-    var idx     = 0
-    while idx < scalars.count {
-        let batchEnd = min(idx + 20, scalars.count)
-        let batch    = scalars[idx..<batchEnd].map { UniChar($0.value & 0xFFFF) }
+    let src    = CGEventSource(stateID: .hidSystemState)
+    // Build batches from UTF-16 code units (UniChar == UInt16).
+    // Using unicodeScalars and masking with 0xFFFF truncates supplementary-plane
+    // code points (emoji, etc.) instead of encoding them as surrogate pairs.
+    // keyboardSetUnicodeString expects UTF-16 code units, so Array(text.utf16)
+    // gives the correct representation for all Unicode characters.
+    let units  = Array(text.utf16)
+    var idx    = 0
+    while idx < units.count {
+        let batchEnd = min(idx + 20, units.count)
+        let batch    = Array(units[idx..<batchEnd])
         if let ev = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true) {
             ev.keyboardSetUnicodeString(stringLength: batch.count, unicodeString: batch)
             ev.post(tap: .cghidEventTap)
@@ -222,6 +227,28 @@ private final class WaitState: @unchecked Sendable {
 }
 
 // ---------------------------------------------------------------------------
+// MARK: - CancellationBox (shared state for withTaskCancellationHandler in waitFor)
+// ---------------------------------------------------------------------------
+// Bridges the WaitState created inside withCheckedThrowingContinuation to the
+// onCancel handler that lives outside the continuation body.  Written once
+// (synchronously, before any await) and read once (in onCancel if cancellation
+// races setup).  Access is safe: the write happens-before any concurrent read
+// because the onCancel handler is only invoked after the Task is cancelled,
+// which cannot happen before the continuation body returns from its synchronous
+// setup phase.  We use NSLock for correctness in the (rare) race where
+// cancellation is signalled while the continuation body is still running.
+
+private final class CancellationBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _state: WaitState?
+
+    var state: WaitState? {
+        get { lock.lock(); defer { lock.unlock() }; return _state }
+        set { lock.lock(); defer { lock.unlock() }; _state = newValue }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // MARK: - AXObserver C-callback (global function, context via refcon)
 // ---------------------------------------------------------------------------
 
@@ -294,6 +321,9 @@ public actor AXClient: AXDriving {
         var counter   = 0
 
         let appElement = AXUIElementCreateApplication(pid)
+        // Apply per-call messaging timeout so a hung app returns an AX error
+        // instead of blocking the actor indefinitely.
+        AXUIElementSetMessagingTimeout(appElement, Float(callTimeout))
 
         // Recursive tree walk — all AX calls happen synchronously here, inside
         // the actor, so no concurrency issues with the AXUIElement handles.
@@ -458,59 +488,86 @@ public actor AXClient: AXDriving {
         }
 
         // Bridge AXObserver + RunLoop to Swift async via a CheckedContinuation.
-        return try await withCheckedThrowingContinuation { continuation in
-            let state    = WaitState(continuation: continuation, bundleId: bundleId,
-                                     target: target, forDisappearance: forDisappearance,
-                                     client: self)
-            let statePtr = Unmanaged.passRetained(state)
-            // Store the unmanaged pointer inside state so the C callback can
-            // release it without capturing a raw UnsafeMutableRawPointer.
-            state.setUnmanaged(statePtr)
+        // A shared CancellationBox lets the onCancel handler (which fires outside
+        // the actor) reach the WaitState that is created inside the continuation
+        // body.  The box is written once (inside the continuation, before anything
+        // awaits) and read once (in onCancel if cancellation races the setup).
+        // The exactly-once guarantee is preserved because onCancel goes through the
+        // same flag.tryResolve() → releaseRetained() → continuation.resume() path
+        // used by the observer and timeout paths.
+        let cancelBox = CancellationBox()
 
-            var observer: AXObserver?
-            let createErr = AXObserverCreate(pid, axObserverCallback, &observer)
-            guard createErr == .success, let obs = observer else {
-                state.releaseRetained()
-                continuation.resume(throwing: MacDriverError(
-                    code: "ax_error",
-                    message: "AXObserverCreate failed: \(createErr.rawValue)"))
-                return
-            }
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let state    = WaitState(continuation: continuation, bundleId: bundleId,
+                                         target: target, forDisappearance: forDisappearance,
+                                         client: self)
+                // Publish state before registering the observer so onCancel always
+                // sees a non-nil state if it fires after this point.
+                cancelBox.state = state
 
-            let appElement    = AXUIElementCreateApplication(pid)
-            let notifications = [kAXValueChangedNotification,
-                                 kAXCreatedNotification,
-                                 kAXFocusedUIElementChangedNotification]
-            for note in notifications {
-                AXObserverAddNotification(obs, appElement, note as CFString,
-                                         statePtr.toOpaque())
-            }
+                let statePtr = Unmanaged.passRetained(state)
+                // Store the unmanaged pointer inside state so the C callback can
+                // release it without capturing a raw UnsafeMutableRawPointer.
+                state.setUnmanaged(statePtr)
 
-            // Run the observer on a private thread so it doesn't block the actor.
-            let observerBox = AXObserverBox(obs)
-            let thread = Thread { [state] in
-                let rl = RunLoop.current
-                CFRunLoopAddSource(rl.getCFRunLoop(),
-                                   AXObserverGetRunLoopSource(observerBox.observer),
-                                   .defaultMode)
-                while !state.flag.isResolved {
-                    rl.run(until: Date(timeIntervalSinceNow: 0.1))
-                }
-            }
-            thread.start()
-
-            // Timeout task.
-            Task { [state] in
-                try? await Task.sleep(
-                    nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
-                if state.flag.tryResolve() {
+                var observer: AXObserver?
+                let createErr = AXObserverCreate(pid, axObserverCallback, &observer)
+                guard createErr == .success, let obs = observer else {
                     state.releaseRetained()
-                    let snap = try? await self.snapshot(bundleId: bundleId)
                     continuation.resume(throwing: MacDriverError(
-                        code: "timeout",
-                        message: "waitFor timed out after \(timeoutSeconds)s",
-                        tree: snap))
+                        code: "ax_error",
+                        message: "AXObserverCreate failed: \(createErr.rawValue)"))
+                    return
                 }
+
+                let appElement    = AXUIElementCreateApplication(pid)
+                // Apply per-call messaging timeout for the observer's app element too.
+                AXUIElementSetMessagingTimeout(appElement, Float(callTimeout))
+                let notifications = [kAXValueChangedNotification,
+                                     kAXCreatedNotification,
+                                     kAXFocusedUIElementChangedNotification]
+                for note in notifications {
+                    AXObserverAddNotification(obs, appElement, note as CFString,
+                                             statePtr.toOpaque())
+                }
+
+                // Run the observer on a private thread so it doesn't block the actor.
+                let observerBox = AXObserverBox(obs)
+                let thread = Thread { [state] in
+                    let rl = RunLoop.current
+                    CFRunLoopAddSource(rl.getCFRunLoop(),
+                                       AXObserverGetRunLoopSource(observerBox.observer),
+                                       .defaultMode)
+                    while !state.flag.isResolved {
+                        rl.run(until: Date(timeIntervalSinceNow: 0.1))
+                    }
+                }
+                thread.start()
+
+                // Timeout task.
+                Task { [state] in
+                    try? await Task.sleep(
+                        nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
+                    if state.flag.tryResolve() {
+                        state.releaseRetained()
+                        let snap = try? await self.snapshot(bundleId: bundleId)
+                        continuation.resume(throwing: MacDriverError(
+                            code: "timeout",
+                            message: "waitFor timed out after \(timeoutSeconds)s",
+                            tree: snap))
+                    }
+                }
+            }
+        } onCancel: {
+            // onCancel is called synchronously on the cancelling thread when the
+            // Task owning this continuation is cancelled.  We win the one-shot
+            // race (tryResolve) and resume the continuation with CancellationError,
+            // then call releaseRetained() — identical teardown to observer/timeout.
+            // If another path already won, tryResolve() returns false and we no-op.
+            if let state = cancelBox.state, state.flag.tryResolve() {
+                state.releaseRetained()
+                state.continuation.resume(throwing: CancellationError())
             }
         }
     }
