@@ -324,9 +324,17 @@ public actor AXClient: AXDriving {
         // instead of blocking the actor indefinitely.
         AXUIElementSetMessagingTimeout(appElement, Float(callTimeout))
 
+        // Hash of the app root element; used to detect self-referential AX trees.
+        // On macOS 26+, kAXChildrenAttribute and kAXWindowsAttribute on an
+        // AXUIElementCreateApplication element return the application element
+        // itself as a child, creating infinite cycles.  We detect this by
+        // comparing CFHash values and skip any element whose hash equals the
+        // app root's hash (i.e. it IS the app root).
+        let appRootHash = CFHash(appElement)
+
         // Recursive tree walk — all AX calls happen synchronously here, inside
         // the actor, so no concurrency issues with the AXUIElement handles.
-        func walk(_ el: AXUIElement, depth: Int) -> UINode {
+        func walk(_ el: AXUIElement, depth: Int, isAppRoot: Bool = false) -> UINode {
             counter += 1
             let refStr = "e\(counter)"
             refCache[refStr] = AXElementBox(el)
@@ -373,15 +381,46 @@ public actor AXClient: AXDriving {
             // children (depth-cap 60 / node-cap 2000)
             var childrenNodes: [UINode] = []
             if depth < 60 && nodeCount < 2000 {
+                // At the application root, compose the child list so that window
+                // content is visited BEFORE the menu bar, spending the 2000-node
+                // budget on agent-visible UI first.
+                //
+                // We filter out any child whose CFHash equals the app root's hash.
+                // On macOS 26+ the AX framework returns the AXApplication element
+                // itself as a member of kAXChildrenAttribute / kAXWindowsAttribute,
+                // creating an infinite cycle.  Skipping self-referential entries
+                // breaks the cycle without discarding real window or menu children.
+                //
+                // Order at the app root: non-MenuBar children first, AXMenuBar last.
+                // Deeper levels use kAXChildrenAttribute as normal (no reordering).
                 var childrenVal: CFTypeRef?
                 let childErr = AXUIElementCopyAttributeValue(
                     el, kAXChildrenAttribute as CFString, &childrenVal)
-                if childErr == .success, let children = childrenVal as? [AXUIElement] {
-                    for child in children {
-                        if nodeCount >= 2000 { capHit = true; break }
-                        nodeCount += 1
-                        childrenNodes.append(walk(child, depth: depth + 1))
+                let rawChildren = (childErr == .success ? childrenVal as? [AXUIElement] : nil) ?? []
+
+                let children: [AXUIElement]
+                if isAppRoot {
+                    // Remove self-referential entries (cycle guard).
+                    let deduped = rawChildren.filter { CFHash($0) != appRootHash }
+                    // Stable-partition: non-menubar first, AXMenuBar last.
+                    var roleRef2: CFTypeRef?
+                    let nonMenuBar = deduped.filter { c -> Bool in
+                        AXUIElementCopyAttributeValue(c, kAXRoleAttribute as CFString, &roleRef2)
+                        return (roleRef2 as? String) != "AXMenuBar"
                     }
+                    let menuBar = deduped.filter { c -> Bool in
+                        AXUIElementCopyAttributeValue(c, kAXRoleAttribute as CFString, &roleRef2)
+                        return (roleRef2 as? String) == "AXMenuBar"
+                    }
+                    children = nonMenuBar + menuBar
+                } else {
+                    children = rawChildren
+                }
+
+                for child in children {
+                    if nodeCount >= 2000 { capHit = true; break }
+                    nodeCount += 1
+                    childrenNodes.append(walk(child, depth: depth + 1))
                 }
             } else if nodeCount >= 2000 {
                 capHit = true
@@ -393,7 +432,7 @@ public actor AXClient: AXDriving {
         }
 
         nodeCount = 1
-        var root = walk(appElement, depth: 0)
+        var root = walk(appElement, depth: 0, isAppRoot: true)
 
         if capHit {
             let note = "[node cap 2000 hit — tree truncated]"

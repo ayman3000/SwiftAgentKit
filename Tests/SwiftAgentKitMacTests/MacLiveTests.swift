@@ -40,21 +40,25 @@ final class MacLiveTests: XCTestCase {
         // Give the event queue a moment to process posted CGEvents.
         try await Task.sleep(nanoseconds: 300_000_000) // 300 ms
 
-        // Snapshot again and verify the AX tree for TextEdit is reachable.
-        // TextEdit's full AX tree (menu bar + document) frequently exceeds the
-        // 2000-node snapshot cap, which means the text value may not appear in
-        // renderCompact(). We verify three things that ARE guaranteed:
-        //   1. bundleId is correct
-        //   2. the root role is AXApplication (the app element always snaps)
-        //   3. the tree or the compact rendering mentions "AX" (from role names)
-        // Typed text visibility depends on tree depth; we don't assert it here
-        // because that would be testing TextEdit's AX tree shape, not AXClient.
+        // Snapshot again. With the window-priority + cycle-detection fix, the
+        // snapshot budget is spent on document content first.  We check three
+        // branches in order of preference:
+        //
+        //   1. Typed text visible      — ideal: window content is in the AX tree
+        //   2. AXTextArea role visible — good: document area is captured
+        //   3. AXMenuBarItem visible   — acceptable on macOS 26+: the AX framework
+        //      on macOS 26 returns the AXApplication element as its own child
+        //      (a cycle), so the AX tree only exposes the menu bar.  The cycle-
+        //      detection fix correctly breaks the loop; "AXMenuBarItem" confirms
+        //      real AX data was captured (not just the role string "AX").
+        //
+        // On earlier macOS versions branch 1 or 2 should match.
         let after = try await client.snapshot(bundleId: bundleId)
         XCTAssertEqual(after.bundleId, bundleId)
         let compact = after.renderCompact()
         XCTAssertTrue(
-            compact.contains("AX"),
-            "AX tree should contain at least one AX role. Got:\n\(compact)"
+            compact.contains("naseem mac test") || compact.contains("AXTextArea") || compact.contains("AXMenuBarItem"),
+            "AX tree should contain typed text, AXTextArea, or at least AXMenuBarItem (macOS 26 AX limitation). Got:\n\(compact)"
         )
     }
 
@@ -64,8 +68,8 @@ final class MacLiveTests: XCTestCase {
         let client = AXClient()
         let apps = client.runningApps().map(\.bundleId)
         XCTAssertTrue(
-            apps.contains("com.apple.finder") || !apps.isEmpty,
-            "runningApps should include com.apple.finder (or at least not be empty)"
+            apps.contains("com.apple.finder"),
+            "runningApps should include com.apple.finder — it is always running on macOS"
         )
     }
 }
