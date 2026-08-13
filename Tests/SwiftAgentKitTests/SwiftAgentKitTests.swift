@@ -1963,6 +1963,54 @@ private func readCall(_ id: String, path: String) -> AgentToolCall {
     #expect(out.contains { $0.role == .system && $0.content.contains("ledger") })
 }
 
+@Test func testProtectsStructuredReadKeyedByNonPathParam() async {
+    // A UI-snapshot tool (sim_ui) identifies its target by `bundle_id`, not `path`.
+    // With readToolNames + readIdentityParams configured, its latest snapshot of an
+    // app is kept inline (so the agent stops re-snapshotting) while an older shell
+    // exchange is externalized.
+    let manager = ContextManager(
+        inlineBudgetChars: 900,
+        readToolNames: ["read_file", "sim_ui"],
+        readIdentityParams: ["sim_ui": "bundle_id"]
+    )
+    let uiResult = "UI_KEPT " + String(repeating: "u", count: 300)
+    let shellResult = "SHELL_MARKER " + String(repeating: "s", count: 600)
+    let messages: [AgentMessage] = [
+        .user("drive the app"),
+        .assistant(content: "", toolCalls: [AgentToolCall(id: "u1", name: "sim_ui", parameters: ["bundle_id": AnyCodable("com.apple.TextEdit")])]),
+        .tool(results: [.success(toolCallId: "u1", toolName: "sim_ui", result: uiResult)]),
+        .assistant(content: "", toolCalls: [AgentToolCall(id: "s1", name: "run_shell")]),
+        .tool(results: [.success(toolCallId: "s1", toolName: "run_shell", result: shellResult)]),
+        .assistant("thinking"),
+        .user("continue"),
+    ]
+
+    let out = await manager.modelMessages(messages) { $0 }
+
+    #expect(out.contains { $0.role == .tool && $0.content.contains("UI_KEPT") })       // sim_ui snapshot kept inline
+    #expect(!out.contains { $0.role == .tool && $0.content.contains("SHELL_MARKER") }) // shell externalized
+}
+
+@Test func testUnconfiguredStructuredReadIsNotProtected() async {
+    // Without readIdentityParams, sim_ui is not in readToolNames → not protected;
+    // over budget it externalizes like any other tool exchange (control for the
+    // test above — proves the protection comes from the config, not by accident).
+    let manager = ContextManager(inlineBudgetChars: 300)   // default readToolNames = ["read_file"]
+    let uiResult = "UI_MARKER " + String(repeating: "u", count: 400)
+    let messages: [AgentMessage] = [
+        .user("drive the app"),
+        .assistant(content: "", toolCalls: [AgentToolCall(id: "u1", name: "sim_ui", parameters: ["bundle_id": AnyCodable("com.apple.TextEdit")])]),
+        .tool(results: [.success(toolCallId: "u1", toolName: "sim_ui", result: uiResult)]),
+        .assistant(content: "", toolCalls: [AgentToolCall(id: "u2", name: "sim_ui", parameters: ["bundle_id": AnyCodable("com.apple.TextEdit")])]),
+        .tool(results: [.success(toolCallId: "u2", toolName: "sim_ui", result: "SECOND " + String(repeating: "x", count: 400))]),
+        .assistant("done"),
+        .user("continue"),
+    ]
+
+    let out = await manager.modelMessages(messages) { $0 }
+    #expect(!out.contains { $0.role == .tool && $0.content.contains("UI_MARKER") })   // older snapshot externalized (unprotected)
+}
+
 @Test func testKeepsOnlyNewestReadOfSamePath() async {
     let manager = ContextManager(inlineBudgetChars: 700)
     let messages: [AgentMessage] = [
