@@ -95,6 +95,8 @@ public enum AgentError: Error, Sendable, Equatable, LocalizedError {
             return "The model may not be capable enough. Try a larger model or simplify the task."
         case .runInProgress:
             return "Use one Agent instance per concurrent task, or serialize calls to `run(_:)`."
+        case .loopDetected:
+            return "The agent kept repeating an action without progress. Rephrase the task or try a different approach."
         default:
             return nil
         }

@@ -1071,8 +1071,9 @@ public final class Agent: @unchecked Sendable {
             break
         case .nudge(let sig, let count):
             emit(.loopDetected(signature: sig, count: count, action: .nudged))
+            let toolName = String(sig.split(separator: ":", maxSplits: 1).first ?? Substring(sig))
             conversation.append(.user(
-                "You've called the same tool with the same arguments \(count) times "
+                "You've called `\(toolName)` with the same arguments \(count) times "
                 + "without new progress. Change your approach, or finish and summarize "
                 + "what you have. Do not repeat that call."))
         case .stop(let sig, let count):

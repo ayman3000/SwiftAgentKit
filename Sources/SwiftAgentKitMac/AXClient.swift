@@ -197,17 +197,32 @@ private final class WaitState: @unchecked Sendable {
     private let lock = NSLock()
     private var _unmanagedSelf: Unmanaged<WaitState>?
 
+    // Observer teardown context: set once after successful AXObserverCreate so
+    // every resolve path can explicitly remove notifications before the observer
+    // deallocs.  Protected by the same lock; written once, read once.
+    private var _observerTeardown: (() -> Void)?
+
     func setUnmanaged(_ u: Unmanaged<WaitState>) {
         lock.lock(); defer { lock.unlock() }
         _unmanagedSelf = u
     }
 
-    /// Release the retained self-reference exactly once.
+    /// Store a teardown closure that explicitly removes AX observer notifications.
+    /// Called once, immediately after the observer is set up.
+    func setObserverTeardown(_ teardown: @escaping () -> Void) {
+        lock.lock(); defer { lock.unlock() }
+        _observerTeardown = teardown
+    }
+
+    /// Release the retained self-reference exactly once, and run any observer teardown.
     func releaseRetained() {
         lock.lock()
         let u = _unmanagedSelf
         _unmanagedSelf = nil
+        let teardown = _observerTeardown
+        _observerTeardown = nil
         lock.unlock()
+        teardown?()
         u?.release()
     }
 
@@ -572,6 +587,21 @@ public actor AXClient: AXDriving {
                                              statePtr.toOpaque())
                 }
 
+                // Register an explicit teardown so every resolve path removes
+                // the notifications before the observer is released.  The one-shot
+                // flag guarantees this closure runs exactly once (inside
+                // releaseRetained(), which is called by the winner of the resolve
+                // race — observer callback, timeout, or cancellation).
+                let appElementBox = AXElementBox(appElement)
+                let observerBox2  = AXObserverBox(obs)
+                state.setObserverTeardown {
+                    for note in notifications {
+                        AXObserverRemoveNotification(observerBox2.observer,
+                                                     appElementBox.element,
+                                                     note as CFString)
+                    }
+                }
+
                 // Run the observer on a private thread so it doesn't block the actor.
                 let observerBox = AXObserverBox(obs)
                 let thread = Thread { [state] in
@@ -647,14 +677,22 @@ public actor AXClient: AXDriving {
     /// Resolve a MacTarget to its live AXUIElement + a lightweight UINode.
     ///
     /// Strategy:
-    /// 1. If ref + generation provided and match the current generation → cache hit.
-    /// 2. Otherwise take a fresh snapshot and search depth-first by title/identifier/ref.
+    /// 1. If ref is present, generation MUST also be present and equal the current
+    ///    generation — otherwise the ref is stale/ambiguous and we throw immediately.
+    ///    We do NOT allow a ref to fall through to title/identifier matching because
+    ///    the ref numbering (e1, e2, …) is reset on every snapshot call; a ref from
+    ///    a prior snapshot can match an entirely different element in a fresh snapshot.
+    /// 2. If ref is nil, take a fresh snapshot and search depth-first by title/identifier.
     private func resolveElement(
         target: MacTarget,
         bundleId: String
     ) async throws -> (AXUIElement, UINode) {
-        // Cache lookup by ref + generation.
-        if let ref = target.ref, let targetGen = target.generation {
+        // Ref path: generation is REQUIRED to guard against stale-ref collisions.
+        if let ref = target.ref {
+            guard let targetGen = target.generation else {
+                throw MacDriverError(code: "stale_ref",
+                                     message: "ref requires a matching generation — call mac_ui again and use fresh refs")
+            }
             guard targetGen == currentGeneration else {
                 throw MacDriverError(code: "stale_ref",
                                      message: "Ref \(ref) is from generation \(targetGen), current is \(currentGeneration)")
@@ -674,7 +712,7 @@ public actor AXClient: AXDriving {
                                  message: "Ref \(ref) not found in cache")
         }
 
-        // Fresh snapshot + depth-first search.
+        // No ref: fresh snapshot + depth-first search by title/identifier.
         let snap = try await snapshot(bundleId: bundleId)
         if let (el, node) = findInSnapshot(snap.root, target: target) {
             return (el, node)

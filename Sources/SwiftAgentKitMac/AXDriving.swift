@@ -1,5 +1,4 @@
 #if os(macOS)
-import Foundation
 import ApplicationServices
 
 public protocol AXDriving: Sendable {

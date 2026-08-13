@@ -76,4 +76,11 @@ struct LoopDetectorTests {
         let cfg = AgentConfig(provider: PlainAnswerProvider(text: "test"))
         #expect(cfg.loopDetection == .default)
     }
+
+    @Test func loopDetectedRecoverySuggestionMentionsDifferentApproach() {
+        let err = AgentError.loopDetected(signature: "x", count: 5)
+        let suggestion = err.recoverySuggestion
+        #expect(suggestion != nil)
+        #expect(suggestion?.contains("different approach") == true)
+    }
 }
