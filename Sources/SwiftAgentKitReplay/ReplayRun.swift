@@ -18,7 +18,9 @@ public final class ReplayRun: @unchecked Sendable {
         scenario: Scenario,
         tools: [any AgentTool] = [],
         systemPrompt: String? = nil,
-        maxTurns: Int = 20
+        maxTurns: Int = 20,
+        contextManager: ContextManager? = nil,
+        loopDetection: LoopDetectionConfig? = .default
     ) {
         let provider = ReplayProvider(scenario: scenario)
         self.provider = provider
@@ -26,7 +28,9 @@ public final class ReplayRun: @unchecked Sendable {
             provider: provider,
             systemPrompt: systemPrompt,
             maxTurns: maxTurns,
-            tools: tools
+            tools: tools,
+            contextManager: contextManager,
+            loopDetection: loopDetection
         )
         self.agent = Agent(config: config)
     }
