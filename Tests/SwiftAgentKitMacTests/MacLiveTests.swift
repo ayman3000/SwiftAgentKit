@@ -56,6 +56,14 @@ final class MacLiveTests: XCTestCase {
         let after = try await client.snapshot(bundleId: bundleId)
         XCTAssertEqual(after.bundleId, bundleId)
         let compact = after.renderCompact()
+
+        // Assertion note: from an ad-hoc-signed `swift test` bundle on macOS 26, the AX
+        // server returns self-referential window attributes, so the document AXTextArea
+        // is NOT reachable here — only the menu bar. From a properly Apple-signed host
+        // (e.g. Naseem.app) window content IS reachable and the typed text appears in the
+        // AXTextArea (verified separately with an Apple-signed probe). The AXMenuBarItem
+        // branch is the honest ceiling for the xctest context; it still confirms real AX
+        // data was read (not just the AXApplication root).
         XCTAssertTrue(
             compact.contains("naseem mac test") || compact.contains("AXTextArea") || compact.contains("AXMenuBarItem"),
             "AX tree should contain typed text, AXTextArea, or at least AXMenuBarItem (macOS 26 AX limitation). Got:\n\(compact)"

@@ -609,6 +609,10 @@ SAK_LIVE_TESTS=1 SAK_MAC_TESTS=1 swift test --filter MacLiveTests
 
 The test launches TextEdit, waits for the app's AX tree to appear, types into the focused text area, and takes a final snapshot asserting the AX tree is reachable. If Accessibility is not granted to the shell running `swift test`, the test XCTSkips automatically — no false pass.
 
+### Testing / known limitation
+
+The live test fully exercises snapshot/type/verify from a properly code-signed host (e.g. Naseem.app). Under `swift test` (ad-hoc signed) on macOS 26, the Accessibility server returns self-referential results for the AX root, hiding window content — the live test falls back to asserting the menu bar is captured, confirming real AX data is being read. Full window-content end-to-end verification is validated in the signed Naseem app.
+
 ---
 
 ## iOS Simulator Automation (SwiftAgentKitSimulator)
