@@ -100,5 +100,16 @@ final class MacToolsTests: XCTestCase {
         XCTAssertEqual(Set(tools.map(\.name)),
             ["mac_apps","mac_ui","mac_click","mac_type","mac_key","mac_wait","mac_launch"])
     }
+
+    /// mac_click with no ref/title/identifier must return an error mentioning "ref"
+    /// and must NOT call the driver (lastCall stays empty).
+    func testMacClickEmptyTargetReturnsError() async throws {
+        let mock = MockAX()
+        let r = try await MacClickTool(client: mock, allowlistProvider: allow)
+            .execute(parameters: ["bundle_id": "com.apple.TextEdit"])
+        XCTAssertTrue(r.isError)
+        XCTAssertTrue(r.result.contains("ref"), "error message should mention 'ref'")
+        XCTAssertEqual(mock.lastCall, "", "driver must NOT be called for empty target")
+    }
 }
 #endif

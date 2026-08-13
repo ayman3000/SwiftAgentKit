@@ -49,6 +49,10 @@ public struct MacClickTool: AgentTool {
         case .success(let b): bundleId = b
         }
         let target = MacTarget.from(parameters)
+        guard target.ref != nil || target.title != nil || target.identifier != nil else {
+            return .error(toolCallId: "", toolName: name,
+                          message: "mac_click needs a ref (from mac_ui), title, or identifier to click.")
+        }
         do {
             try await client.click(bundleId: bundleId, target: target)
             return .success(toolCallId: "", toolName: name, result: "Clicked.")

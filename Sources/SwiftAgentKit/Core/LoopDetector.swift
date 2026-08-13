@@ -42,8 +42,12 @@ final class LoopDetector {
         if let data = try? encoder.encode(arguments), let json = String(data: data, encoding: .utf8) {
             return name + ":" + json
         }
-        // Deterministic fallback if a value isn't cleanly encodable.
-        return name + ":" + arguments.keys.sorted().joined(separator: ",")
+        // Deterministic value-preserving fallback: includes key+value pairs so
+        // distinct argument values still produce distinct signatures (unlike a
+        // keys-only join). Reached only if JSONEncoder somehow fails, which
+        // AnyCodable's implementation does not do in practice.
+        let fallback = arguments.keys.sorted().map { "\($0)=\(String(describing: arguments[$0]!))" }.joined(separator: ",")
+        return name + ":" + fallback
     }
 
     /// Record one turn's tool-call signatures (in call order) and decide the action.
