@@ -44,7 +44,7 @@ public struct MacClickTool: AgentTool {
     public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
         if let err = accessibilityError(toolName: name, client: client) { return err }
         let bundleId: String
-        switch AllowlistGuard.resolve(parameters, allowlist: allowlistProvider(), toolName: name, requireBundleId: true) {
+        switch AllowlistGuard.resolve(parameters, allowlist: allowlistProvider(), toolName: name) {
         case .failure(let e): return e
         case .success(let b): bundleId = b
         }
@@ -106,7 +106,7 @@ public struct MacTypeTool: AgentTool {
     public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
         if let err = accessibilityError(toolName: name, client: client) { return err }
         let bundleId: String
-        switch AllowlistGuard.resolve(parameters, allowlist: allowlistProvider(), toolName: name, requireBundleId: true) {
+        switch AllowlistGuard.resolve(parameters, allowlist: allowlistProvider(), toolName: name) {
         case .failure(let e): return e
         case .success(let b): bundleId = b
         }
@@ -163,7 +163,7 @@ public struct MacKeyTool: AgentTool {
     public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
         if let err = accessibilityError(toolName: name, client: client) { return err }
         let bundleId: String
-        switch AllowlistGuard.resolve(parameters, allowlist: allowlistProvider(), toolName: name, requireBundleId: true) {
+        switch AllowlistGuard.resolve(parameters, allowlist: allowlistProvider(), toolName: name) {
         case .failure(let e): return e
         case .success(let b): bundleId = b
         }
@@ -211,7 +211,7 @@ public struct MacLaunchTool: AgentTool {
     public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
         if let err = accessibilityError(toolName: name, client: client) { return err }
         let bundleId: String
-        switch AllowlistGuard.resolve(parameters, allowlist: allowlistProvider(), toolName: name, requireBundleId: true) {
+        switch AllowlistGuard.resolve(parameters, allowlist: allowlistProvider(), toolName: name) {
         case .failure(let e): return e
         case .success(let b): bundleId = b
         }

@@ -78,6 +78,13 @@ final class MacToolsTests: XCTestCase {
         XCTAssertFalse(r.result.contains("com.apple.mail"))
     }
 
+    func testMacAppsWorksWithoutAX() async throws {
+        let mock = MockAX(); mock.trusted = false
+        let r = try await MacAppsTool(client: mock, allowlistProvider: allow).execute(parameters: [:])
+        XCTAssertFalse(r.isError, "mac_apps should work without AX permission")
+        XCTAssertTrue(r.result.contains("com.apple.TextEdit"))
+    }
+
     func testWaitTimeoutReturnsCurrentTree() async throws {
         let mock = MockAX()
         mock.errorToThrow = MacDriverError(code: "timeout", message: "not met", tree: mock.tree)

@@ -36,8 +36,7 @@ enum AllowlistGuard {
     static func resolve(
         _ p: [String: Any],
         allowlist: Set<String>,
-        toolName: String,
-        requireBundleId: Bool
+        toolName: String
     ) -> GuardResult {
         guard let bundleId = p["bundle_id"] as? String, !bundleId.isEmpty else {
             return .failure(.error(

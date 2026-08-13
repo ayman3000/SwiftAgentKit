@@ -24,7 +24,6 @@ public struct MacAppsTool: AgentTool {
     }
 
     public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
-        if let err = accessibilityError(toolName: name, client: client) { return err }
         let allowed = AppResolver.filterAllowed(client.runningApps(), allowlist: allowlistProvider())
         if allowed.isEmpty {
             return .success(
@@ -69,7 +68,7 @@ public struct MacUITool: AgentTool {
     public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
         if let err = accessibilityError(toolName: name, client: client) { return err }
         let bundleId: String
-        switch AllowlistGuard.resolve(parameters, allowlist: allowlistProvider(), toolName: name, requireBundleId: true) {
+        switch AllowlistGuard.resolve(parameters, allowlist: allowlistProvider(), toolName: name) {
         case .failure(let e): return e
         case .success(let b): bundleId = b
         }
@@ -127,7 +126,7 @@ public struct MacWaitTool: AgentTool {
     public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
         if let err = accessibilityError(toolName: name, client: client) { return err }
         let bundleId: String
-        switch AllowlistGuard.resolve(parameters, allowlist: allowlistProvider(), toolName: name, requireBundleId: true) {
+        switch AllowlistGuard.resolve(parameters, allowlist: allowlistProvider(), toolName: name) {
         case .failure(let e): return e
         case .success(let b): bundleId = b
         }
