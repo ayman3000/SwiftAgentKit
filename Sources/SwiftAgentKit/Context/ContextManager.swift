@@ -55,10 +55,19 @@ public final class ContextManager: @unchecked Sendable {
     /// and is within `maxActiveResultChars` (large reads still externalize).
     public var keepLatestReadsInline: Bool
 
-    /// Tool names whose (non-error) result is a file read whose latest-per-path
-    /// output should be kept inline. A set so the generic manager isn't coupled to
-    /// any particular tools product.
+    /// Tool names whose (non-error) result is a "read of a stable surface" whose
+    /// latest-per-target output should be kept inline. A set so the generic manager
+    /// isn't coupled to any particular tools product. Not limited to files — a UI
+    /// snapshot tool (e.g. `sim_ui`/`mac_ui`, keyed by the app it inspects) counts,
+    /// so the agent stops re-snapshotting the same surface in a loop.
     public var readToolNames: Set<String>
+
+    /// Per-tool name of the parameter that identifies WHAT a read targets, used to
+    /// keep only the newest read per target inline. Defaults to `path` for any tool
+    /// not listed (so `read_file`/`list_dir` work with no config); a UI tool keyed
+    /// by app maps to `bundle_id`, etc. A read whose identity param is absent/empty
+    /// is not protected (treated as un-targetable).
+    public var readIdentityParams: [String: String]
 
     public init(
         store: any ArtifactStore = InMemoryArtifactStore(),
@@ -67,7 +76,8 @@ public final class ContextManager: @unchecked Sendable {
         summaryLength: Int = 320,
         inlineBudgetChars: Int = 16_000,
         keepLatestReadsInline: Bool = true,
-        readToolNames: Set<String> = ["read_file"]
+        readToolNames: Set<String> = ["read_file"],
+        readIdentityParams: [String: String] = [:]
     ) {
         self.store = store
         self.maxActiveResultChars = maxActiveResultChars
@@ -76,6 +86,7 @@ public final class ContextManager: @unchecked Sendable {
         self.inlineBudgetChars = inlineBudgetChars
         self.keepLatestReadsInline = keepLatestReadsInline
         self.readToolNames = readToolNames
+        self.readIdentityParams = readIdentityParams
     }
 
     /// The retrieval tools the model uses to pull full outputs back from the
@@ -285,9 +296,11 @@ public final class ContextManager: @unchecked Sendable {
                           !result.isError,
                           result.result.count <= maxActiveResultChars,
                           let call = callsByID[result.toolCallId],
-                          let path = Self.pathArgument(for: call)
+                          let target = identityArgument(for: call)
                     else { continue }
-                    byPath[path] = index   // ascending index → newest per path
+                    // Namespace by tool so a list_dir "/x" and a read_file "/x"
+                    // (or a sim_ui bundle id) don't collide into one slot.
+                    byPath["\(call.name)\u{0}\(target)"] = index   // ascending → newest per target
                 }
             }
             index += 1
@@ -296,8 +309,12 @@ public final class ContextManager: @unchecked Sendable {
     }
 
     /// The file path a call targets (the `path` argument), trimmed; nil if absent.
-    private static func pathArgument(for call: AgentToolCall) -> String? {
-        guard let value = call.parameters["path"]?.value as? String else { return nil }
+    /// The value identifying what a read targets: the tool's mapped identity param
+    /// (`readIdentityParams`), defaulting to `path` for tools not listed. Absent or
+    /// empty → nil (not protectable).
+    private func identityArgument(for call: AgentToolCall) -> String? {
+        let param = readIdentityParams[call.name] ?? "path"
+        guard let value = call.parameters[param]?.value as? String else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespaces)
         return trimmed.isEmpty ? nil : trimmed
     }
