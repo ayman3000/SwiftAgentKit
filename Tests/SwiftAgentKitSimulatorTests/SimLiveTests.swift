@@ -81,5 +81,55 @@ final class SimLiveTests: XCTestCase {
         XCTAssertEqual(png.prefix(4), Data([0x89, 0x50, 0x4E, 0x47]),
                        "screenshot must be a PNG (magic bytes 89 50 4E 47)")
     }
+
+    /// Regression: tapping strictly BY REF must activate the control, not just tapping
+    /// by label. A ref→frame lookup previously produced an APP-anchored coordinate tap,
+    /// which XCUITest does not deliver to the target control even though it lands on the
+    /// exact point; the driver now re-resolves the ref to the live element and taps it.
+    func testTapByRefNavigates() async throws {
+        let device = try await bootedOrBoot()
+        let manager = SimDriverManager()
+        addTeardownBlock { await manager.shutdown() }
+        try await manager.launch(udid: device.udid, runtime: device.runtime)
+        let client = await SimClient(manager: manager, udid: device.udid, runtime: device.runtime)
+
+        try await client.launch(bundleId: "com.apple.Preferences", terminateFirst: true)
+        let tree = try await client.waitFor(bundleId: "com.apple.Preferences",
+            target: .init(label: "General"), timeoutSeconds: 20, forDisappearance: false)
+
+        let ref = try XCTUnwrap(findRef(in: tree.root) { $0.label == "General" },
+                                "no element labelled 'General' in the tree")
+        // Tap ONLY by ref+generation — the path the agent actually uses.
+        try await client.tap(bundleId: "com.apple.Preferences",
+                             target: .init(ref: ref, generation: tree.generation), longPress: false)
+
+        let after: UITree
+        do {
+            after = try await client.waitFor(bundleId: "com.apple.Preferences",
+                target: .init(label: "About"), timeoutSeconds: 20, forDisappearance: false)
+        } catch let e as SimDriverError where e.code == "timeout" {
+            let snap = try await client.snapshot(bundleId: "com.apple.Preferences")
+            XCTFail("tap-by-ref on 'General' did not navigate. Tree:\n\(snap.renderCompact())")
+            return
+        }
+        XCTAssertTrue(after.renderCompact().contains("About"),
+                      "tapping 'General' by ref must navigate to a screen containing 'About'")
+    }
+
+    // MARK: - helpers
+
+    private func bootedOrBoot() async throws -> Simctl.SimDevice {
+        if let b = try await Simctl.bootedDevice() { return b }
+        let candidates = try await Simctl.listDevices().filter { $0.runtime.contains("iOS") }
+        let chosen = try XCTUnwrap(candidates.last, "no iOS simulators available")
+        try await Simctl.boot(udid: chosen.udid)
+        return chosen
+    }
+
+    private func findRef(in node: UINode, where match: (UINode) -> Bool) -> String? {
+        if match(node) { return node.ref }
+        for c in node.children { if let r = findRef(in: c, where: match) { return r } }
+        return nil
+    }
 }
 #endif
