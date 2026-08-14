@@ -563,7 +563,7 @@ public final class Agent: @unchecked Sendable {
     /// `runStreaming(_:)` (streaming). When `onText` is non-nil, each turn is
     /// streamed and assistant text deltas are delivered to `onText` as they
     /// arrive — including the final answer, token-by-token.
-    private func runLoop(query: String, images: [LLMImage], onText: (@Sendable (String) -> Void)?) async throws -> String {
+    private func runLoop(query: String, images: [LLMImage], onText: (@Sendable (String) -> Void)?, onTurnCompleted: (@Sendable (String, Bool) -> Void)? = nil) async throws -> String {
         guard beginRunIfIdle() else {
             throw AgentError.runInProgress
         }
@@ -696,6 +696,7 @@ public final class Agent: @unchecked Sendable {
                         if intercepted.hasToolCalls, let toolCalls = intercepted.toolCalls {
                             emit(.toolCallsReceived(toolCalls))
                             conversation.append(.assistant(content: intercepted.text, toolCalls: toolCalls))
+                            onTurnCompleted?(intercepted.text, true)
                             let results = await dispatchToolCalls(toolCalls, turn: totalTurns, query: query)
                             toolsExecuted += results.count
                             toolErrors += results.filter(\.isError).count
@@ -726,6 +727,7 @@ public final class Agent: @unchecked Sendable {
                             startTime: startTime
                         )
                         emit(.finished(summary: summary))
+                        onTurnCompleted?(intercepted.text, false)
                         return intercepted.text
                     }
                 }
@@ -778,6 +780,7 @@ public final class Agent: @unchecked Sendable {
                                     startTime: startTime
                                 )
                                 emit(.finished(summary: summary))
+                                onTurnCompleted?(fallback.text, false)
                                 return fallback.text
                             }
                         }
@@ -868,6 +871,7 @@ public final class Agent: @unchecked Sendable {
                                 ? "Blocked: \(reason)"
                                 : agentResponse.text + "\n\n[blocked: \(reason)]"
                             state.clearTemp()
+                            onTurnCompleted?(blockedText, false)
                             return blockedText
                         }
                     }
@@ -891,16 +895,23 @@ public final class Agent: @unchecked Sendable {
                     if let afterAgent = callbacks?.afterAgent {
                         if let modified = await afterAgent(agentResponse.text, state) {
                             state.clearTemp()
+                            onTurnCompleted?(modified, false)
                             return modified
                         }
                     }
                     state.clearTemp()
+                    onTurnCompleted?(agentResponse.text, false)
                     return agentResponse.text
                 }
 
                 // Has tool calls — execute them
                 emit(.toolCallsReceived(toolCalls))
                 conversation.append(.assistant(content: agentResponse.text, toolCalls: toolCalls))
+
+                // Narration precedes tool-execution events on the consumer side:
+                // fire the turn-completed tag BEFORE dispatching so observers see
+                // the assistant text before any tool-result events arrive.
+                onTurnCompleted?(agentResponse.text, true)
 
                 // Dispatch tool calls (with state + callbacks, parallel by default)
                 let results = await dispatchToolCalls(toolCalls, turn: totalTurns, query: query)
@@ -983,9 +994,11 @@ public final class Agent: @unchecked Sendable {
                     // afterAgent callback
                     if let afterAgent = callbacks?.afterAgent {
                         if let modified = await afterAgent(intercepted.text, state) {
+                            onTurnCompleted?(modified, false)
                             return modified
                         }
                     }
+                    onTurnCompleted?(intercepted.text, false)
                     return intercepted.text
                 }
             }
@@ -1008,6 +1021,7 @@ public final class Agent: @unchecked Sendable {
                             finalResponse: fallback.text,
                             startTime: startTime
                         )))
+                        onTurnCompleted?(fallback.text, false)
                         return fallback.text
                     }
                 }
@@ -1040,10 +1054,12 @@ public final class Agent: @unchecked Sendable {
             // afterAgent callback — can modify the final response
             if let afterAgent = callbacks?.afterAgent {
                 if let modified = await afterAgent(agentResponse.text, state) {
+                    onTurnCompleted?(modified, false)
                     return modified
                 }
             }
 
+            onTurnCompleted?(agentResponse.text, false)
             return agentResponse.text
         }
     }
@@ -1380,6 +1396,25 @@ public final class Agent: @unchecked Sendable {
                 }
             }
 
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// Streaming variant tagging content finality. `.delta` = live text of the
+    /// in-progress turn; `.turnCompleted` = one per finished turn (step vs final
+    /// answer). Additive — `runStreaming` (String) is unchanged.
+    public func runStreamingTagged(_ query: String, images: [LLMImage] = []) -> AsyncThrowingStream<AgentStreamEvent, Error> {
+        return AsyncThrowingStream { [weak self] continuation in
+            let task = Task { [weak self] in
+                guard let self else { continuation.finish(); return }
+                do {
+                    _ = try await self.runLoop(
+                        query: query, images: images,
+                        onText: { continuation.yield(.delta($0)) },
+                        onTurnCompleted: { continuation.yield(.turnCompleted(text: $0, wasToolCallTurn: $1)) })
+                    continuation.finish()
+                } catch { continuation.finish(throwing: error) }
+            }
             continuation.onTermination = { _ in task.cancel() }
         }
     }
