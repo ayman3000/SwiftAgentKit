@@ -5,6 +5,17 @@ final class DriverRoutes {
     private var apps: [String: XCUIApplication] = [:]
     private var generation = 0
     private var refFrames: [String: CGRect] = [:]   // refs of the CURRENT generation only
+    private var refIdentity: [String: RefIdentity] = [:]   // ref → how to re-resolve it to a live element
+
+    /// Enough identity to re-query a live XCUIElement for a ref at tap time.
+    /// Tapping the *element's* own coordinate is delivered to it; tapping an
+    /// app-anchored screen point at the same location is not (an XCUITest quirk),
+    /// so we resolve back to the element whenever we can.
+    private struct RefIdentity {
+        var type: XCUIElement.ElementType
+        var identifier: String?
+        var label: String?
+    }
 
     func handle(_ req: HTTPRequest) -> HTTPResponse {
         do {
@@ -19,12 +30,11 @@ final class DriverRoutes {
                 return .png(XCUIScreen.main.screenshot().pngRepresentation)
             case ("POST", "/tap"):
                 let r = try decode(SimWire.TapRequest.self, req)
-                let coord = try resolveCoordinate(r.target, bundleId: r.bundleId)
-                r.longPress ? coord.press(forDuration: 1.2) : coord.tap()
+                try performTap(r.target, bundleId: r.bundleId, longPress: r.longPress)
                 return .json(SimWire.OKResponse())
             case ("POST", "/type"):
                 let r = try decode(SimWire.TypeRequest.self, req)
-                if let target = r.target { try resolveCoordinate(target, bundleId: r.bundleId).tap() }
+                if let target = r.target { try performTap(target, bundleId: r.bundleId, longPress: false) }
                 app(r.bundleId).typeText(r.text)
                 return .json(SimWire.OKResponse())
             case ("POST", "/swipe"):
@@ -100,11 +110,16 @@ final class DriverRoutes {
     private func snapshot(bundleId: String) throws -> UITree {
         generation += 1
         refFrames.removeAll()
+        refIdentity.removeAll()
         var counter = 0
         func convert(_ snap: XCUIElementSnapshot) -> UINode {
             counter += 1
             let ref = "e\(counter)"
             refFrames[ref] = snap.frame
+            refIdentity[ref] = RefIdentity(
+                type: snap.elementType,
+                identifier: snap.identifier.isEmpty ? nil : snap.identifier,
+                label: snap.label.isEmpty ? nil : snap.label)
             return UINode(
                 ref: ref,
                 type: String(describing: snap.elementType),
@@ -118,6 +133,51 @@ final class DriverRoutes {
         }
         let root = convert(try app(bundleId).snapshot())
         return UITree(generation: generation, bundleId: bundleId, root: root)
+    }
+
+    /// Tap `target`, preferring an ELEMENT-anchored coordinate. A coordinate tap
+    /// anchored to the application (what a ref→frame lookup produces) is often not
+    /// delivered to a small control's gesture recognizer even when it lands on the
+    /// exact same screen point — so when a ref resolves back to a live element we
+    /// tap that element's own center, and fall back to the app-anchored coordinate
+    /// only when the ref carries no queryable identity.
+    private func performTap(_ target: SimWire.Target, bundleId: String, longPress: Bool) throws {
+        if let ref = target.ref {
+            // Reuse resolveCoordinate's staleness rule: a ref from an old snapshot must error.
+            guard target.generation == generation, refFrames[ref] != nil else {
+                throw RouteError(status: 409, response: .init(code: "stale_ref",
+                    message: "ref \(ref) is from an old snapshot — call sim_ui again and use fresh refs"))
+            }
+            if let el = elementForRef(ref, bundleId: bundleId), el.exists {
+                let coord = el.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+                longPress ? coord.press(forDuration: 1.2) : coord.tap()
+                return
+            }
+        }
+        let coord = try resolveCoordinate(target, bundleId: bundleId)
+        longPress ? coord.press(forDuration: 1.2) : coord.tap()
+    }
+
+    /// Re-resolve a snapshot ref to the live element, using the stored identity and
+    /// disambiguating duplicate identifiers/labels by proximity to the stored frame.
+    /// Returns nil when the ref has no queryable identity (caller falls back to a coordinate tap).
+    private func elementForRef(_ ref: String, bundleId: String) -> XCUIElement? {
+        guard let identity = refIdentity[ref], let frame = refFrames[ref] else { return nil }
+        var preds: [NSPredicate] = []
+        if let i = identity.identifier { preds.append(NSPredicate(format: "identifier == %@", i)) }
+        if let l = identity.label { preds.append(NSPredicate(format: "label == %@", l)) }
+        guard !preds.isEmpty else { return nil }
+        let query = app(bundleId).descendants(matching: identity.type)
+            .matching(NSCompoundPredicate(orPredicateWithSubpredicates: preds))
+        let matches = query.allElementsBoundByIndex
+        if matches.isEmpty { return nil }
+        if matches.count == 1 { return matches[0] }
+        // Multiple elements share the identifier/label — pick the one closest to the ref's frame.
+        func dist(_ f: CGRect) -> CGFloat {
+            let dx = f.midX - frame.midX, dy = f.midY - frame.midY
+            return dx * dx + dy * dy
+        }
+        return matches.min { dist($0.frame) < dist($1.frame) }
     }
 
     private func resolveCoordinate(_ target: SimWire.Target, bundleId: String) throws -> XCUICoordinate {
