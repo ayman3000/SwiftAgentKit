@@ -116,6 +116,45 @@ final class SimLiveTests: XCTestCase {
                       "tapping 'General' by ref must navigate to a screen containing 'About'")
     }
 
+    func testSimFindLocatesGeneral() async throws {
+        let device = try await bootedOrBoot()
+        let manager = SimDriverManager()
+        addTeardownBlock { await manager.shutdown() }
+        try await manager.launch(udid: device.udid, runtime: device.runtime)
+        let client = await SimClient(manager: manager, udid: device.udid, runtime: device.runtime)
+        let session = SimSession(); session.currentBundleId = "com.apple.Preferences"
+
+        try await client.launch(bundleId: "com.apple.Preferences", terminateFirst: true)
+        _ = try await client.waitFor(bundleId: "com.apple.Preferences",
+            target: .init(label: "General"), timeoutSeconds: 20, forDisappearance: false)
+
+        let find = SimFindTool(client: client, session: session)
+        let r = try await find.execute(parameters: ["query": "General"])
+        XCTAssertFalse(r.isError)
+        XCTAssertTrue(r.result.contains("General"), "sim_find should locate General")
+        XCTAssertTrue(r.result.contains("generation"), "result carries a generation for tapping")
+    }
+
+    func testTapFusionReturnsAboutInOneCall() async throws {
+        let device = try await bootedOrBoot()
+        let manager = SimDriverManager()
+        addTeardownBlock { await manager.shutdown() }
+        try await manager.launch(udid: device.udid, runtime: device.runtime)
+        let client = await SimClient(manager: manager, udid: device.udid, runtime: device.runtime)
+        let session = SimSession(); session.currentBundleId = "com.apple.Preferences"
+
+        try await client.launch(bundleId: "com.apple.Preferences", terminateFirst: true)
+        let tree = try await client.waitFor(bundleId: "com.apple.Preferences",
+            target: .init(label: "General"), timeoutSeconds: 20, forDisappearance: false)
+        let ref = try XCTUnwrap(findRef(in: tree.root) { $0.label == "General" })
+
+        // Fusion: tap by ref with wait_for → the returned tree already shows About.
+        let tap = SimTapTool(client: client, session: session)
+        let r = try await tap.execute(parameters: ["ref": ref, "generation": tree.generation, "wait_for": "About"])
+        XCTAssertFalse(r.isError)
+        XCTAssertTrue(r.result.contains("About"), "one tap call returns the navigated screen")
+    }
+
     // MARK: - helpers
 
     private func bootedOrBoot() async throws -> Simctl.SimDevice {
