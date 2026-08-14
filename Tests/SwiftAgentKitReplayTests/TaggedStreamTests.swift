@@ -41,4 +41,29 @@ struct TaggedStreamTests {
         let c = completed(try await collect(Scenario(name: "s", turns: [ans]), tools: [NoopTool()]))
         #expect(c.count == 1 && c[0].1 == false)
     }
+
+    @Test func afterAgentModifiedStillFiresFinal() async throws {
+        // A registered afterAgent callback that returns a modified string must
+        // still cause exactly one .turnCompleted(wasToolCallTurn:false) to be
+        // yielded, and its text must be the MODIFIED text, not the original.
+        let ans = ScriptedTurn(text: "original answer", finishReason: .stop, toolCalls: [])
+        let scenario = Scenario(name: "afterAgent", turns: [ans])
+        let provider = ReplayProvider(scenario: scenario)
+        let agent = Agent(config: AgentConfig(provider: provider, maxTurns: 10, tools: [NoopTool()]))
+        agent.callbacks = AgentCallbacks()
+        agent.callbacks?.afterAgent = { text, _ in
+            return "modified: \(text)"
+        }
+
+        var events: [AgentStreamEvent] = []
+        for try await ev in agent.runStreamingTagged("go") { events.append(ev) }
+
+        let turnCompletedEvents = events.compactMap { ev -> (String, Bool)? in
+            if case .turnCompleted(let t, let w) = ev { return (t, w) }
+            return nil
+        }
+        #expect(turnCompletedEvents.count == 1)
+        #expect(turnCompletedEvents[0].1 == false)
+        #expect(turnCompletedEvents[0].0 == "modified: original answer")
+    }
 }

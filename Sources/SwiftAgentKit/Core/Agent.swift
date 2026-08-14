@@ -696,6 +696,7 @@ public final class Agent: @unchecked Sendable {
                         if intercepted.hasToolCalls, let toolCalls = intercepted.toolCalls {
                             emit(.toolCallsReceived(toolCalls))
                             conversation.append(.assistant(content: intercepted.text, toolCalls: toolCalls))
+                            onTurnCompleted?(intercepted.text, true)
                             let results = await dispatchToolCalls(toolCalls, turn: totalTurns, query: query)
                             toolsExecuted += results.count
                             toolErrors += results.filter(\.isError).count
@@ -712,7 +713,6 @@ public final class Agent: @unchecked Sendable {
                                 startTime: startTime
                             )
                             _ = conversation.trim()
-                            onTurnCompleted?(intercepted.text, true)
                             continue
                         }
                         onText?(intercepted.text)
@@ -780,6 +780,7 @@ public final class Agent: @unchecked Sendable {
                                     startTime: startTime
                                 )
                                 emit(.finished(summary: summary))
+                                onTurnCompleted?(fallback.text, false)
                                 return fallback.text
                             }
                         }
@@ -893,6 +894,7 @@ public final class Agent: @unchecked Sendable {
                     if let afterAgent = callbacks?.afterAgent {
                         if let modified = await afterAgent(agentResponse.text, state) {
                             state.clearTemp()
+                            onTurnCompleted?(modified, false)
                             return modified
                         }
                     }
@@ -904,6 +906,11 @@ public final class Agent: @unchecked Sendable {
                 // Has tool calls — execute them
                 emit(.toolCallsReceived(toolCalls))
                 conversation.append(.assistant(content: agentResponse.text, toolCalls: toolCalls))
+
+                // Narration precedes tool-execution events on the consumer side:
+                // fire the turn-completed tag BEFORE dispatching so observers see
+                // the assistant text before any tool-result events arrive.
+                onTurnCompleted?(agentResponse.text, true)
 
                 // Dispatch tool calls (with state + callbacks, parallel by default)
                 let results = await dispatchToolCalls(toolCalls, turn: totalTurns, query: query)
@@ -928,9 +935,6 @@ public final class Agent: @unchecked Sendable {
 
                 // Add tool results to conversation
                 conversation.append(.tool(results: results))
-
-                // Tag this as a completed tool-call turn before looping.
-                onTurnCompleted?(agentResponse.text, true)
 
                 // No-progress guard: same tool call repeating without progress.
                 try checkForLoop(
@@ -989,6 +993,7 @@ public final class Agent: @unchecked Sendable {
                     // afterAgent callback
                     if let afterAgent = callbacks?.afterAgent {
                         if let modified = await afterAgent(intercepted.text, state) {
+                            onTurnCompleted?(modified, false)
                             return modified
                         }
                     }
@@ -1015,6 +1020,7 @@ public final class Agent: @unchecked Sendable {
                             finalResponse: fallback.text,
                             startTime: startTime
                         )))
+                        onTurnCompleted?(fallback.text, false)
                         return fallback.text
                     }
                 }
@@ -1047,6 +1053,7 @@ public final class Agent: @unchecked Sendable {
             // afterAgent callback — can modify the final response
             if let afterAgent = callbacks?.afterAgent {
                 if let modified = await afterAgent(agentResponse.text, state) {
+                    onTurnCompleted?(modified, false)
                     return modified
                 }
             }
