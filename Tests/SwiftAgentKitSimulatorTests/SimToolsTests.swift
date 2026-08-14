@@ -360,11 +360,9 @@ final class SimToolsTests: XCTestCase {
 
     // MARK: makeSimulatorTools
 
-    func testMakeSimulatorToolsReturns14Tools() {
-        let mock = MockDriver()
-        let session = SimSession()
-        let tools = makeSimulatorTools(session: session, client: mock)
-        XCTAssertEqual(tools.count, 14)
+    func testMakeSimulatorToolsReturns15Tools() {
+        let tools = makeSimulatorTools(session: SimSession(), client: MockDriver())
+        XCTAssertEqual(tools.count, 15)
     }
 
     func testMakeSimulatorToolsHasExpectedNames() {
@@ -373,10 +371,92 @@ final class SimToolsTests: XCTestCase {
         let tools = makeSimulatorTools(session: session, client: mock)
         let names = Set(tools.map { $0.name })
         let expected: Set<String> = ["sim_list", "sim_boot", "sim_launch", "sim_terminate",
-                                     "sim_ui", "sim_tap", "sim_type", "sim_swipe",
+                                     "sim_ui", "sim_find", "sim_tap", "sim_type", "sim_swipe",
                                      "sim_press", "sim_wait", "sim_alert", "sim_screenshot",
                                      "sim_build_install", "sim_logs"]
         XCTAssertEqual(names, expected)
+    }
+
+    // MARK: sim_find
+
+    private func findFixture() -> UITree {
+        func n(_ ref: String, _ type: String, label: String? = nil, id: String? = nil,
+               value: String? = nil, hit: Bool = false) -> UINode {
+            UINode(ref: ref, type: type, label: label, identifier: id, value: value,
+                   frame: .init(x: 0, y: 0, width: 10, height: 10), isHittable: hit,
+                   isEnabled: true, children: [])
+        }
+        let root = UINode(ref: "e1", type: "XCUIElementType(rawValue: 4)", label: nil,
+            identifier: nil, value: nil, frame: .init(x: 0, y: 0, width: 390, height: 844),
+            isHittable: false, isEnabled: true, children: [
+                n("e2", "XCUIElementType(rawValue: 48)", label: "Gold Prices"),                 // StaticText, not hittable
+                n("e3", "XCUIElementType(rawValue: 9)", id: "dollarsign.circle.fill", hit: true), // Button, hittable
+                n("e4", "XCUIElementType(rawValue: 49)", label: "Amount", value: "USD", hit: true), // TextField
+            ])
+        return UITree(generation: 7, bundleId: "com.x", root: root)
+    }
+
+    func testFindMatchesSubstringAcrossFields() {
+        let m = SimFindTool.matches(in: findFixture(), query: "dollar", type: nil, tappableOnly: false)
+        XCTAssertEqual(m.count, 1)
+        XCTAssertEqual(m.first?.identifier, "dollarsign.circle.fill")
+    }
+
+    func testFindMatchesValueField() {
+        let m = SimFindTool.matches(in: findFixture(), query: "usd", type: nil, tappableOnly: false)
+        XCTAssertEqual(m.first?.ref, "e4")
+    }
+
+    func testFindTypeFilter() {
+        let m = SimFindTool.matches(in: findFixture(), query: nil, type: "button", tappableOnly: false)
+        XCTAssertEqual(m.map { $0.ref }, ["e3"])
+    }
+
+    func testFindTappableOnlyExcludesStaticText() {
+        let m = SimFindTool.matches(in: findFixture(), query: nil, type: "statictext", tappableOnly: true)
+        XCTAssertTrue(m.isEmpty, "e2 StaticText is not hittable")
+    }
+
+    func testFindHittableFirstOrdering() {
+        // query "" would match all; use type nil + query matching all three via a common char.
+        let tree = findFixture()
+        let m = SimFindTool.matches(in: tree, query: nil, type: nil, tappableOnly: false)
+        // Without query/type the matcher still returns all; first must be a hittable one.
+        XCTAssertTrue(m.first?.isHittable == true)
+    }
+
+    func testRenderMatchesCapsAt20WithOverflowNote() {
+        func kid(_ i: Int) -> UINode {
+            UINode(ref: "e\(i)", type: "XCUIElementType(rawValue: 9)", label: "item \(i)",
+                   identifier: nil, value: nil, frame: .init(x: 0, y: 0, width: 5, height: 5),
+                   isHittable: true, isEnabled: true, children: [])
+        }
+        let root = UINode(ref: "e0", type: "XCUIElementType(rawValue: 4)", label: nil,
+            identifier: nil, value: nil, frame: .zero, isHittable: false, isEnabled: true,
+            children: (1...25).map(kid))
+        let out = SimFindTool.renderMatches(in: UITree(generation: 2, bundleId: "com.x", root: root),
+                                            query: "item", type: nil, tappableOnly: false)
+        XCTAssertTrue(out.contains("+5 more"))
+        XCTAssertTrue(out.contains("generation 2"))
+    }
+
+    func testRenderMatchesNoMatchMessage() {
+        let out = SimFindTool.renderMatches(in: findFixture(), query: "zzz", type: nil, tappableOnly: false)
+        XCTAssertTrue(out.contains("No elements match"))
+    }
+
+    func testFindToolRequiresQueryOrType() async throws {
+        let tool = SimFindTool(client: MockDriver(), session: makeSession())
+        let r = try await tool.execute(parameters: [:])
+        XCTAssertTrue(r.isError)
+        XCTAssertTrue(r.result.contains("query"))
+    }
+
+    func testFindRendersFriendlyTypeAndRefs() {
+        let out = SimFindTool.renderMatches(in: findFixture(), query: "dollar", type: nil, tappableOnly: false)
+        XCTAssertTrue(out.contains("e3 Button"))
+        XCTAssertTrue(out.contains("dollarsign.circle.fill"))
+        XCTAssertTrue(out.contains("generation 7"))
     }
 
     // MARK: - SimBuildInstallTool tests

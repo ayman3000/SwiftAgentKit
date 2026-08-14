@@ -345,13 +345,99 @@ public struct SimAlertTool: AgentTool {
     }
 }
 
+// MARK: - SimFindTool
+
+public struct SimFindTool: AgentTool {
+    public let name = "sim_find"
+    public let description = """
+    Find elements without dumping the whole screen. `query` matches (case-insensitive \
+    substring) against label, identifier, or value; optional `type` (e.g. button, textfield, \
+    cell) and `tappable_only` narrow it. Returns up to 20 matches (hittable first) with refs \
+    to pass to sim_tap. Prefer this over sim_ui when you know what you're looking for.
+    """
+    public let parameters = ToolParameters(
+        properties: [
+            "query": ToolParameterProperty(type: "string",
+                description: "Text to find in label/identifier/value (case-insensitive substring)."),
+            "type": ToolParameterProperty(type: "string",
+                description: "Filter by element type, e.g. button, statictext, textfield, image, cell."),
+            "tappable_only": ToolParameterProperty(type: "boolean", description: "Only tappable elements."),
+            "bundle_id": ToolParameterProperty(type: "string", description: "Defaults to the launched app."),
+        ],
+        required: [])
+    let client: any SimDriving
+    let session: SimSession
+    public init(client: any SimDriving, session: SimSession) { self.client = client; self.session = session }
+
+    public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
+        let bundleId: String
+        switch resolveBundleId(parameters, session, toolName: name) {
+        case .missing(let e): return e
+        case .resolved(let b): bundleId = b
+        }
+        let query = (parameters["query"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        let type = (parameters["type"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        let tappableOnly = (parameters["tappable_only"] as? Bool) ?? false
+        guard query != nil || type != nil else {
+            return .error(toolCallId: "", toolName: name,
+                message: "Provide `query` or `type`; use sim_ui to see the whole screen.")
+        }
+        do {
+            let tree = try await client.snapshot(bundleId: bundleId)
+            return .success(toolCallId: "", toolName: name,
+                result: Self.renderMatches(in: tree, query: query, type: type, tappableOnly: tappableOnly))
+        } catch let e as SimDriverError {
+            return .error(toolCallId: "", toolName: name,
+                message: e.localizedDescription + (e.tree.map { "\n\nCurrent UI:\n" + $0.renderCompact() } ?? ""))
+        } catch {
+            return .error(toolCallId: "", toolName: name, message: "Unexpected error: \(error.localizedDescription)")
+        }
+    }
+
+    /// Pure: matches in document order, then stable-partitioned hittable-first.
+    public static func matches(in tree: UITree, query: String?, type: String?, tappableOnly: Bool) -> [UINode] {
+        let q = query?.lowercased(); let t = type?.lowercased()
+        func field(_ s: String?) -> Bool { guard let q else { return false }; return (s ?? "").lowercased().contains(q) }
+        var found: [UINode] = []
+        func walk(_ n: UINode) {
+            let mq = q == nil || field(n.label) || field(n.identifier) || field(n.value)
+            let mt = t == nil || n.typeName.lowercased().contains(t!)
+            let mh = !tappableOnly || n.isHittable
+            if mq && mt && mh { found.append(n) }
+            n.children.forEach(walk)
+        }
+        walk(tree.root)
+        return found.filter { $0.isHittable } + found.filter { !$0.isHittable }   // stable: hittable first
+    }
+
+    public static func renderMatches(in tree: UITree, query: String?, type: String?, tappableOnly: Bool) -> String {
+        let all = matches(in: tree, query: query, type: type, tappableOnly: tappableOnly)
+        if all.isEmpty {
+            let what = query.map { "\"\($0)\"" } ?? "type \(type ?? "")"
+            return "No elements match \(what). Call sim_ui to see the whole screen."
+        }
+        var out = "UI of \(tree.bundleId) — generation \(tree.generation)\n"
+        for n in all.prefix(20) {
+            var line = "\(n.ref) \(n.typeName)"
+            if let l = n.label { line += " \"\(l)\"" }
+            if let i = n.identifier { line += " id=\(i)" }
+            if let v = n.value { line += " value=\(v)" }
+            if n.isHittable { line += " [tappable]" }
+            out += line + "\n"
+        }
+        if all.count > 20 { out += "… +\(all.count - 20) more — refine query\n" }
+        return out
+    }
+}
+
 // MARK: - makeSimulatorTools
 
-/// Returns the full set of simulator tools (14) for one-call agent registration.
+/// Returns the full set of simulator tools (15) for one-call agent registration.
 public func makeSimulatorTools(session: SimSession, client: any SimDriving) -> [any AgentTool] {
     [SimListTool(), SimBootTool(session: session),
      SimLaunchTool(client: client, session: session), SimTerminateTool(client: client, session: session),
-     SimUITool(client: client, session: session), SimTapTool(client: client, session: session),
+     SimUITool(client: client, session: session), SimFindTool(client: client, session: session),
+     SimTapTool(client: client, session: session),
      SimTypeTool(client: client, session: session), SimSwipeTool(client: client, session: session),
      SimPressTool(client: client, session: session), SimWaitTool(client: client, session: session),
      SimAlertTool(client: client, session: session), SimScreenshotTool(client: client, session: session),
