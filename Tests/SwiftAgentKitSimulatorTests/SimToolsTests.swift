@@ -91,6 +91,34 @@ final class SimToolsTests: XCTestCase {
         XCTAssertEqual(mock.lastCall, "snapshot:com.other")
     }
 
+    private func slimVsFullTree() -> UITree {
+        let text = UINode(ref: "e3", type: "XCUIElementType(rawValue: 48)", label: "Hi",
+                          identifier: nil, value: nil, frame: .init(x: 0, y: 0, width: 5, height: 5),
+                          isHittable: true, isEnabled: true, children: [])
+        let container = UINode(ref: "e2", type: "XCUIElementType(rawValue: 1)", label: nil,
+                               identifier: nil, value: nil, frame: .init(x: 0, y: 0, width: 100, height: 100),
+                               isHittable: true, isEnabled: true, children: [text])
+        let root = UINode(ref: "e1", type: "XCUIElementType(rawValue: 4)", label: nil,
+                          identifier: nil, value: nil, frame: .init(x: 0, y: 0, width: 390, height: 844),
+                          isHittable: false, isEnabled: true, children: [container])
+        return UITree(generation: 1, bundleId: "com.x", root: root)
+    }
+
+    func testSimUIDefaultSlimsTree() async throws {
+        let mock = MockDriver(); mock.treeToReturn = slimVsFullTree()
+        let tool = SimUITool(client: mock, session: makeSession())
+        let r = try await tool.execute(parameters: [:])
+        XCTAssertTrue(r.result.contains("Hi"))
+        XCTAssertFalse(r.result.contains("e2 "), "structural node flattened by default")
+    }
+
+    func testSimUIFullReturnsCompactTree() async throws {
+        let mock = MockDriver(); mock.treeToReturn = slimVsFullTree()
+        let tool = SimUITool(client: mock, session: makeSession())
+        let r = try await tool.execute(parameters: ["full": true])
+        XCTAssertTrue(r.result.contains("e2"), "full:true returns the complete tree")
+    }
+
     // MARK: sim_tap
 
     func testSimTapByRefPassesGeneration() async throws {

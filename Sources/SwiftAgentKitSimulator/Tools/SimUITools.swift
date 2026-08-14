@@ -60,13 +60,17 @@ public struct SimUITool: AgentTool {
     public let name = "sim_ui"
     public let description = """
     Read the current UI of the iOS simulator app as an accessibility tree — element \
-    refs (e1, e2…), types, labels, values. ALWAYS prefer this over sim_screenshot: \
-    it is faster and gives exact refs to tap. Refs are only valid until the next \
-    snapshot (each tree shows its generation number).
+    refs (e1, e2…), types, labels, values. Slimmed by default (interactive + labeled \
+    elements); pass full:true for the complete tree. To locate ONE control, prefer \
+    sim_find. ALWAYS prefer this over sim_screenshot. Refs are valid until the next snapshot.
     """
     public let parameters = ToolParameters(
-        properties: ["bundle_id": ToolParameterProperty(type: "string",
-            description: "App to inspect; defaults to the app launched via sim_launch.")],
+        properties: [
+            "bundle_id": ToolParameterProperty(type: "string",
+                description: "App to inspect; defaults to the app launched via sim_launch."),
+            "full": ToolParameterProperty(type: "boolean",
+                description: "Return the complete tree. Default false = slimmed to interactive/labeled elements."),
+        ],
         required: [])
     let client: any SimDriving
     let session: SimSession
@@ -80,7 +84,9 @@ public struct SimUITool: AgentTool {
         }
         do {
             let tree = try await client.snapshot(bundleId: bundleId)
-            return .success(toolCallId: "", toolName: name, result: tree.renderCompact())
+            let full = (parameters["full"] as? Bool) ?? false
+            return .success(toolCallId: "", toolName: name,
+                            result: full ? tree.renderCompact() : tree.renderSlim())
         } catch let e as SimDriverError {
             return .error(toolCallId: "", toolName: name,
                 message: e.localizedDescription + (e.tree.map { "\n\nCurrent UI:\n" + $0.renderCompact() } ?? ""))
