@@ -102,7 +102,9 @@ public struct SimTapTool: AgentTool {
     public let name = "sim_tap"
     public let description = """
     Tap an element in the simulator. Target by `ref` + `generation` from the latest \
-    sim_ui snapshot (preferred), or by `label`/`identifier`. Set long_press for a long press.
+    sim_ui/sim_find snapshot (preferred), or by `label`/`identifier`. Returns the resulting \
+    slim UI by default (return_ui:false to batch); set wait_for to wait for an expected \
+    element after tapping. Set long_press for a long press.
     """
     public let parameters = ToolParameters(
         properties: [
@@ -112,6 +114,10 @@ public struct SimTapTool: AgentTool {
             "identifier": ToolParameterProperty(type: "string", description: "Accessibility identifier to tap."),
             "long_press": ToolParameterProperty(type: "boolean", description: "Long-press instead of tap."),
             "bundle_id": ToolParameterProperty(type: "string", description: "Defaults to the launched app."),
+            "wait_for": ToolParameterProperty(type: "string",
+                description: "After tapping, wait for this label/identifier to appear, then return its UI (for transitions)."),
+            "return_ui": ToolParameterProperty(type: "boolean",
+                description: "Return the resulting slim UI tree (default true). Set false when batching taps."),
         ],
         required: [])
     let client: any SimDriving
@@ -124,9 +130,26 @@ public struct SimTapTool: AgentTool {
         case .missing(let e): return e
         case .resolved(let b): bundleId = b
         }
+        let returnUI = (parameters["return_ui"] as? Bool) ?? true
+        let waitFor = (parameters["wait_for"] as? String).flatMap { $0.isEmpty ? nil : $0 }
         do {
             try await client.tap(bundleId: bundleId, target: .from(parameters),
                                  longPress: (parameters["long_press"] as? Bool) ?? false)
+            if let waitFor {
+                do {
+                    let tree = try await client.waitFor(bundleId: bundleId,
+                        target: SimWire.Target(label: waitFor, identifier: waitFor),
+                        timeoutSeconds: 10, forDisappearance: false)
+                    return .success(toolCallId: "", toolName: name, result: "Tapped.\n\n" + tree.renderSlim())
+                } catch is SimDriverError {
+                    let body = (try? await client.snapshot(bundleId: bundleId)).map { "\n\n" + $0.renderSlim() } ?? ""
+                    return .success(toolCallId: "", toolName: name,
+                        result: "Tapped. (wait_for \"\(waitFor)\" not found within 10s)" + body)
+                }
+            }
+            if returnUI, let tree = try? await client.snapshot(bundleId: bundleId) {
+                return .success(toolCallId: "", toolName: name, result: "Tapped.\n\n" + tree.renderSlim())
+            }
             return .success(toolCallId: "", toolName: name,
                 result: "Tapped. Call sim_ui to see the resulting screen (or sim_wait for an expected element).")
         } catch let e as SimDriverError {
@@ -154,6 +177,8 @@ public struct SimTypeTool: AgentTool {
             "label": ToolParameterProperty(type: "string", description: "Accessibility label of element to focus."),
             "identifier": ToolParameterProperty(type: "string", description: "Accessibility identifier of element to focus."),
             "bundle_id": ToolParameterProperty(type: "string", description: "Defaults to the launched app."),
+            "return_ui": ToolParameterProperty(type: "boolean",
+                description: "Return the resulting slim UI tree (default true)."),
         ],
         required: ["text"])
     let client: any SimDriving
@@ -173,6 +198,10 @@ public struct SimTypeTool: AgentTool {
             ? .from(parameters) : nil
         do {
             try await client.type(bundleId: bundleId, text: text, target: target)
+            if (parameters["return_ui"] as? Bool) ?? true,
+               let tree = try? await client.snapshot(bundleId: bundleId) {
+                return .success(toolCallId: "", toolName: name, result: "Typed \"\(text)\".\n\n" + tree.renderSlim())
+            }
             return .success(toolCallId: "", toolName: name, result: "Typed \"\(text)\".")
         } catch let e as SimDriverError {
             return .error(toolCallId: "", toolName: name,
@@ -200,6 +229,8 @@ public struct SimSwipeTool: AgentTool {
             "label": ToolParameterProperty(type: "string", description: "Accessibility label of element to swipe on."),
             "identifier": ToolParameterProperty(type: "string", description: "Accessibility identifier of element to swipe on."),
             "bundle_id": ToolParameterProperty(type: "string", description: "Defaults to the launched app."),
+            "return_ui": ToolParameterProperty(type: "boolean",
+                description: "Return the resulting slim UI tree (default true)."),
         ],
         required: ["direction"])
     let client: any SimDriving
@@ -219,6 +250,10 @@ public struct SimSwipeTool: AgentTool {
             ? .from(parameters) : nil
         do {
             try await client.swipe(bundleId: bundleId, direction: direction, target: target)
+            if (parameters["return_ui"] as? Bool) ?? true,
+               let tree = try? await client.snapshot(bundleId: bundleId) {
+                return .success(toolCallId: "", toolName: name, result: "Swiped \(direction).\n\n" + tree.renderSlim())
+            }
             return .success(toolCallId: "", toolName: name, result: "Swiped \(direction).")
         } catch let e as SimDriverError {
             return .error(toolCallId: "", toolName: name,

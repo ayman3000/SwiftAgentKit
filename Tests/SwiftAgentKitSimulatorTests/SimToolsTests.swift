@@ -124,14 +124,14 @@ final class SimToolsTests: XCTestCase {
     func testSimTapByRefPassesGeneration() async throws {
         let mock = MockDriver()
         let tool = SimTapTool(client: mock, session: makeSession())
-        _ = try await tool.execute(parameters: ["ref": "e5", "generation": 3])
+        _ = try await tool.execute(parameters: ["ref": "e5", "generation": 3, "return_ui": false])
         XCTAssertEqual(mock.lastCall, "tap:e5")
     }
 
     func testSimTapByLabel() async throws {
         let mock = MockDriver()
         let tool = SimTapTool(client: mock, session: makeSession())
-        _ = try await tool.execute(parameters: ["label": "Submit"])
+        _ = try await tool.execute(parameters: ["label": "Submit", "return_ui": false])
         XCTAssertEqual(mock.lastCall, "tap:Submit")
     }
 
@@ -150,7 +150,7 @@ final class SimToolsTests: XCTestCase {
     func testSimTypeRecordsText() async throws {
         let mock = MockDriver()
         let tool = SimTypeTool(client: mock, session: makeSession())
-        _ = try await tool.execute(parameters: ["text": "hello"])
+        _ = try await tool.execute(parameters: ["text": "hello", "return_ui": false])
         XCTAssertEqual(mock.lastCall, "type:hello")
     }
 
@@ -167,7 +167,7 @@ final class SimToolsTests: XCTestCase {
     func testSimSwipeDirection() async throws {
         let mock = MockDriver()
         let tool = SimSwipeTool(client: mock, session: makeSession())
-        _ = try await tool.execute(parameters: ["direction": "up"])
+        _ = try await tool.execute(parameters: ["direction": "up", "return_ui": false])
         XCTAssertEqual(mock.lastCall, "swipe:up")
     }
 
@@ -549,6 +549,49 @@ final class SimToolsTests: XCTestCase {
         let result = try await tool.execute(parameters: [:])
         XCTAssertTrue(result.isError)
         XCTAssertTrue(result.result.contains("bundle_id") || result.result.contains("sim_launch"))
+    }
+
+    // MARK: - Fusion tests (act+observe)
+
+    func testTapReturnsResultingUIByDefault() async throws {
+        let mock = MockDriver()   // default tree = generation 1
+        let tool = SimTapTool(client: mock, session: makeSession())
+        let r = try await tool.execute(parameters: ["ref": "e5", "generation": 3])
+        XCTAssertTrue(r.result.contains("Tapped"))
+        XCTAssertTrue(r.result.contains("generation 1"), "fused slim tree returned")
+        XCTAssertEqual(mock.lastCall, "snapshot:com.x", "snapshot taken after tap")
+    }
+
+    func testTapReturnUIFalseIsConcise() async throws {
+        let mock = MockDriver()
+        let tool = SimTapTool(client: mock, session: makeSession())
+        let r = try await tool.execute(parameters: ["ref": "e5", "generation": 3, "return_ui": false])
+        XCTAssertFalse(r.result.contains("generation"))
+        XCTAssertEqual(mock.lastCall, "tap:e5")
+    }
+
+    func testTapWaitForReturnsTree() async throws {
+        let mock = MockDriver()
+        let tool = SimTapTool(client: mock, session: makeSession())
+        let r = try await tool.execute(parameters: ["label": "Go", "wait_for": "About"])
+        XCTAssertTrue(r.result.contains("generation 1"))
+        XCTAssertEqual(mock.lastCall, "waitFor:About", "tap then wait for expected element")
+    }
+
+    func testTypeReturnsResultingUIByDefault() async throws {
+        let mock = MockDriver()
+        let tool = SimTypeTool(client: mock, session: makeSession())
+        let r = try await tool.execute(parameters: ["text": "hi"])
+        XCTAssertTrue(r.result.contains("Typed"))
+        XCTAssertTrue(r.result.contains("generation 1"))
+    }
+
+    func testSwipeReturnsResultingUIByDefault() async throws {
+        let mock = MockDriver()
+        let tool = SimSwipeTool(client: mock, session: makeSession())
+        let r = try await tool.execute(parameters: ["direction": "up"])
+        XCTAssertTrue(r.result.contains("Swiped"))
+        XCTAssertTrue(r.result.contains("generation 1"))
     }
 }
 #endif
