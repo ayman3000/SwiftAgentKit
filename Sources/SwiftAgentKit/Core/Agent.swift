@@ -563,7 +563,7 @@ public final class Agent: @unchecked Sendable {
     /// `runStreaming(_:)` (streaming). When `onText` is non-nil, each turn is
     /// streamed and assistant text deltas are delivered to `onText` as they
     /// arrive — including the final answer, token-by-token.
-    private func runLoop(query: String, images: [LLMImage], onText: (@Sendable (String) -> Void)?) async throws -> String {
+    private func runLoop(query: String, images: [LLMImage], onText: (@Sendable (String) -> Void)?, onTurnCompleted: (@Sendable (String, Bool) -> Void)? = nil) async throws -> String {
         guard beginRunIfIdle() else {
             throw AgentError.runInProgress
         }
@@ -712,6 +712,7 @@ public final class Agent: @unchecked Sendable {
                                 startTime: startTime
                             )
                             _ = conversation.trim()
+                            onTurnCompleted?(intercepted.text, true)
                             continue
                         }
                         onText?(intercepted.text)
@@ -726,6 +727,7 @@ public final class Agent: @unchecked Sendable {
                             startTime: startTime
                         )
                         emit(.finished(summary: summary))
+                        onTurnCompleted?(intercepted.text, false)
                         return intercepted.text
                     }
                 }
@@ -895,6 +897,7 @@ public final class Agent: @unchecked Sendable {
                         }
                     }
                     state.clearTemp()
+                    onTurnCompleted?(agentResponse.text, false)
                     return agentResponse.text
                 }
 
@@ -925,6 +928,9 @@ public final class Agent: @unchecked Sendable {
 
                 // Add tool results to conversation
                 conversation.append(.tool(results: results))
+
+                // Tag this as a completed tool-call turn before looping.
+                onTurnCompleted?(agentResponse.text, true)
 
                 // No-progress guard: same tool call repeating without progress.
                 try checkForLoop(
@@ -986,6 +992,7 @@ public final class Agent: @unchecked Sendable {
                             return modified
                         }
                     }
+                    onTurnCompleted?(intercepted.text, false)
                     return intercepted.text
                 }
             }
@@ -1044,6 +1051,7 @@ public final class Agent: @unchecked Sendable {
                 }
             }
 
+            onTurnCompleted?(agentResponse.text, false)
             return agentResponse.text
         }
     }
@@ -1380,6 +1388,25 @@ public final class Agent: @unchecked Sendable {
                 }
             }
 
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// Streaming variant tagging content finality. `.delta` = live text of the
+    /// in-progress turn; `.turnCompleted` = one per finished turn (step vs final
+    /// answer). Additive — `runStreaming` (String) is unchanged.
+    public func runStreamingTagged(_ query: String, images: [LLMImage] = []) -> AsyncThrowingStream<AgentStreamEvent, Error> {
+        return AsyncThrowingStream { [weak self] continuation in
+            let task = Task { [weak self] in
+                guard let self else { continuation.finish(); return }
+                do {
+                    _ = try await self.runLoop(
+                        query: query, images: images,
+                        onText: { continuation.yield(.delta($0)) },
+                        onTurnCompleted: { continuation.yield(.turnCompleted(text: $0, wasToolCallTurn: $1)) })
+                    continuation.finish()
+                } catch { continuation.finish(throwing: error) }
+            }
             continuation.onTermination = { _ in task.cancel() }
         }
     }
