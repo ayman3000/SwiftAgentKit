@@ -50,6 +50,37 @@ public enum Simctl {
         }
         let (bsStatus, bsOut) = try await run(["simctl", "bootstatus", udid], timeout: 180)  // wait until usable
         guard bsStatus == 0 else { throw SimctlError.commandFailed("simctl bootstatus failed: \(bsOut)") }
+        // `simctl boot` only boots the device headlessly — no visible window. Open the
+        // Simulator GUI so it attaches to the just-booted device and the user can watch.
+        // Best-effort: a failure here must not fail the boot (device is already usable).
+        await openSimulatorUI()
+    }
+
+    /// Launch (or foreground) the Simulator.app GUI. It attaches to whatever devices
+    /// are already booted, so calling this after `simctl boot` reveals the running device.
+    public static func openSimulatorUI() async {
+        _ = try? await runOpen(["-a", "Simulator"], timeout: 20)
+    }
+
+    /// Short-lived `/usr/bin/open` invocation. Separate from `run` (which uses `xcrun`).
+    @discardableResult
+    private static func runOpen(_ args: [String], timeout: Double) async throws -> (status: Int32, output: String) {
+        try await withCheckedThrowingContinuation { cont in
+            DispatchQueue.global().async {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+                p.arguments = args
+                let pipe = Pipe()
+                p.standardOutput = pipe; p.standardError = pipe
+                do { try p.run() } catch { cont.resume(throwing: error); return }
+                let timer = DispatchWorkItem { if p.isRunning { p.terminate() } }
+                DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: timer)
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                p.waitUntilExit()
+                timer.cancel()
+                cont.resume(returning: (p.terminationStatus, String(data: data, encoding: .utf8) ?? ""))
+            }
+        }
     }
 
     public static func install(udid: String, appPath: String) async throws {
