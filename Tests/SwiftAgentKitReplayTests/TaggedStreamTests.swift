@@ -66,4 +66,28 @@ struct TaggedStreamTests {
         #expect(turnCompletedEvents[0].1 == false)
         #expect(turnCompletedEvents[0].0 == "modified: original answer")
     }
+
+    @Test func blockedVerificationStillFiresFinal() async throws {
+        // A blocked completion verdict must still cause exactly one
+        // .turnCompleted(wasToolCallTurn:false) to be yielded.
+        let ans = ScriptedTurn(text: "attempting answer", finishReason: .stop, toolCalls: [])
+        let scenario = Scenario(name: "blockedVerification", turns: [ans])
+        let provider = ReplayProvider(scenario: scenario)
+        let agent = Agent(config: AgentConfig(provider: provider, maxTurns: 10, tools: [NoopTool()]))
+        agent.callbacks = AgentCallbacks()
+        agent.callbacks?.verifyCompletion = { _, _, _ in
+            .blocked(reason: "not allowed")
+        }
+
+        var events: [AgentStreamEvent] = []
+        for try await ev in agent.runStreamingTagged("go") { events.append(ev) }
+
+        let turnCompletedEvents = events.compactMap { ev -> (String, Bool)? in
+            if case .turnCompleted(let t, let w) = ev { return (t, w) }
+            return nil
+        }
+        #expect(turnCompletedEvents.count == 1)
+        #expect(turnCompletedEvents[0].1 == false)
+        #expect(turnCompletedEvents[0].0.contains("blocked: not allowed"))
+    }
 }

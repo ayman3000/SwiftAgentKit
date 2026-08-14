@@ -871,6 +871,7 @@ public final class Agent: @unchecked Sendable {
                                 ? "Blocked: \(reason)"
                                 : agentResponse.text + "\n\n[blocked: \(reason)]"
                             state.clearTemp()
+                            onTurnCompleted?(blockedText, false)
                             return blockedText
                         }
                     }
