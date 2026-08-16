@@ -153,7 +153,8 @@ public final class SubAgentSpawner: @unchecked Sendable {
                 ? .unsatisfied(reason: "You returned an empty answer. Produce your final, self-contained answer now — it is returned to the caller as data.")
                 : .satisfied
         }
-        await child.setCallbacks(childCallbacks)
+        // A fresh child is always idle — this cannot throw.
+        try? await child.setCallbacks(childCallbacks)
         return child
     }
 

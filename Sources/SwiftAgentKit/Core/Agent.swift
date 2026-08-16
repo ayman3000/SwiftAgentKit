@@ -207,7 +207,7 @@ public actor Agent {
 
     // MARK: - Properties
 
-    public var config: AgentConfig
+    public let config: AgentConfig
 
     /// Tool registry (thread-safe).
     public let tools: ToolRegistry
@@ -223,17 +223,11 @@ public actor Agent {
 
     /// Optional persistent memory store. When set, the agent auto-registers
     /// `RememberTool` and injects the memory context block into the system prompt.
-    public var memoryStore: (any AgentMemoryStore)? {
-        didSet {
-            if let store = memoryStore {
-                register(RememberTool(store: store))
-            }
-        }
-    }
+    public private(set) var memoryStore: (any AgentMemoryStore)?
 
     /// Optional persistent goal store. When set, `run(_:trackGoal:)` persists goal
     /// progress and results.
-    public var goalStore: (any AgentGoalStore)?
+    public private(set) var goalStore: (any AgentGoalStore)?
 
     /// Skill registry for progressive disclosure (optional).
     public let skillRegistry: SkillRegistry
@@ -250,36 +244,19 @@ public actor Agent {
     /// authored skills into `skillRegistry` and auto-registers `LearnSkillTool`,
     /// so it can turn recurring tasks (or corrected mistakes) into reusable,
     /// keyword-triggered skills that persist across sessions.
-    public var skillStore: (any AgentSkillStore)? {
-        didSet {
-            guard let store = skillStore else { return }
-            register(LearnSkillTool(store: store, registry: skillRegistry))
-            trackRegistrationTask(Task { [skillRegistry] in
-                if let skills = try? await store.loadAll() {
-                    await skillRegistry.registerAll(skills)
-                }
-            })
-        }
-    }
+    public private(set) var skillStore: (any AgentSkillStore)?
 
     /// Lifecycle callbacks (intercept-able).
-    public var callbacks: AgentCallbacks?
-
-    /// Module-internal setter so cross-actor callers (e.g. `SubAgentSpawner`)
-    /// can assign callbacks — actor-isolated properties cannot be written from
-    /// outside the actor.
-    func setCallbacks(_ callbacks: AgentCallbacks?) {
-        self.callbacks = callbacks
-    }
+    public private(set) var callbacks: AgentCallbacks?
 
     /// Planner (optional).
-    public var planner: (any AgentPlanner)?
+    public private(set) var planner: (any AgentPlanner)?
 
     /// Repair-retry policy.
-    public var repairRetryPolicy: RepairRetryPolicy
+    public private(set) var repairRetryPolicy: RepairRetryPolicy
 
     /// Plan continuation policy.
-    public var planContinuationPolicy: PlanContinuationPolicy
+    public private(set) var planContinuationPolicy: PlanContinuationPolicy
 
     /// Observers.
     ///
@@ -301,7 +278,7 @@ public actor Agent {
     private nonisolated(unsafe) var pendingRegistrationTasks: [Task<Void, Never>] = []
 
     /// Logger.
-    public var logger: AgentLogger
+    public private(set) var logger: AgentLogger
 
     /// Estimated token count of the most recent prompt actually sent to the model
     /// (after context management / trimming) — i.e. what the model really saw, not
@@ -395,6 +372,39 @@ public actor Agent {
             pendingRegistrationTasks.append(Task { [tools] in await tools.register(delegateTool) })
         }
     }
+
+    // MARK: - Reconfiguration (idle-only)
+
+    private func requireIdle() throws {
+        guard !isRunActive else {
+            throw AgentError.runInProgress
+        }
+    }
+
+    public func setMemoryStore(_ store: (any AgentMemoryStore)?) throws {
+        try requireIdle()
+        memoryStore = store
+        if let store = store {
+            register(RememberTool(store: store))
+        }
+    }
+    public func setGoalStore(_ store: (any AgentGoalStore)?) throws { try requireIdle(); goalStore = store }
+    public func setSkillStore(_ store: (any AgentSkillStore)?) throws {
+        try requireIdle()
+        skillStore = store
+        guard let store = store else { return }
+        register(LearnSkillTool(store: store, registry: skillRegistry))
+        trackRegistrationTask(Task { [skillRegistry] in
+            if let skills = try? await store.loadAll() {
+                await skillRegistry.registerAll(skills)
+            }
+        })
+    }
+    public func setCallbacks(_ newCallbacks: AgentCallbacks?) throws { try requireIdle(); callbacks = newCallbacks }
+    public func setPlanner(_ newPlanner: (any AgentPlanner)?) throws { try requireIdle(); planner = newPlanner }
+    public func setRepairRetryPolicy(_ policy: RepairRetryPolicy) throws { try requireIdle(); repairRetryPolicy = policy }
+    public func setPlanContinuationPolicy(_ policy: PlanContinuationPolicy) throws { try requireIdle(); planContinuationPolicy = policy }
+    public func setLogger(_ newLogger: AgentLogger) throws { try requireIdle(); logger = newLogger }
 
     // MARK: - Tools
 
