@@ -282,7 +282,13 @@ public actor Agent {
     public var planContinuationPolicy: PlanContinuationPolicy
 
     /// Observers.
-    private var observers: [any AgentObserver] = []
+    ///
+    /// Kept `nonisolated` behind a lock (rather than actor-isolated) so events
+    /// are delivered synchronously, in call order, exactly as the pre-actor
+    /// class did — an unstructured hop per event would lose FIFO ordering and
+    /// could deliver events after `run()` returns.
+    private nonisolated(unsafe) var observers: [any AgentObserver] = []
+    private nonisolated let observersLock = NSLock()
 
     /// Fire-and-forget registration tasks created by the synchronous public API.
     /// `run(_:)` awaits these before reading registries so tool/skill registration
@@ -384,7 +390,7 @@ public actor Agent {
             let spawner = SubAgentSpawner(parent: self, concurrencyLimit: config.maxSubAgentConcurrency)
             self.subAgentSpawner = spawner
             let delegateTool = DelegateTaskTool(spawner: spawner, emit: { [weak self] event in
-                Task { await self?.emitEvent(event) }
+                self?.emitEvent(event)
             })
             pendingRegistrationTasks.append(Task { [tools] in await tools.register(delegateTool) })
         }
@@ -451,7 +457,9 @@ public actor Agent {
     // MARK: - Observers
 
     /// Add an observer for agent events.
-    public func addObserver(_ observer: any AgentObserver) {
+    public nonisolated func addObserver(_ observer: any AgentObserver) {
+        observersLock.lock()
+        defer { observersLock.unlock() }
         observers.append(observer)
     }
 
@@ -460,27 +468,32 @@ public actor Agent {
     /// Long-lived agents outlive the views that observe them; callers must
     /// remove their observer when torn down, otherwise observers accumulate and
     /// each event is delivered multiple times.
-    public func removeObserver(_ observer: any AgentObserver) {
+    public nonisolated func removeObserver(_ observer: any AgentObserver) {
+        observersLock.lock()
+        defer { observersLock.unlock() }
         observers.removeAll { $0 === observer }
     }
 
     /// Add a block-based observer, returning the observer token so it can later
     /// be passed to `removeObserver(_:)`.
     @discardableResult
-    public func onEvent(_ block: @Sendable @escaping (AgentEvent) -> Void) -> any AgentObserver {
+    public nonisolated func onEvent(_ block: @Sendable @escaping (AgentEvent) -> Void) -> any AgentObserver {
         let observer = BlockObserver(block)
         addObserver(observer)
         return observer
     }
 
-    private func emit(_ event: AgentEvent) {
-        for observer in observers {
+    private nonisolated func emit(_ event: AgentEvent) {
+        observersLock.lock()
+        let snapshot = observers
+        observersLock.unlock()
+        for observer in snapshot {
             observer.onEvent(event)
         }
     }
 
     /// Internal event entry point for sub-agent machinery (forwards to observers).
-    func emitEvent(_ event: AgentEvent) {
+    nonisolated func emitEvent(_ event: AgentEvent) {
         emit(event)
     }
 
@@ -1313,7 +1326,7 @@ public actor Agent {
         actions: ToolActions
     ) async -> [AgentToolResult] {
         let dispatcherObserver = BlockObserver { [weak self] event in
-            Task { await self?.emit(event) }
+            self?.emit(event)
         }
         return await dispatcher.dispatch(
             calls: toolCalls,

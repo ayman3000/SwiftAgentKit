@@ -107,7 +107,7 @@ func runExample03() async {
         ))
         for tool in tools { await agent.register(tool) }
 
-        await agent.onEvent { event in
+        agent.onEvent { event in
             if case .toolCallsReceived(let calls) = event {
                 print("  → \(calls.map { $0.name })")
             }

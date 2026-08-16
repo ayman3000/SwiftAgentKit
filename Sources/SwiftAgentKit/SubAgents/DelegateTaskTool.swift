@@ -70,10 +70,10 @@ public final class DelegateTaskTool: AgentTool, @unchecked Sendable {
         spawner.track(id, child)
         defer { spawner.untrack(id) }
 
-        let forwarder = await child.onEvent { [emit] event in
+        let forwarder = child.onEvent { [emit] event in
             emit(.subAgentEvent(id: id, event: event))
         }
-        defer { Task { await child.removeObserver(forwarder) } }
+        defer { child.removeObserver(forwarder) }
 
         emit(.subAgentStarted(id: id, label: label))
         do {
