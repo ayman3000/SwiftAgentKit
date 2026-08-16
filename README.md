@@ -156,7 +156,7 @@ SwiftAgentKit does **not** implement provider networking itself. It depends on `
 
 ### Agent loop
 
-On each `run()` call the agent appends the user message, optionally generates a plan, then enters a ReAct loop: it sends the conversation + tool definitions to the model, parses any tool calls, executes them in Swift (parallel, deduplicated, ID-stamped), feeds results back, and repeats until the model returns a final answer or `maxTurns` is reached. Callbacks and events fire at every stage; repair-retry and plan-continuation nudge the model back on track when needed.
+On each `run()` call the agent appends the user message, optionally generates a plan, then enters a ReAct loop: it sends the conversation + tool definitions to the model, parses any tool calls, executes them in Swift (sequential by default, deduplicated, ID-stamped; set `parallelToolCalls` to run a turn's calls concurrently), feeds results back, and repeats until the model returns a final answer or `maxTurns` is reached. Callbacks and events fire at every stage; repair-retry and plan-continuation nudge the model back on track when needed.
 
 ### Package layout
 
@@ -206,8 +206,8 @@ Sources/SwiftAgentKitMCP/
 
 ```swift
 .dependencies: [
-    .package(url: "https://github.com/ayman3000/SwiftAgentKit.git", from: "0.3.0-alpha.7"),
-    .package(url: "https://github.com/ayman3000/LLMProviderKit.git", from: "0.1.0-alpha.1"),
+    .package(url: "https://github.com/ayman3000/SwiftAgentKit.git", from: "0.3.0-alpha.52"),
+    .package(url: "https://github.com/ayman3000/LLMProviderKit.git", from: "0.1.0-alpha.14"),
 ],
 targets: [
     .target(name: "YourApp", dependencies: [
@@ -294,7 +294,9 @@ agent.register(CurrentTimeTool())
 let response = try await agent.run("What time is it? Use the tool.")
 ```
 
-### Multiple tools with parallel dispatch
+### Multiple tools
+
+Tool calls in a turn run **sequentially by default**, in the order the model issued them — models routinely emit order-dependent batches (write a file then read it, several patches to one file). If your tools are safe to interleave, opt in with `AgentConfig(parallelToolCalls: true)` and a turn's calls run concurrently (deduplicated, order of results preserved).
 
 ```swift
 struct CalculatorTool: AgentTool {
@@ -382,17 +384,17 @@ Goals carry status (`pending`, `inProgress`, `completed`, `failed`, `abandoned`)
 
 ```swift
 // Simple non-tool responses — token by token
-for try await chunk in agent.stream("Tell me a short story about Swift actors.") {
+for try await chunk in agent.runStreaming("Tell me a short story about Swift actors.") {
     print(chunk, terminator: "")
 }
 
-// Tool-using agents — runs the loop, then streams the final response
+// Tool-using agents — same API: the loop runs, tools execute, text streams
 for try await chunk in agent.runStreaming("Use tools, then summarize.") {
     print(chunk, terminator: "")
 }
 ```
 
-> The tool loop is non-streaming internally because tool calls need complete model responses. `runStreaming` is a convenience API: when no tools are registered it delegates to `stream(_:)`; when tools are registered it runs the ReAct loop first, then emits the final answer. Do not rely on it for live token-by-token visibility during tool execution.
+> `runStreaming` shares the exact ReAct lifecycle used by `run(_:)` — planning, tools, repair-retry, callbacks. Tool-calling turns are re-issued non-streaming internally (tool calls need complete model responses), so don't rely on token-by-token visibility during tool execution. `stream(_:)` is a deprecated alias of `runStreaming(_:)`; earlier releases gave it a reduced path that dropped tool calls.
 
 ### Event monitoring
 
@@ -475,8 +477,8 @@ Add `SwiftAgentKitMCP` to your dependencies:
 
 ```swift
 .dependencies: [
-    .package(url: "https://github.com/ayman3000/SwiftAgentKit.git", from: "0.3.0-alpha.7"),
-    .package(url: "https://github.com/ayman3000/LLMProviderKit.git", from: "0.1.0-alpha.1"),
+    .package(url: "https://github.com/ayman3000/SwiftAgentKit.git", from: "0.3.0-alpha.52"),
+    .package(url: "https://github.com/ayman3000/LLMProviderKit.git", from: "0.1.0-alpha.14"),
 ],
 targets: [
     .target(name: "YourApp", dependencies: [
@@ -713,7 +715,7 @@ Current alpha limitations: parameters are generated as required; only primitive 
 ## Design Principles
 
 1. **Native Swift first.** Built for Swift developers who want agents in their apps — not a port or a wrapper. Protocol-oriented, async/await throughout, zero UI dependencies.
-2. **Minimal dependencies.** SwiftAgentKit is Foundation-only; LLMProviderKit is the sole dependency. Local-first capable with Ollama as a first-class provider.
+2. **Minimal dependencies.** The core agent runtime uses Foundation + LLMProviderKit only. SwiftSyntax is pulled in solely for the `@Tool` macro target, and the MCP Swift SDK only by the optional MCP target — import only the products you need. Local-first capable with Ollama as a first-class provider.
 3. **Composable.** Use what you need — tools without planning, memory without sessions, state without skills. Every feature is independent.
 4. **Provider-agnostic.** Swap Ollama for OpenAI, Gemini, or Anthropic; the agent code doesn't change. Everything (`AgentTool`, `LLMProvider`, `SessionStore`, `AgentPlanner`) is a protocol.
 
@@ -724,7 +726,7 @@ Current alpha limitations: parameters are generated as required; only primitive 
 **Known alpha limitations:**
 - Public APIs may change before beta
 - Provider behavior varies by model quality — some models ignore tools even when available
-- `stream(_:)` is token-by-token for simple non-tool paths; `runStreaming(_:)` does not stream intermediate tool-loop tokens
+- `stream(_:)` is deprecated (alias of `runStreaming(_:)`); `runStreaming(_:)` does not stream intermediate tool-loop tokens
 - One `Agent` instance is intended for one active `run(_:)` at a time
 - The `@Tool` macro is best for primitive required parameters; use manual `AgentTool` definitions for complex schemas
 
@@ -737,7 +739,7 @@ swift build
 swift test
 ```
 
-87 unit tests (75 core + 12 MCP), no network calls.
+343 tests (115 XCTest + 228 Swift Testing) across the core loop, tools, context management, replay, and MCP — no network calls.
 
 ---
 

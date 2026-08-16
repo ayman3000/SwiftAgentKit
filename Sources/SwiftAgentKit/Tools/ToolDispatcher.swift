@@ -70,12 +70,13 @@ public actor ToolDispatcher {
         query: String = "",
         callbacks: AgentCallbacks? = nil,
         parallel: Bool = true,
+        actions: ToolActions? = nil,
         observer: (any AgentObserver)?
     ) async -> [AgentToolResult] {
         if parallel && calls.count > 1 {
-            return await dispatchParallel(calls: calls, state: state, turn: turn, query: query, callbacks: callbacks, observer: observer)
+            return await dispatchParallel(calls: calls, state: state, turn: turn, query: query, callbacks: callbacks, actions: actions, observer: observer)
         } else {
-            return await dispatchSequential(calls: calls, state: state, turn: turn, query: query, callbacks: callbacks, observer: observer)
+            return await dispatchSequential(calls: calls, state: state, turn: turn, query: query, callbacks: callbacks, actions: actions, observer: observer)
         }
     }
 
@@ -87,6 +88,7 @@ public actor ToolDispatcher {
         turn: Int,
         query: String,
         callbacks: AgentCallbacks?,
+        actions: ToolActions?,
         observer: (any AgentObserver)?
     ) async -> [AgentToolResult] {
         var results: [AgentToolResult] = []
@@ -99,6 +101,7 @@ public actor ToolDispatcher {
                 turn: turn,
                 query: query,
                 callbacks: callbacks,
+                actions: actions,
                 observer: observer,
                 seenKeys: &seenKeys
             )
@@ -115,6 +118,7 @@ public actor ToolDispatcher {
         turn: Int,
         query: String,
         callbacks: AgentCallbacks?,
+        actions: ToolActions?,
         observer: (any AgentObserver)?
     ) async -> [AgentToolResult] {
         // Dedup first, then run unique calls in parallel
@@ -150,6 +154,7 @@ public actor ToolDispatcher {
                         turn: turn,
                         query: query,
                         callbacks: callbacks,
+                        actions: actions,
                         observer: observer,
                         seenKeys: &localSeen
                     )
@@ -191,7 +196,7 @@ public actor ToolDispatcher {
         var localSeen = Set<String>()
         return await executeSingleCall(
             call: call, state: state, turn: turn, query: query,
-            callbacks: callbacks, observer: observer, seenKeys: &localSeen
+            callbacks: callbacks, actions: nil, observer: observer, seenKeys: &localSeen
         )
     }
 
@@ -201,6 +206,7 @@ public actor ToolDispatcher {
         turn: Int,
         query: String,
         callbacks: AgentCallbacks?,
+        actions: ToolActions?,
         observer: (any AgentObserver)?,
         seenKeys: inout Set<String>
     ) async -> AgentToolResult {
@@ -237,7 +243,8 @@ public actor ToolDispatcher {
             parameters: params,
             state: state,
             turn: turn,
-            query: query
+            query: query,
+            actions: actions ?? ToolActions()
         )
 
         // beforeTool callback — can intercept

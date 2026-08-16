@@ -97,6 +97,13 @@ public struct AgentConfig: Sendable {
     /// `nil` disables it (pre-change behavior). Default on.
     public var loopDetection: LoopDetectionConfig?
 
+    /// When `true`, tool calls in a single turn run concurrently. Default `false`
+    /// (sequential, in the order the model issued them): models routinely emit
+    /// order-dependent batches (write then read, two patches to one file, UI
+    /// steps) and concurrent execution silently breaks those. Opt in only when
+    /// your registered tools are safe to interleave.
+    public var parallelToolCalls: Bool
+
     public init(
         provider: any LLMProvider,
         model: String? = nil,
@@ -116,7 +123,8 @@ public struct AgentConfig: Sendable {
         enableSubAgents: Bool = false,
         maxSubAgentConcurrency: Int = 1,
         maxVerificationRetries: Int = 3,
-        loopDetection: LoopDetectionConfig? = .default
+        loopDetection: LoopDetectionConfig? = .default,
+        parallelToolCalls: Bool = false
     ) {
         self.provider = provider
         self.model = model
@@ -137,6 +145,7 @@ public struct AgentConfig: Sendable {
         self.maxSubAgentConcurrency = maxSubAgentConcurrency
         self.maxVerificationRetries = maxVerificationRetries
         self.loopDetection = loopDetection
+        self.parallelToolCalls = parallelToolCalls
     }
 }
 
@@ -559,6 +568,34 @@ public final class Agent: @unchecked Sendable {
         try await runLoop(query: query, images: images, onText: nil)
     }
 
+    /// Run the agent and persist the query as an `AgentGoal` in `goalStore`.
+    ///
+    /// The goal is saved as `.inProgress` before the run, then updated to
+    /// `.completed` (with the final answer as its summary) or `.failed` (with
+    /// the error description). Requires `goalStore` to be set — with no store,
+    /// this behaves exactly like `run(_:)`.
+    ///
+    public func run(_ query: String, trackGoal: Bool) async throws -> String {
+        guard trackGoal, goalStore != nil else { return try await run(query) }
+
+        var goal = AgentGoal(query: query, status: .inProgress)
+        await persistGoal(goal)
+        do {
+            let answer = try await run(query)
+            goal.status = .completed
+            goal.summary = answer
+            goal.updatedAt = Date()
+            await persistGoal(goal)
+            return answer
+        } catch {
+            goal.status = .failed
+            goal.summary = error.localizedDescription
+            goal.updatedAt = Date()
+            await persistGoal(goal)
+            throw error
+        }
+    }
+
     /// Shared ReAct implementation backing both `run(_:)` (non-streaming) and
     /// `runStreaming(_:)` (streaming). When `onText` is non-nil, each turn is
     /// streamed and assistant text deltas are delivered to `onText` as they
@@ -697,11 +734,16 @@ public final class Agent: @unchecked Sendable {
                             emit(.toolCallsReceived(toolCalls))
                             conversation.append(.assistant(content: intercepted.text, toolCalls: toolCalls))
                             onTurnCompleted?(intercepted.text, true)
-                            let results = await dispatchToolCalls(toolCalls, turn: totalTurns, query: query)
+                            let turnActions = ToolActions()
+                            let results = await dispatchToolCalls(toolCalls, turn: totalTurns, query: query, actions: turnActions)
                             toolsExecuted += results.count
                             toolErrors += results.filter(\.isError).count
-                            lastTurnErrors = results.filter(\.isError)
+                            lastTurnErrors = repairableErrors(from: results, actions: turnActions)
                             conversation.append(.tool(results: results))
+                            if turnActions.shouldStop {
+                                state.clearTemp()
+                                return intercepted.text
+                            }
                             try checkForLoop(
                                 toolCalls,
                                 detector: loopDetector,
@@ -913,11 +955,13 @@ public final class Agent: @unchecked Sendable {
                 // the assistant text before any tool-result events arrive.
                 onTurnCompleted?(agentResponse.text, true)
 
-                // Dispatch tool calls (with state + callbacks, parallel by default)
-                let results = await dispatchToolCalls(toolCalls, turn: totalTurns, query: query)
+                // Dispatch tool calls (with state + callbacks; sequential unless
+                // `config.parallelToolCalls` opts in)
+                let turnActions = ToolActions()
+                let results = await dispatchToolCalls(toolCalls, turn: totalTurns, query: query, actions: turnActions)
                 toolsExecuted += results.count
                 toolErrors += results.filter(\.isError).count
-                lastTurnErrors = results.filter(\.isError)
+                lastTurnErrors = repairableErrors(from: results, actions: turnActions)
 
                 // Update plan progress
                 if let planner, var p = plan {
@@ -936,6 +980,13 @@ public final class Agent: @unchecked Sendable {
 
                 // Add tool results to conversation
                 conversation.append(.tool(results: results))
+
+                // A tool signalled `shouldStop` — end the loop after this turn.
+                // The tool-calling turn's assistant text is the final answer.
+                if turnActions.shouldStop {
+                    state.clearTemp()
+                    return agentResponse.text
+                }
 
                 // No-progress guard: same tool call repeating without progress.
                 try checkForLoop(
@@ -1277,7 +1328,8 @@ public final class Agent: @unchecked Sendable {
     private func dispatchToolCalls(
         _ toolCalls: [AgentToolCall],
         turn: Int,
-        query: String
+        query: String,
+        actions: ToolActions
     ) async -> [AgentToolResult] {
         let dispatcherObserver = BlockObserver { [weak self] event in
             self?.emit(event)
@@ -1288,7 +1340,8 @@ public final class Agent: @unchecked Sendable {
             turn: turn,
             query: query,
             callbacks: callbacks,
-            parallel: true,
+            parallel: config.parallelToolCalls,
+            actions: actions,
             observer: dispatcherObserver
         )
     }
@@ -1296,66 +1349,31 @@ public final class Agent: @unchecked Sendable {
     /// Track errors from the last turn (for repair-retry).
     private var lastTurnErrors: [AgentToolResult] = []
 
+    /// Which of a turn's results should feed the repair-retry policy.
+    ///
+    /// - A tool that set `ToolActions.shouldRetry` makes the whole turn
+    ///   retryable, even when no result is an error.
+    /// - Otherwise only results the `repairRetryPolicy.isRepairable` closure
+    ///   accepts count — so a custom policy can rule errors out entirely.
+    private func repairableErrors(
+        from results: [AgentToolResult],
+        actions: ToolActions
+    ) -> [AgentToolResult] {
+        if actions.shouldRetry { return results }
+        return results.filter { repairRetryPolicy.isRepairable($0) }
+    }
+
     // MARK: - Streaming
 
-    /// Run the agent in streaming mode (for simple queries without tools).
+    /// Run the agent in streaming mode.
     ///
-    /// Returns an `AsyncThrowingStream` of text chunks.
-    /// Note: the agent loop itself is non-streaming by design (needs complete
-    /// responses for tool calls). Streaming is for the simple-query path.
-    ///
+    /// Alias for `runStreaming(_:)`. Earlier releases gave `stream(_:)` its own
+    /// reduced execution path that skipped the run guard, planning, repair, and
+    /// — critically — tool execution (streamed tool calls were dropped). It now
+    /// runs the exact same lifecycle as `run(_:)`/`runStreaming(_:)`.
+    @available(*, deprecated, renamed: "runStreaming(_:)")
     public func stream(_ query: String) -> AsyncThrowingStream<String, Error> {
-        let provider = config.provider
-        let model = config.model ?? config.provider.configuration.defaultModel ?? ""
-        let temperature = config.temperature
-        let maxTokens = config.maxTokens
-        let topP = config.topP
-
-        conversation.append(.user(query))
-        let messagesForLLM = conversation.messagesForLLMCall()
-        let llmMessages = messagesForLLM.flatMap { msg -> [LLMMessage] in
-            if msg.role == .system {
-                return [.system(state.template(msg.content))]
-            }
-            return msg.toLLMMessages()
-        }
-
-        let request = LLMRequest(
-            model: model,
-            messages: llmMessages,
-            temperature: temperature,
-            maxTokens: maxTokens,
-            topP: topP
-        )
-
-        return AsyncThrowingStream { [weak self] continuation in
-            Task { [weak self] in
-                do {
-                    let stream = provider.stream(request)
-                    var fullText = ""
-                    for try await chunk in stream {
-                        switch chunk {
-                        case .text(let text):
-                            fullText += text
-                            continuation.yield(text)
-                            self?.emit(.streamChunk(text))
-                        case .toolCall:
-                            // Tool calls during streaming — handled after full response
-                            break
-                        case .finish:
-                            self?.emit(.streamFinished)
-                        case .error(let error):
-                            continuation.finish(throwing: error)
-                            return
-                        }
-                    }
-                    self?.conversation.append(.assistant(fullText))
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-        }
+        runStreaming(query)
     }
 
     /// Run the agent loop, streaming assistant text token-by-token.

@@ -76,23 +76,41 @@ public struct ToolContext: @unchecked Sendable {
 
 /// Actions a tool can request from the agent loop.
 ///
-public struct ToolActions: Sendable {
+/// Reference semantics on purpose: the agent shares one `ToolActions` instance
+/// with every tool in a turn (via `ToolContext.actions`), so flags a tool sets
+/// during `execute(context:)` are visible to the loop after dispatch. Flags are
+/// sticky for the turn — once set by any tool, they stay set.
+public final class ToolActions: @unchecked Sendable {
+
+    private let lock = NSLock()
+    private var _skipSummarization: Bool
+    private var _shouldStop: Bool
+    private var _shouldRetry: Bool
 
     /// If true, the agent should skip LLM summarization of this tool's output
     /// and feed it directly into the next turn's context.
-    public var skipSummarization: Bool
+    public var skipSummarization: Bool {
+        get { lock.withLock { _skipSummarization } }
+        set { lock.withLock { _skipSummarization = _skipSummarization || newValue } }
+    }
 
     /// If true, the tool result indicates the agent should stop the loop
     /// after this turn (e.g., a tool that determined the task is complete).
-    public var shouldStop: Bool
+    public var shouldStop: Bool {
+        get { lock.withLock { _shouldStop } }
+        set { lock.withLock { _shouldStop = _shouldStop || newValue } }
+    }
 
-    /// If true, the tool result indicates an error that should trigger
-    /// the repair-retry policy.
-    public var shouldRetry: Bool
+    /// If true, the tool result indicates the agent should trigger
+    /// the repair-retry policy — even for results that are not errors.
+    public var shouldRetry: Bool {
+        get { lock.withLock { _shouldRetry } }
+        set { lock.withLock { _shouldRetry = _shouldRetry || newValue } }
+    }
 
     public init(skipSummarization: Bool = false, shouldStop: Bool = false, shouldRetry: Bool = false) {
-        self.skipSummarization = skipSummarization
-        self.shouldStop = shouldStop
-        self.shouldRetry = shouldRetry
+        self._skipSummarization = skipSummarization
+        self._shouldStop = shouldStop
+        self._shouldRetry = shouldRetry
     }
 }
