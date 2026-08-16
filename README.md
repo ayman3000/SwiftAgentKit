@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/Swift-6.2%2B-orange" alt="Swift 6.2+">
   <img src="https://img.shields.io/badge/platforms-macOS%2013%2B%20%7C%20iOS%2016%2B%20%7C%20tvOS%2016%2B%20%7C%20watchOS%209%2B%20%7C%20visionOS%201%2B-blue" alt="Platforms">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="MIT">
-  <img src="https://img.shields.io/badge/release-0.3.0--alpha-yellow" alt="Alpha">
+  <img src="https://img.shields.io/badge/release-0.4.0--alpha-yellow" alt="Alpha">
 </p>
 
 <h2 align="center">Watch SwiftAgentKit in action</h2>
@@ -289,7 +289,7 @@ let agent = Agent(config: AgentConfig(
     systemPrompt: "You are a helpful assistant. Use tools when needed.",
     maxTurns: 6
 ))
-agent.register(CurrentTimeTool())
+await agent.register(CurrentTimeTool())
 
 let response = try await agent.run("What time is it? Use the tool.")
 ```
@@ -317,7 +317,7 @@ struct CalculatorTool: AgentTool {
     }
 }
 
-agent.registerAll([CurrentTimeTool(), EchoTool(), CalculatorTool()])
+await agent.registerAll([CurrentTimeTool(), EchoTool(), CalculatorTool()])
 let result = try await agent.run("Get the time, echo 'hello', then calculate 38 * 17.")
 ```
 
@@ -346,7 +346,7 @@ let agent = Agent(config: AgentConfig(
 // Attaching a memory store:
 // 1. Injects the memory context block into the system prompt
 // 2. Auto-registers the built-in `remember` tool
-agent.memoryStore = store
+try await agent.setMemoryStore(store)
 ```
 
 The file-backed store uses a markdown layout similar to production agent patterns:
@@ -367,7 +367,7 @@ Track user requests as persistent goals. Enable tracking on any `run(_:)` call a
 
 ```swift
 let goalStore = FileAgentGoalStore(directory: someDirectoryURL)
-agent.goalStore = goalStore
+try await agent.setGoalStore(goalStore)
 
 let answer = try await agent.run("Analyze this project and write a README summary.", trackGoal: true)
 
@@ -442,7 +442,7 @@ callbacks.afterAgent = { response, state in
     response.trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
-agent.callbacks = callbacks
+try await agent.setCallbacks(callbacks)
 ```
 
 ### Planning
@@ -457,7 +457,7 @@ let agent = Agent(config: AgentConfig(
     enableRepairRetry: true
 ))
 
-agent.registerAll([ReadFileTool(), WriteFileTool(), ListFilesTool()])
+await agent.registerAll([ReadFileTool(), WriteFileTool(), ListFilesTool()])
 let result = try await agent.run("Inspect this project and write a README summary.")
 ```
 
@@ -509,7 +509,7 @@ try await mcp.connect(.http(endpoint: URL(string: "http://localhost:8080")!))
 
 // Bridge all MCP tools into the agent
 for tool in try await mcp.bridgedTools() {
-    agent.register(tool)
+    await agent.register(tool)
 }
 
 // Run — the agent can now use filesystem tools
@@ -564,7 +564,7 @@ let tools = makeMacTools(
     allowlistProvider: { conversationAllowlist },
     client: client
 )
-agent.registerAll(tools)
+await agent.registerAll(tools)
 ```
 
 ### What the agent can do
@@ -643,7 +643,7 @@ import SwiftAgentKitSimulator
 let manager = SimDriverManager()
 let session = SimSession()
 let client = await SimClient(manager: manager, udid: udid, runtime: runtime)
-agent.registerAll(makeSimulatorTools(session: session, client: client))
+await agent.registerAll(makeSimulatorTools(session: session, client: client))
 ```
 
 The first time the driver is used for a given Xcode / runtime pair it builds the XCUITest harness (~30–60 s); subsequent runs reuse the cached build.
@@ -723,6 +723,9 @@ Current alpha limitations: parameters are generated as required; only primitive 
 
 ## Alpha Status
 
+**Breaking changes:**
+- **0.4.0:** `Agent` is now an actor. Configure via construction or `try await agent.set…(…)` (idle-only); `register`/`setAutonomousMode` remain callable any time. Streaming APIs are unchanged.
+
 **Known alpha limitations:**
 - Public APIs may change before beta
 - Provider behavior varies by model quality — some models ignore tools even when available
@@ -739,7 +742,7 @@ swift build
 swift test
 ```
 
-355 tests (115 XCTest + 240 Swift Testing) across the core loop, tools, context management, replay, and MCP — no network calls.
+358 tests (115 XCTest + 243 Swift Testing) across the core loop, tools, context management, replay, and MCP — no network calls.
 
 **Tool security** (SwiftAgentKitTools):
 
