@@ -207,19 +207,19 @@ public actor Agent {
 
     // MARK: - Properties
 
-    public let config: AgentConfig
+    public nonisolated let config: AgentConfig
 
     /// Tool registry (thread-safe).
-    public let tools: ToolRegistry
+    public nonisolated let tools: ToolRegistry
 
     /// Tool dispatcher (thread-safe).
-    public let dispatcher: ToolDispatcher
+    public nonisolated let dispatcher: ToolDispatcher
 
     /// Conversation memory.
-    public let conversation: Conversation
+    public nonisolated let conversation: Conversation
 
     /// Agent state — cross-turn mutable key-value store.
-    public let state: AgentState
+    public nonisolated let state: AgentState
 
     /// Optional persistent memory store. When set, the agent auto-registers
     /// `RememberTool` and injects the memory context block into the system prompt.
@@ -230,7 +230,7 @@ public actor Agent {
     public private(set) var goalStore: (any AgentGoalStore)?
 
     /// Skill registry for progressive disclosure (optional).
-    public let skillRegistry: SkillRegistry
+    public nonisolated let skillRegistry: SkillRegistry
 
     /// Spawner for sub-agents; non-nil when `config.enableSubAgents` is on.
     ///
@@ -287,7 +287,14 @@ public actor Agent {
 
     /// Actor-isolated run/cancel state — actor serialization is the guard now.
     private var isRunActive = false
-    public private(set) var isCancelled = false
+
+    /// Cancellation flag. Marked `nonisolated(unsafe)` so it can be set from
+    /// `SubAgentSpawner.cancelAll()` — which runs under a lock from a synchronous
+    /// context — without spawning an extra async hop. `internal(set)` so only
+    /// same-module code (the spawner) can write it; public code can only read.
+    /// Write discipline: only `cancel()`, `resetCancellation()`, and
+    /// `SubAgentSpawner` touch this; run-loop reads are actor-isolated anyway.
+    public nonisolated(unsafe) internal(set) var isCancelled = false
 
     /// Cap on consecutive-or-not reasoning-only continuations per run. These
     /// turns don't consume repair/verification budgets, so they need their own
@@ -311,6 +318,11 @@ public actor Agent {
     /// retry in lockstep and re-collide on the still-loading model. Internal so
     /// tests can shrink it.
     var llmRetryBaseDelay: TimeInterval = 1.0
+
+    /// Set the LLM-retry base delay. Intended for test use only; allows tests to
+    /// speed up backoff without resorting to direct property mutation across the
+    /// actor boundary.
+    func setLlmRetryBaseDelay(_ delay: TimeInterval) { llmRetryBaseDelay = delay }
 
     // MARK: - Init
 

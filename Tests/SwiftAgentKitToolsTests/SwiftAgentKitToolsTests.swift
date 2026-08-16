@@ -376,7 +376,7 @@ func liveAgentSelfRepairsToExactOutput() async throws {
             "Running the script did not print the required line FIB10=55. Actual output was:\n\(out)\n"
             + "Fix \(script) so it prints exactly FIB10=55, then run it again.")
     }
-    agent.callbacks = callbacks
+    try await agent.setCallbacks(callbacks)
 
     _ = try await agent.run(
         "Write a Python script at \(script) that computes the 10th Fibonacci number "
@@ -422,7 +422,7 @@ func liveAgentUsesIsolatedVenv() async throws {
             ? .satisfied
             : .unsatisfied(reason: "The output file \(out) does not exist yet — finish creating it.")
     }
-    agent.callbacks = callbacks
+    try await agent.setCallbacks(callbacks)
 
     _ = try await agent.run(
         "Using the venv, install the `cowsay` package and write a Python script that "

@@ -80,7 +80,7 @@ public final class SubAgentSpawner: @unchecked Sendable {
         // have completed before we snapshot its registries.
         await parent.flushRegistrations()
 
-        var config = await parent.config
+        var config = parent.config
         config.enableSubAgents = false   // defense in depth vs. recursion
         config.maxTurns = min(config.maxTurns, Self.maxChildTurns)
         config.tools = []                       // registered explicitly below
@@ -173,7 +173,8 @@ public final class SubAgentSpawner: @unchecked Sendable {
         // Close the cancel-vs-track race: if cancelAll() fired before this child
         // was registered, cancel it now so it does not run unguarded.
         if alreadyCancelled {
-            Task { await child.cancel() }
+            child.isCancelled = true           // synchronous, nonisolated(unsafe)
+            Task { await child.cancel() }      // propagate into child's run-loop
         }
     }
 
@@ -184,13 +185,19 @@ public final class SubAgentSpawner: @unchecked Sendable {
     }
 
     /// Cancel every live child (called from `Agent.cancel()`).
+    ///
+    /// Sets `child.isCancelled` synchronously (the property is
+    /// `nonisolated(unsafe)`) so callers can observe cancellation without an
+    /// async hop. The async `child.cancel()` task is still fired to trigger any
+    /// in-flight run-loop cleanup (sub-agent spawner reset, etc.).
     public func cancelAll() {
         lock.lock()
         _cancelled = true
         let children = Array(liveChildren.values)
         lock.unlock()
         for child in children {
-            Task { await child.cancel() }
+            child.isCancelled = true           // synchronous, nonisolated(unsafe)
+            Task { await child.cancel() }      // propagate into child's run-loop
         }
     }
 

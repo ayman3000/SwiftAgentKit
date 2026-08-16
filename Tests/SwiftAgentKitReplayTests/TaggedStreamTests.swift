@@ -50,10 +50,11 @@ struct TaggedStreamTests {
         let scenario = Scenario(name: "afterAgent", turns: [ans])
         let provider = ReplayProvider(scenario: scenario)
         let agent = Agent(config: AgentConfig(provider: provider, maxTurns: 10, tools: [NoopTool()]))
-        agent.callbacks = AgentCallbacks()
-        agent.callbacks?.afterAgent = { text, _ in
+        var afterAgentCallbacks = AgentCallbacks()
+        afterAgentCallbacks.afterAgent = { text, _ in
             return "modified: \(text)"
         }
+        try await agent.setCallbacks(afterAgentCallbacks)
 
         var events: [AgentStreamEvent] = []
         for try await ev in agent.runStreamingTagged("go") { events.append(ev) }
@@ -74,10 +75,11 @@ struct TaggedStreamTests {
         let scenario = Scenario(name: "blockedVerification", turns: [ans])
         let provider = ReplayProvider(scenario: scenario)
         let agent = Agent(config: AgentConfig(provider: provider, maxTurns: 10, tools: [NoopTool()]))
-        agent.callbacks = AgentCallbacks()
-        agent.callbacks?.verifyCompletion = { _, _, _ in
+        var blockedCallbacks = AgentCallbacks()
+        blockedCallbacks.verifyCompletion = { _, _, _ in
             .blocked(reason: "not allowed")
         }
+        try await agent.setCallbacks(blockedCallbacks)
 
         var events: [AgentStreamEvent] = []
         for try await ev in agent.runStreamingTagged("go") { events.append(ev) }

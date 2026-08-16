@@ -149,7 +149,7 @@ private struct AlwaysFailTool: AgentTool {
 @Test func testRepairRetrySkipsErrorsTheCustomPolicyMarksUnrepairable() async throws {
     let provider = ScriptedToolProvider(toolCalls: [LLMToolCall(name: "fail_tool", arguments: "{}")])
     let agent = Agent(config: AgentConfig(provider: provider, tools: [AlwaysFailTool()]))
-    agent.repairRetryPolicy = RepairRetryPolicy(isRepairable: { _ in false })
+    try await agent.setRepairRetryPolicy(RepairRetryPolicy(isRepairable: { _ in false }))
 
     let answer = try await agent.run("go")
 
@@ -267,7 +267,7 @@ private struct PlainAnswerOnlyProvider: LLMProvider {
 @Test func testRunTrackGoalPersistsCompletedGoal() async throws {
     let store = InMemoryGoalStore()
     let agent = Agent(config: AgentConfig(provider: PlainAnswerOnlyProvider()))
-    agent.goalStore = store
+    try await agent.setGoalStore(store)
 
     let answer = try await agent.run("summarize the project", trackGoal: true)
 

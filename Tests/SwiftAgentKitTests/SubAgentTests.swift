@@ -21,7 +21,7 @@ actor GateCounter { private(set) var n = 0; func bump() { n += 1 } }
     // parent's skills would bloat the child's system prompt and starve its
     // context window.
     let agent = Agent(config: AgentConfig(provider: PlainAnswerProvider(text: "x")))
-    agent.registerSkill(AgentSkill(name: "big-skill", triggerKeywords: ["x"], instructions: String(repeating: "step ", count: 5000)))
+    await agent.registerSkill(AgentSkill(name: "big-skill", triggerKeywords: ["x"], instructions: String(repeating: "step ", count: 5000)))
     await agent.flushRegistrations()
     #expect(await agent.skillRegistry.allSkills().count == 1)   // parent has it
 
@@ -50,11 +50,11 @@ actor GateCounter { private(set) var n = 0; func bump() { n += 1 } }
     var callbacks = AgentCallbacks()
     callbacks.onToolConfirmation = { _, _ in await counter.bump(); return false }
     callbacks.verifyCompletion = { _, _, _ in await verifierCounter.bump(); return .satisfied }
-    agent.callbacks = callbacks
+    try await agent.setCallbacks(callbacks)
 
     let child = await SubAgentSpawner(parent: agent).makeChild()
 
-    let gate = try #require(child.callbacks?.onToolConfirmation)
+    let gate = try #require(await child.callbacks?.onToolConfirmation)
     let call = AgentToolCall(name: "delete_everything")
     let context = ToolContext(callId: call.id, toolName: call.name, parameters: [:], state: child.state)
     let approved = await gate(call, context)
@@ -64,7 +64,7 @@ actor GateCounter { private(set) var n = 0; func bump() { n += 1 } }
     // The child carries the BUILT-IN empty-answer verifier, not the parent's
     // goal verifier: non-empty answers satisfy it, empty answers get nudged,
     // and the parent's verifier is never invoked.
-    let verifier = try #require(child.callbacks?.verifyCompletion)
+    let verifier = try #require(await child.callbacks?.verifyCompletion)
     let onAnswer = await verifier("q", "a real answer", child.state)
     let onEmpty = await verifier("q", "   \n", child.state)
     #expect({ if case .satisfied = onAnswer { return true }; return false }())
@@ -183,7 +183,7 @@ actor GateCounter { private(set) var n = 0; func bump() { n += 1 } }
     let child = await spawner.makeChild()
     spawner.track(UUID(), child)
 
-    agent.cancel()
+    await agent.cancel()
     #expect(child.isCancelled)
 }
 
@@ -387,7 +387,7 @@ final class FlakyProvider: LLMProvider, @unchecked Sendable {
     // backoff) instead of aborting the run on the first provider error.
     let provider = FlakyProvider(failures: 2, then: [.text("answer after retries")])
     let agent = Agent(config: AgentConfig(provider: provider, maxTurns: 4, tools: [EchoTool()]))
-    agent.llmRetryBaseDelay = 0.01   // fast backoff for tests
+    await agent.setLlmRetryBaseDelay(0.01)   // fast backoff for tests
     let recorder = EventRecorder()
     agent.addObserver(recorder)
 
@@ -420,7 +420,7 @@ final class FlakyProvider: LLMProvider, @unchecked Sendable {
     // A 400 must surface immediately without cycling through retries.
     let provider = FlakyProvider(failures: 10, error: LLMError.httpError(400, nil), then: [.text("never")])
     let agent = Agent(config: AgentConfig(provider: provider, maxTurns: 4, tools: [EchoTool()]))
-    agent.llmRetryBaseDelay = 0.01
+    await agent.setLlmRetryBaseDelay(0.01)
     let recorder = EventRecorder()
     agent.addObserver(recorder)
 
@@ -432,7 +432,7 @@ final class FlakyProvider: LLMProvider, @unchecked Sendable {
 @Test func testPersistentLLMErrorStillThrowsAfterRetries() async throws {
     let provider = FlakyProvider(failures: 10, then: [.text("never reached")])
     let agent = Agent(config: AgentConfig(provider: provider, maxTurns: 4, tools: [EchoTool()]))
-    agent.llmRetryBaseDelay = 0.01
+    await agent.setLlmRetryBaseDelay(0.01)
     let recorder = EventRecorder()
     agent.addObserver(recorder)
 

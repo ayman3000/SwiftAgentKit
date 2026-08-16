@@ -369,7 +369,7 @@ actor VerifyCounter { private(set) var n = 0; func bump() { n += 1 } }
         await counter.bump()
         return await counter.n >= 2 ? .satisfied : .unsatisfied(reason: "not done yet")
     }
-    agent.callbacks = callbacks
+    try await agent.setCallbacks(callbacks)
 
     let answer = try await agent.run("do the task")
     #expect(answer.contains("here you go"))
@@ -382,7 +382,7 @@ actor VerifyCounter { private(set) var n = 0; func bump() { n += 1 } }
         provider: PlainAnswerProvider(text: "answer"), maxTurns: 6, tools: [EchoTool()]))
     var callbacks = AgentCallbacks()
     callbacks.verifyCompletion = { _, _, _ in await counter.bump(); return .satisfied }
-    agent.callbacks = callbacks
+    try await agent.setCallbacks(callbacks)
 
     let answer = try await agent.run("do it")
     #expect(answer.contains("answer"))
@@ -394,7 +394,7 @@ actor VerifyCounter { private(set) var n = 0; func bump() { n += 1 } }
         provider: PlainAnswerProvider(text: "trying"), maxTurns: 6, tools: [EchoTool()]))
     var callbacks = AgentCallbacks()
     callbacks.verifyCompletion = { _, _, _ in .blocked(reason: "needs a password I don't have") }
-    agent.callbacks = callbacks
+    try await agent.setCallbacks(callbacks)
 
     let answer = try await agent.run("do it")
     #expect(answer.contains("blocked"))
@@ -408,7 +408,7 @@ actor VerifyCounter { private(set) var n = 0; func bump() { n += 1 } }
         maxTurns: 20, tools: [EchoTool()], maxVerificationRetries: 2))
     var callbacks = AgentCallbacks()
     callbacks.verifyCompletion = { _, _, _ in await counter.bump(); return .unsatisfied(reason: "never happy") }
-    agent.callbacks = callbacks
+    try await agent.setCallbacks(callbacks)
 
     // Always-unsatisfied verifier must NOT loop forever — it stops after the cap.
     let answer = try await agent.run("do it")
@@ -1182,7 +1182,7 @@ struct ToolAwareMockProvider: LLMProvider {
         systemPrompt: "You are helpful.",
         maxTurns: 1
     ))
-    agent.memoryStore = store
+    try await agent.setMemoryStore(store)
 
     let output = try await agent.run("Do you know me?")
     #expect(output.contains("Ayman"))
@@ -1191,7 +1191,7 @@ struct ToolAwareMockProvider: LLMProvider {
 
 @Test func testAgentAwaitsImmediateToolRegistrationBeforeRun() async throws {
     let agent = Agent(config: AgentConfig(provider: ToolAwareMockProvider(), model: "mock", maxTurns: 3))
-    agent.register(EchoTool())
+    await agent.register(EchoTool())
 
     let output = try await agent.run("Use echo tool now")
 
@@ -1208,7 +1208,7 @@ struct ToolAwareMockProvider: LLMProvider {
         }
         return nil
     }
-    agent.callbacks = callbacks
+    try await agent.setCallbacks(callbacks)
 
     let firstRun = Task { try await agent.run("first") }
     try await Task.sleep(nanoseconds: 50_000_000)
@@ -1339,7 +1339,7 @@ struct TestTools {
         model: "mock",
         maxTurns: 3
     ))
-    agent.register(tool)
+    await agent.register(tool)
     #expect(Bool(true))
 }
 
@@ -1648,7 +1648,7 @@ struct StreamToolCallProvider: LLMProvider {
         model: "mock",
         maxTurns: 4
     ))
-    agent.register(EchoTool())
+    await agent.register(EchoTool())
 
     var chunks: [String] = []
     for try await chunk in agent.runStreaming("echo please") {
@@ -1666,7 +1666,7 @@ struct StreamToolCallProvider: LLMProvider {
         model: "mock",
         maxTurns: 4
     ))
-    agent.register(EchoTool())
+    await agent.register(EchoTool())
 
     var chunks: [String] = []
     for try await chunk in agent.runStreaming("please echo something") {
@@ -1706,7 +1706,7 @@ final class StreamingEventFlags: @unchecked Sendable {
         model: "mock",
         maxTurns: 4
     ))
-    agent.register(EchoTool())
+    await agent.register(EchoTool())
 
     let flags = StreamingEventFlags()
     agent.addObserver(BlockObserver { flags.record($0) })
@@ -1725,7 +1725,7 @@ final class StreamingEventFlags: @unchecked Sendable {
         model: "mock",
         maxTurns: 4
     ))
-    agent.register(EchoTool())
+    await agent.register(EchoTool())
 
     let flags = StreamingEventFlags()
     let token = agent.onEvent { flags.record($0) }
@@ -2205,7 +2205,7 @@ struct AddTool: AgentTool {
 func liveOllamaStreamingWithToolCall() async throws {
     let provider = OllamaProvider(configuration: OllamaProvider.local(model: "glm-5.2:cloud"))
     let agent = Agent(config: AgentConfig(provider: provider, model: "glm-5.2:cloud", maxTurns: 4))
-    agent.register(AddTool())
+    await agent.register(AddTool())
 
     var chunks: [String] = []
     for try await chunk in agent.runStreaming(
@@ -2294,15 +2294,15 @@ func liveCrossConversationMemory() async throws {
     let store = FileAgentMemoryStore(directory: dir)
     defer { try? FileManager.default.removeItem(at: dir) }
 
-    func makeAgent() -> Agent {
+    func makeAgent() async throws -> Agent {
         let provider = OllamaProvider(configuration: OllamaProvider.local(model: "glm-5.2:cloud"))
         let agent = Agent(config: AgentConfig(provider: provider, model: "glm-5.2:cloud", maxTurns: 4))
-        agent.memoryStore = store
+        try await agent.setMemoryStore(store)
         return agent
     }
 
     // Conversation 1 — the user introduces themselves.
-    let convo1 = makeAgent()
+    let convo1 = try await makeAgent()
     _ = try await convo1.run("My name is Ayman and I prefer Swift. Please remember this about me.")
 
     // The remember tool should have persisted the user fact.
@@ -2310,7 +2310,7 @@ func liveCrossConversationMemory() async throws {
     #expect(userDoc.localizedCaseInsensitiveContains("Ayman"))
 
     // Conversation 2 — a brand-new agent, same store, no shared conversation history.
-    let convo2 = makeAgent()
+    let convo2 = try await makeAgent()
     let answer = try await convo2.run("What is my name? Answer with just the name.")
     #expect(answer.localizedCaseInsensitiveContains("Ayman"))
 }
@@ -2327,7 +2327,7 @@ func liveAgentLearnsSkill() async throws {
 
     let provider = OllamaProvider(configuration: OllamaProvider.local(model: "glm-5.2:cloud"))
     let agent = Agent(config: AgentConfig(provider: provider, model: "glm-5.2:cloud", maxTurns: 4))
-    agent.skillStore = store   // auto-registers learn_skill + loads persisted skills
+    try await agent.setSkillStore(store)   // auto-registers learn_skill + loads persisted skills
 
     _ = try await agent.run(
         "Use the learn_skill tool to save a skill named \"greet politely\" with triggers "

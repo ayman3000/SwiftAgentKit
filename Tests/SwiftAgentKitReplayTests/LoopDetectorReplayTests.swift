@@ -71,7 +71,7 @@ struct LoopDetectorReplayTests {
                 providerName: "test"
             )
         }
-        agent.callbacks = callbacks
+        try await agent.setCallbacks(callbacks)
 
         // Collect events in a thread-safe way (same pattern as ReplayRun).
         final class EventCollector: @unchecked Sendable {
