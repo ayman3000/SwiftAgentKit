@@ -91,7 +91,7 @@ That's a real agent — a tool-using loop where the model acts through your Swif
 
 | Feature | Description |
 |---|---|
-| 🔧 **Tool system** | Define Swift tools with JSON-Schema parameters. Models call them natively. Parallel dispatch + dedup. |
+| 🔧 **Tool system** | Define Swift tools with JSON-Schema parameters. Models call them natively. Sequential dispatch by default (opt-in parallel) + dedup. |
 | ✨ **@Tool macro** | Optional `@Tool` macro converts Swift functions to `AgentTool` structs — less boilerplate. |
 | 🧠 **Conversation memory** | Token-aware history that trims to fit the context window automatically. |
 | 🧠 **Persistent memory store** | Markdown-based long-term memory the agent can read and write across sessions. |
@@ -321,7 +321,7 @@ await agent.registerAll([CurrentTimeTool(), EchoTool(), CalculatorTool()])
 let result = try await agent.run("Get the time, echo 'hello', then calculate 38 * 17.")
 ```
 
-When the model requests multiple tools in one turn, SwiftAgentKit dispatches them concurrently and preserves order when feeding results back.
+When the model requests multiple tools in one turn, SwiftAgentKit executes them sequentially in the order the model issued them (concurrently when `parallelToolCalls` is enabled) and preserves order when feeding results back.
 
 ### Persistent memory
 
