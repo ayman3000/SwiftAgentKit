@@ -288,13 +288,39 @@ public actor Agent {
     /// Actor-isolated run/cancel state — actor serialization is the guard now.
     private var isRunActive = false
 
-    /// Cancellation flag. Marked `nonisolated(unsafe)` so it can be set from
-    /// `SubAgentSpawner.cancelAll()` — which runs under a lock from a synchronous
-    /// context — without spawning an extra async hop. `internal(set)` so only
-    /// same-module code (the spawner) can write it; public code can only read.
-    /// Write discipline: only `cancel()`, `resetCancellation()`, and
-    /// `SubAgentSpawner` touch this; run-loop reads are actor-isolated anyway.
-    public nonisolated(unsafe) internal(set) var isCancelled = false
+    /// Guards `_isCancelled`. Mirrors the `observersLock` pattern used for
+    /// observers: the flag must be readable synchronously from arbitrary threads
+    /// (spawner cancellation must be visible immediately, without an async hop),
+    /// so it lives behind a plain NSLock rather than actor isolation.
+    private nonisolated let cancellationLock = NSLock()
+    private nonisolated(unsafe) var _isCancelled = false
+
+    /// Whether the current run has been cancelled.
+    ///
+    /// Synchronously observable from any thread — `SubAgentSpawner.cancelAll()`
+    /// calls `markCancelled()` while holding its own lock, and this read must
+    /// return `true` immediately afterwards without an async hop.
+    /// Guarded by `cancellationLock`; do not access `_isCancelled` directly.
+    public nonisolated var isCancelled: Bool {
+        cancellationLock.lock()
+        defer { cancellationLock.unlock() }
+        return _isCancelled
+    }
+
+    /// Set the cancellation flag synchronously.  Called by `cancel()` (actor
+    /// method) and by `SubAgentSpawner` (synchronous, off-actor).
+    nonisolated func markCancelled() {
+        cancellationLock.lock()
+        _isCancelled = true
+        cancellationLock.unlock()
+    }
+
+    /// Reset the cancellation flag at the start of a new run.
+    private nonisolated func resetCancellationFlag() {
+        cancellationLock.lock()
+        _isCancelled = false
+        cancellationLock.unlock()
+    }
 
     /// Cap on consecutive-or-not reasoning-only continuations per run. These
     /// turns don't consume repair/verification budgets, so they need their own
@@ -523,12 +549,12 @@ public actor Agent {
 
     /// Cancel the current agent run (and any live sub-agents).
     public func cancel() {
-        isCancelled = true
+        markCancelled()
         subAgentSpawner?.cancelAll()
     }
 
     private func resetCancellation() {
-        isCancelled = false
+        resetCancellationFlag()
         subAgentSpawner?.resetCancellation()
     }
 
@@ -556,7 +582,7 @@ public actor Agent {
     private func beginRunIfIdle() -> Bool {
         guard !isRunActive else { return false }
         isRunActive = true
-        isCancelled = false
+        resetCancellationFlag()
         return true
     }
 

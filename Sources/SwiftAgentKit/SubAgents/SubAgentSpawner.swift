@@ -173,7 +173,7 @@ public final class SubAgentSpawner: @unchecked Sendable {
         // Close the cancel-vs-track race: if cancelAll() fired before this child
         // was registered, cancel it now so it does not run unguarded.
         if alreadyCancelled {
-            child.isCancelled = true           // synchronous, nonisolated(unsafe)
+            child.markCancelled()              // synchronous, lock-guarded
             Task { await child.cancel() }      // propagate into child's run-loop
         }
     }
@@ -186,8 +186,8 @@ public final class SubAgentSpawner: @unchecked Sendable {
 
     /// Cancel every live child (called from `Agent.cancel()`).
     ///
-    /// Sets `child.isCancelled` synchronously (the property is
-    /// `nonisolated(unsafe)`) so callers can observe cancellation without an
+    /// Sets `child.isCancelled` synchronously via `markCancelled()` (which is
+    /// lock-guarded, nonisolated) so callers can observe cancellation without an
     /// async hop. The async `child.cancel()` task is still fired to trigger any
     /// in-flight run-loop cleanup (sub-agent spawner reset, etc.).
     public func cancelAll() {
@@ -196,7 +196,7 @@ public final class SubAgentSpawner: @unchecked Sendable {
         let children = Array(liveChildren.values)
         lock.unlock()
         for child in children {
-            child.isCancelled = true           // synchronous, nonisolated(unsafe)
+            child.markCancelled()              // synchronous, lock-guarded
             Task { await child.cancel() }      // propagate into child's run-loop
         }
     }
