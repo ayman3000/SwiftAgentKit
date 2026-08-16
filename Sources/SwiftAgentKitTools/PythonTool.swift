@@ -99,31 +99,12 @@ public struct PythonTool: AgentTool {
 
     // MARK: - Private
 
-    /// Run a command via a login shell (so PATH resolves python3), reading to EOF
-    /// on a detached task raced against a wall-clock timeout (no pipe deadlock).
+    /// Run a command via a login shell (so PATH resolves python3) in its own
+    /// process group. On timeout the whole group is SIGKILLed — a Python child
+    /// process holding stdout can no longer block the read past the deadline.
     private func runCommand(_ command: String) async -> (exitCode: Int32, output: String, timedOut: Bool) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-lc", command]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        do {
-            try process.run()
-        } catch {
-            return (-1, "Failed to launch: \(error.localizedDescription)", false)
-        }
-        let handle = pipe.fileHandleForReading
-        let readTask = Task.detached { handle.readDataToEndOfFile() }
-        let timeoutTask = Task { [timeoutSeconds] in
-            try? await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
-            if process.isRunning { process.terminate() }
-        }
-        let data = await readTask.value
-        timeoutTask.cancel()
-        process.waitUntilExit()
-        let timedOut = process.terminationReason == .uncaughtSignal
-        return (process.terminationStatus, String(data: data, encoding: .utf8) ?? "", timedOut)
+        let outcome = await ProcessGroupRunner.run(command: command, timeoutSeconds: timeoutSeconds)
+        return (outcome.exitCode, outcome.output, outcome.timedOut)
     }
 
     /// Single-quote a shell argument safely.

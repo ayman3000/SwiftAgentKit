@@ -739,7 +739,13 @@ swift build
 swift test
 ```
 
-343 tests (115 XCTest + 228 Swift Testing) across the core loop, tools, context management, replay, and MCP — no network calls.
+355 tests (115 XCTest + 240 Swift Testing) across the core loop, tools, context management, replay, and MCP — no network calls.
+
+**Tool security** (SwiftAgentKitTools):
+
+- `import_skill` requires confirmation and refuses URLs that are — or resolve to — private, loopback, or link-local addresses (SSRF guard); redirects are re-validated and downloads are memory-bounded.
+- Filesystem tools accept an optional `FileToolPolicy(allowedRoots:)` that canonicalizes paths (tilde, `..`, symlinks) before checking containment — opt-in; without a policy they remain unrestricted.
+- `run_shell` and `run_python` both run commands in their own process group and SIGKILL the whole group on timeout, so orphaned children can't hang a run.
 
 ---
 

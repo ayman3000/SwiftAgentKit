@@ -26,13 +26,18 @@ public struct FileReadTool: AgentTool {
         required: ["path"]
     )
 
-    public init() {}
+    let policy: FileToolPolicy?
+
+    public init(policy: FileToolPolicy? = nil) { self.policy = policy }
 
     public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
         guard let raw = (parameters["path"] as? String), !raw.isEmpty else {
             return .error(toolCallId: "", toolName: name, message: "read_file requires a `path`.")
         }
         let path = expandPath(raw)
+        if let policy, let reason = policy.blockReason(for: path) {
+            return .error(toolCallId: "", toolName: name, message: "Refusing to read \(raw): \(reason).")
+        }
         guard let data = FileManager.default.contents(atPath: path) else {
             return .error(toolCallId: "", toolName: name, message: "Cannot read file: \(raw)")
         }
@@ -70,7 +75,9 @@ public struct FileWriteTool: AgentTool {
 
     public var requiresConfirmation: Bool { true }
 
-    public init() {}
+    let policy: FileToolPolicy?
+
+    public init(policy: FileToolPolicy? = nil) { self.policy = policy }
 
     public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
         guard let raw = (parameters["path"] as? String), !raw.isEmpty else {
@@ -80,6 +87,9 @@ public struct FileWriteTool: AgentTool {
             return .error(toolCallId: "", toolName: name, message: "write_file requires `content`.")
         }
         let path = expandPath(raw)
+        if let policy, let reason = policy.blockReason(for: path) {
+            return .error(toolCallId: "", toolName: name, message: "Refusing to write \(raw): \(reason).")
+        }
         let url = URL(fileURLWithPath: path)
         let append = boolValue(parameters["append"]) ?? false
 
@@ -126,7 +136,9 @@ public struct PatchFileTool: AgentTool {
 
     public var requiresConfirmation: Bool { true }
 
-    public init() {}
+    let policy: FileToolPolicy?
+
+    public init(policy: FileToolPolicy? = nil) { self.policy = policy }
 
     public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
         guard let raw = (parameters["path"] as? String), !raw.isEmpty else {
@@ -136,6 +148,9 @@ public struct PatchFileTool: AgentTool {
             return .error(toolCallId: "", toolName: name, message: "apply_patch requires a `patch` (a unified diff).")
         }
         let path = expandPath(raw)
+        if let policy, let reason = policy.blockReason(for: path) {
+            return .error(toolCallId: "", toolName: name, message: "Refusing to patch \(raw): \(reason).")
+        }
         guard let data = FileManager.default.contents(atPath: path) else {
             return .error(toolCallId: "", toolName: name,
                 message: "Cannot read file to patch: \(raw). Use write_file to create a new file.")
@@ -188,11 +203,16 @@ public struct ListDirTool: AgentTool {
         required: []
     )
 
-    public init() {}
+    let policy: FileToolPolicy?
+
+    public init(policy: FileToolPolicy? = nil) { self.policy = policy }
 
     public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
         let raw = (parameters["path"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "."
         let path = expandPath(raw)
+        if let policy, let reason = policy.blockReason(for: path) {
+            return .error(toolCallId: "", toolName: name, message: "Refusing to list \(raw): \(reason).")
+        }
         let showHidden = boolValue(parameters["show_hidden"]) ?? false
 
         let fm = FileManager.default
@@ -237,13 +257,18 @@ public struct SearchFilesTool: AgentTool {
 
     private let fileScanCap = 20_000
 
-    public init() {}
+    let policy: FileToolPolicy?
+
+    public init(policy: FileToolPolicy? = nil) { self.policy = policy }
 
     public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
         guard let rawDir = (parameters["directory"] as? String), !rawDir.isEmpty else {
             return .error(toolCallId: "", toolName: name, message: "search_files requires a `directory`.")
         }
         let root = expandPath(rawDir)
+        if let policy, let reason = policy.blockReason(for: root) {
+            return .error(toolCallId: "", toolName: name, message: "Refusing to search \(rawDir): \(reason).")
+        }
         let nameNeedle = (parameters["name"] as? String)?.lowercased()
         let contentNeedle = (parameters["contains"] as? String)?.lowercased()
         let maxResults = max(1, intValue(parameters["max_results"]) ?? 100)
