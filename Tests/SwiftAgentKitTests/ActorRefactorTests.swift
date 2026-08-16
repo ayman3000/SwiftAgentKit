@@ -6,7 +6,19 @@ import LLMProviderKit
 /// Provider that stalls until released — holds a run open so we can probe mid-run behavior.
 private actor RunGate {
     private var waiters: [CheckedContinuation<Void, Never>] = []
-    func wait() async { await withCheckedContinuation { waiters.append($0) } }
+    private var enteredWaiters: [CheckedContinuation<Void, Never>] = []
+    private var hasEntered = false
+
+    func wait() async {
+        hasEntered = true
+        enteredWaiters.forEach { $0.resume() }
+        enteredWaiters.removeAll()
+        await withCheckedContinuation { waiters.append($0) }
+    }
+    func awaitEntered() async {
+        if hasEntered { return }
+        await withCheckedContinuation { enteredWaiters.append($0) }
+    }
     func release() { waiters.forEach { $0.resume() }; waiters.removeAll() }
 }
 
@@ -37,7 +49,7 @@ private struct StallingProvider: LLMProvider {
     let agent = Agent(config: AgentConfig(provider: StallingProvider(gate: gate)))
 
     let run = Task { try await agent.run("hold") }
-    try? await Task.sleep(nanoseconds: 100_000_000)   // let the run reach the stalled provider
+    await gate.awaitEntered()   // deterministic: wait until the run has reached the stalled provider
 
     await #expect(throws: AgentError.self) {
         try await agent.setCallbacks(AgentCallbacks())
@@ -54,7 +66,7 @@ private struct StallingProvider: LLMProvider {
     let agent = Agent(config: AgentConfig(provider: StallingProvider(gate: gate)))
 
     let run = Task { try await agent.run("hold") }
-    try? await Task.sleep(nanoseconds: 100_000_000)
+    await gate.awaitEntered()   // deterministic: wait until the run has reached the stalled provider
     await agent.setAutonomousMode(true)               // must not throw, must not deadlock
     await gate.release()
     _ = try await run.value

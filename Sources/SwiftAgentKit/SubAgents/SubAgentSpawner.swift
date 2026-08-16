@@ -154,7 +154,13 @@ public final class SubAgentSpawner: @unchecked Sendable {
                 : .satisfied
         }
         // A fresh child is always idle — this cannot throw.
-        try? await child.setCallbacks(childCallbacks)
+        do {
+            try await child.setCallbacks(childCallbacks)
+        } catch {
+            // A freshly constructed child is always idle; reaching here means the
+            // invariant broke. Fail loudly in debug, and leave a trace in release.
+            assertionFailure("SubAgentSpawner: fresh child rejected setCallbacks: \(error)")
+        }
         return child
     }
 
