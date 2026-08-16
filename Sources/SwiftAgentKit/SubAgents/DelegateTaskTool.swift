@@ -82,6 +82,7 @@ public final class DelegateTaskTool: AgentTool, @unchecked Sendable {
             let answer = try await withTaskCancellationHandler {
                 try await child.run(prompt)
             } onCancel: {
+                child.markCancelled()
                 Task { await child.cancel() }
             }
             let trimmed = answer.trimmingCharacters(in: .whitespacesAndNewlines)

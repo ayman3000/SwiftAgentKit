@@ -174,7 +174,7 @@ Sources/SwiftAgentKit/
 ├── Tools/
 │   ├── AgentTool.swift          # Tool protocol + JSON-Schema params
 │   ├── ToolContext.swift        # Rich context (state, call info, actions)
-│   └── ToolDispatcher.swift     # Parallel dispatch, dedup, confirmation
+│   └── ToolDispatcher.swift     # Sequential/parallel dispatch, dedup, confirmation
 ├── Memory/
 │   ├── Conversation.swift       # Token-aware conversation history
 │   ├── SessionStore.swift      # Session persistence protocol + file store
@@ -725,6 +725,8 @@ Current alpha limitations: parameters are generated as required; only primitive 
 
 **Breaking changes:**
 - **0.4.0:** `Agent` is now an actor. Configure via construction or `try await agent.set…(…)` (idle-only); `register`/`setAutonomousMode` remain callable any time. Streaming APIs are unchanged.
+- `lastPromptTokens` is now actor-isolated; read it with `await agent.lastPromptTokens`.
+- `config` is immutable after construction (`let`), and `setToolContext(_:)` requires a freshly built (region-disconnected) dictionary under Swift 6.
 
 **Known alpha limitations:**
 - Public APIs may change before beta
