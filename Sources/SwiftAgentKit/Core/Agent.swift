@@ -203,7 +203,7 @@ public struct AgentConfig: Sendable {
 /// print(response)
 /// ```
 ///
-public final class Agent: @unchecked Sendable {
+public actor Agent {
 
     // MARK: - Properties
 
@@ -239,7 +239,12 @@ public final class Agent: @unchecked Sendable {
     public let skillRegistry: SkillRegistry
 
     /// Spawner for sub-agents; non-nil when `config.enableSubAgents` is on.
-    public private(set) var subAgentSpawner: SubAgentSpawner?
+    ///
+    /// `nonisolated(unsafe)`: written exactly once, in `init`, after
+    /// `SubAgentSpawner(parent: self)` — an escaping use of `self`, after which
+    /// a synchronous actor init loses isolated property access. Read-only
+    /// thereafter, so the access is safe.
+    public private(set) nonisolated(unsafe) var subAgentSpawner: SubAgentSpawner?
 
     /// Optional persistent skill store. When set, the agent loads previously
     /// authored skills into `skillRegistry` and auto-registers `LearnSkillTool`,
@@ -260,6 +265,13 @@ public final class Agent: @unchecked Sendable {
     /// Lifecycle callbacks (intercept-able).
     public var callbacks: AgentCallbacks?
 
+    /// Module-internal setter so cross-actor callers (e.g. `SubAgentSpawner`)
+    /// can assign callbacks — actor-isolated properties cannot be written from
+    /// outside the actor.
+    func setCallbacks(_ callbacks: AgentCallbacks?) {
+        self.callbacks = callbacks
+    }
+
     /// Planner (optional).
     public var planner: (any AgentPlanner)?
 
@@ -271,13 +283,16 @@ public final class Agent: @unchecked Sendable {
 
     /// Observers.
     private var observers: [any AgentObserver] = []
-    private let observersLock = NSLock()
 
     /// Fire-and-forget registration tasks created by the synchronous public API.
     /// `run(_:)` awaits these before reading registries so tool/skill registration
     /// cannot race with the first model request.
-    private var pendingRegistrationTasks: [Task<Void, Never>] = []
-    private let pendingRegistrationTasksQueue = DispatchQueue(label: "SwiftAgentKit.Agent.pendingRegistrationTasks")
+    ///
+    /// `nonisolated(unsafe)`: `init` must append the `delegate_task` registration
+    /// after `self` has escaped (see `subAgentSpawner`), where isolated property
+    /// access is forbidden. Safe: during `init` nothing else touches the agent,
+    /// and every post-init access is actor-isolated.
+    private nonisolated(unsafe) var pendingRegistrationTasks: [Task<Void, Never>] = []
 
     /// Logger.
     public var logger: AgentLogger
@@ -285,20 +300,11 @@ public final class Agent: @unchecked Sendable {
     /// Estimated token count of the most recent prompt actually sent to the model
     /// (after context management / trimming) — i.e. what the model really saw, not
     /// the full stored history. Useful for a context-usage indicator.
-    public var lastPromptTokens: Int {
-        promptTokensLock.lock(); defer { promptTokensLock.unlock() }
-        return _lastPromptTokens
-    }
-    private let promptTokensLock = NSLock()
-    private var _lastPromptTokens = 0
+    public private(set) var lastPromptTokens = 0
 
-    /// Cancellation flag.
-    private let cancellationLock = NSLock()
-    private var _isCancelled = false
-
-    /// Guards mutable per-run state and conversation writes from overlapping `run(_:)` calls.
-    private let runLock = NSLock()
-    private var _isRunActive = false
+    /// Actor-isolated run/cancel state — actor serialization is the guard now.
+    private var isRunActive = false
+    public private(set) var isCancelled = false
 
     /// Cap on consecutive-or-not reasoning-only continuations per run. These
     /// turns don't consume repair/verification budgets, so they need their own
@@ -349,10 +355,12 @@ public final class Agent: @unchecked Sendable {
             self.planner = LLMPlanner(provider: config.provider, model: config.model)
         }
 
-        // Auto-register tools passed via config
+        // Auto-register tools passed via config.
+        // (Direct stored-property appends: an actor's synchronous init cannot
+        // call isolated methods like `register(_:)`.)
         if !config.tools.isEmpty {
             for tool in config.tools {
-                register(tool)
+                pendingRegistrationTasks.append(Task { [tools] in await tools.register(tool) })
             }
         }
 
@@ -360,13 +368,13 @@ public final class Agent: @unchecked Sendable {
         // can pull full tool outputs back from external storage on demand.
         if let contextManager = config.contextManager {
             for tool in contextManager.artifactTools {
-                register(tool)
+                pendingRegistrationTasks.append(Task { [tools] in await tools.register(tool) })
             }
         }
 
         // Apply autonomous mode (skips the confirmation gate) if configured.
         if config.autonomousMode {
-            setAutonomousMode(true)
+            pendingRegistrationTasks.append(Task { [dispatcher] in await dispatcher.setAutonomousMode(true) })
         }
 
         // Sub-agents: register the delegation tool. The spawner strips this
@@ -375,9 +383,10 @@ public final class Agent: @unchecked Sendable {
         if config.enableSubAgents {
             let spawner = SubAgentSpawner(parent: self, concurrencyLimit: config.maxSubAgentConcurrency)
             self.subAgentSpawner = spawner
-            register(DelegateTaskTool(spawner: spawner, emit: { [weak self] event in
-                self?.emitEvent(event)
-            }))
+            let delegateTool = DelegateTaskTool(spawner: spawner, emit: { [weak self] event in
+                Task { await self?.emitEvent(event) }
+            })
+            pendingRegistrationTasks.append(Task { [tools] in await tools.register(delegateTool) })
         }
     }
 
@@ -417,17 +426,12 @@ public final class Agent: @unchecked Sendable {
     }
 
     private func trackRegistrationTask(_ task: Task<Void, Never>) {
-        pendingRegistrationTasksQueue.sync {
-            pendingRegistrationTasks.append(task)
-        }
+        pendingRegistrationTasks.append(task)
     }
 
     private func awaitPendingRegistrations() async {
-        let tasks = pendingRegistrationTasksQueue.sync { () -> [Task<Void, Never>] in
-            let tasks = pendingRegistrationTasks
-            pendingRegistrationTasks.removeAll()
-            return tasks
-        }
+        let tasks = pendingRegistrationTasks
+        pendingRegistrationTasks.removeAll()
 
         for task in tasks {
             await task.value
@@ -448,8 +452,6 @@ public final class Agent: @unchecked Sendable {
 
     /// Add an observer for agent events.
     public func addObserver(_ observer: any AgentObserver) {
-        observersLock.lock()
-        defer { observersLock.unlock() }
         observers.append(observer)
     }
 
@@ -459,8 +461,6 @@ public final class Agent: @unchecked Sendable {
     /// remove their observer when torn down, otherwise observers accumulate and
     /// each event is delivered multiple times.
     public func removeObserver(_ observer: any AgentObserver) {
-        observersLock.lock()
-        defer { observersLock.unlock() }
         observers.removeAll { $0 === observer }
     }
 
@@ -474,10 +474,7 @@ public final class Agent: @unchecked Sendable {
     }
 
     private func emit(_ event: AgentEvent) {
-        observersLock.lock()
-        let snapshot = observers
-        observersLock.unlock()
-        for observer in snapshot {
+        for observer in observers {
             observer.onEvent(event)
         }
     }
@@ -491,23 +488,12 @@ public final class Agent: @unchecked Sendable {
 
     /// Cancel the current agent run (and any live sub-agents).
     public func cancel() {
-        cancellationLock.lock()
-        _isCancelled = true
-        cancellationLock.unlock()
+        isCancelled = true
         subAgentSpawner?.cancelAll()
     }
 
-    /// Check if cancelled.
-    public var isCancelled: Bool {
-        cancellationLock.lock()
-        defer { cancellationLock.unlock() }
-        return _isCancelled
-    }
-
     private func resetCancellation() {
-        cancellationLock.lock()
-        defer { cancellationLock.unlock() }
-        _isCancelled = false
+        isCancelled = false
         subAgentSpawner?.resetCancellation()
     }
 
@@ -533,18 +519,13 @@ public final class Agent: @unchecked Sendable {
     }
 
     private func beginRunIfIdle() -> Bool {
-        runLock.lock()
-        defer { runLock.unlock() }
-        guard !_isRunActive else { return false }
-        _isRunActive = true
+        guard !isRunActive else { return false }
+        isRunActive = true
+        isCancelled = false
         return true
     }
 
-    private func endRun() {
-        runLock.lock()
-        _isRunActive = false
-        runLock.unlock()
-    }
+    private func endRun() { isRunActive = false }
 
     // MARK: - Run
 
@@ -1297,7 +1278,7 @@ public final class Agent: @unchecked Sendable {
         // an app can show real context usage rather than raw-history size.
         let promptChars = llmMessages.reduce(0) { $0 + $1.content.count }
         let estimate = Int((Double(promptChars) / 3.5).rounded()) + llmMessages.count * 4
-        promptTokensLock.withLock { _lastPromptTokens = estimate }
+        lastPromptTokens = estimate
 
         return LLMRequest(
             model: config.model ?? config.provider.configuration.defaultModel ?? "",
@@ -1332,7 +1313,7 @@ public final class Agent: @unchecked Sendable {
         actions: ToolActions
     ) async -> [AgentToolResult] {
         let dispatcherObserver = BlockObserver { [weak self] event in
-            self?.emit(event)
+            Task { await self?.emit(event) }
         }
         return await dispatcher.dispatch(
             calls: toolCalls,
@@ -1372,7 +1353,7 @@ public final class Agent: @unchecked Sendable {
     /// — critically — tool execution (streamed tool calls were dropped). It now
     /// runs the exact same lifecycle as `run(_:)`/`runStreaming(_:)`.
     @available(*, deprecated, renamed: "runStreaming(_:)")
-    public func stream(_ query: String) -> AsyncThrowingStream<String, Error> {
+    nonisolated public func stream(_ query: String) -> AsyncThrowingStream<String, Error> {
         runStreaming(query)
     }
 
@@ -1389,19 +1370,15 @@ public final class Agent: @unchecked Sendable {
     /// - Note: `afterModel`/`afterAgent` callbacks can still rewrite the returned
     ///   text, but on the final turn the original deltas have already been
     ///   streamed — so a rewrite won't retroactively change what the caller saw.
-    public func runStreaming(_ query: String) -> AsyncThrowingStream<String, Error> {
+    nonisolated public func runStreaming(_ query: String) -> AsyncThrowingStream<String, Error> {
         runStreaming(query, images: [])
     }
 
     /// Streaming variant that accepts images for vision-capable models. The images
     /// are attached to the user turn; the rest of the ReAct loop is identical.
-    public func runStreaming(_ query: String, images: [LLMImage]) -> AsyncThrowingStream<String, Error> {
-        return AsyncThrowingStream { [weak self] continuation in
-            let task = Task { [weak self] in
-                guard let self else {
-                    continuation.finish()
-                    return
-                }
+    nonisolated public func runStreaming(_ query: String, images: [LLMImage]) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
                 do {
                     _ = try await self.runLoop(
                         query: query,
@@ -1421,10 +1398,9 @@ public final class Agent: @unchecked Sendable {
     /// Streaming variant tagging content finality. `.delta` = live text of the
     /// in-progress turn; `.turnCompleted` = one per finished turn (step vs final
     /// answer). Additive — `runStreaming` (String) is unchanged.
-    public func runStreamingTagged(_ query: String, images: [LLMImage] = []) -> AsyncThrowingStream<AgentStreamEvent, Error> {
-        return AsyncThrowingStream { [weak self] continuation in
-            let task = Task { [weak self] in
-                guard let self else { continuation.finish(); return }
+    nonisolated public func runStreamingTagged(_ query: String, images: [LLMImage] = []) -> AsyncThrowingStream<AgentStreamEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
                 do {
                     _ = try await self.runLoop(
                         query: query, images: images,

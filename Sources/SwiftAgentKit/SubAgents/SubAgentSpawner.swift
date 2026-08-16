@@ -80,7 +80,7 @@ public final class SubAgentSpawner: @unchecked Sendable {
         // have completed before we snapshot its registries.
         await parent.flushRegistrations()
 
-        var config = parent.config
+        var config = await parent.config
         config.enableSubAgents = false   // defense in depth vs. recursion
         config.maxTurns = min(config.maxTurns, Self.maxChildTurns)
         config.tools = []                       // registered explicitly below
@@ -94,7 +94,7 @@ public final class SubAgentSpawner: @unchecked Sendable {
         complete, self-contained answer containing the facts, paths, and \
         conclusions you found.
         """
-        if let memoryStore = parent.memoryStore {
+        if let memoryStore = await parent.memoryStore {
             let block = await memoryStore.loadContextBlock()
             if !block.isEmpty {
                 prompt += "\n\n" + block
@@ -136,7 +136,7 @@ public final class SubAgentSpawner: @unchecked Sendable {
         // parent keeps the skills; the child gets a lean, focused prompt.
 
         var childCallbacks = AgentCallbacks()
-        if let parentCallbacks = parent.callbacks {
+        if let parentCallbacks = await parent.callbacks {
             childCallbacks.onToolConfirmation = parentCallbacks.onToolConfirmation
             childCallbacks.onToolError = parentCallbacks.onToolError
             childCallbacks.onModelError = parentCallbacks.onModelError
@@ -153,7 +153,7 @@ public final class SubAgentSpawner: @unchecked Sendable {
                 ? .unsatisfied(reason: "You returned an empty answer. Produce your final, self-contained answer now — it is returned to the caller as data.")
                 : .satisfied
         }
-        child.callbacks = childCallbacks
+        await child.setCallbacks(childCallbacks)
         return child
     }
 
@@ -166,7 +166,7 @@ public final class SubAgentSpawner: @unchecked Sendable {
         // Close the cancel-vs-track race: if cancelAll() fired before this child
         // was registered, cancel it now so it does not run unguarded.
         if alreadyCancelled {
-            child.cancel()
+            Task { await child.cancel() }
         }
     }
 
@@ -183,7 +183,7 @@ public final class SubAgentSpawner: @unchecked Sendable {
         let children = Array(liveChildren.values)
         lock.unlock()
         for child in children {
-            child.cancel()
+            Task { await child.cancel() }
         }
     }
 

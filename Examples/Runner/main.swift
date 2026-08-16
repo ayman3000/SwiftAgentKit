@@ -105,9 +105,9 @@ func runExample03() async {
             systemPrompt: "You are a helpful assistant with filesystem tools. Use them to answer questions.",
             maxTurns: 8
         ))
-        for tool in tools { agent.register(tool) }
+        for tool in tools { await agent.register(tool) }
 
-        agent.onEvent { event in
+        await agent.onEvent { event in
             if case .toolCallsReceived(let calls) = event {
                 print("  → \(calls.map { $0.name })")
             }

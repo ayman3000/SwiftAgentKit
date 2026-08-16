@@ -38,12 +38,18 @@ public final class ReplayRun: @unchecked Sendable {
     /// Run the agent to completion and return the final answer.
     @discardableResult
     public func run(_ query: String) async throws -> String {
-        let observer = agent.onEvent { [weak self] event in
+        let observer = await agent.onEvent { [weak self] event in
             guard let self else { return }
             self.lock.lock(); self._events.append(event); self.lock.unlock()
         }
-        defer { agent.removeObserver(observer) }
-        return try await agent.run(query)
+        do {
+            let answer = try await agent.run(query)
+            await agent.removeObserver(observer)
+            return answer
+        } catch {
+            await agent.removeObserver(observer)
+            throw error
+        }
     }
 
     public var capturedRequests: [LLMRequest] { provider.capturedRequests }

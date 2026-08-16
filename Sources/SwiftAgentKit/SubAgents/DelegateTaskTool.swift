@@ -70,10 +70,10 @@ public final class DelegateTaskTool: AgentTool, @unchecked Sendable {
         spawner.track(id, child)
         defer { spawner.untrack(id) }
 
-        let forwarder = child.onEvent { [emit] event in
+        let forwarder = await child.onEvent { [emit] event in
             emit(.subAgentEvent(id: id, event: event))
         }
-        defer { child.removeObserver(forwarder) }
+        defer { Task { await child.removeObserver(forwarder) } }
 
         emit(.subAgentStarted(id: id, label: label))
         do {
@@ -82,7 +82,7 @@ public final class DelegateTaskTool: AgentTool, @unchecked Sendable {
             let answer = try await withTaskCancellationHandler {
                 try await child.run(prompt)
             } onCancel: {
-                child.cancel()
+                Task { await child.cancel() }
             }
             let trimmed = answer.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else {
