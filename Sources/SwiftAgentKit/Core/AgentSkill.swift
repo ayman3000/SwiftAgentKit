@@ -56,12 +56,56 @@ public struct AgentSkill: Sendable, Identifiable, Equatable {
     }
 
     /// Check if this skill should be activated for the given query.
+    ///
+    /// Trigger lists are often model-authored and contain generic English
+    /// words ("current", "work", "needs") that would light the skill up on
+    /// every ordinary query under a raw substring check. Matching rules:
+    /// - Multi-word keywords ("new project") match as substrings — a phrase
+    ///   is distinctive enough on its own.
+    /// - Single-word keywords are ignored if they are stopwords, and must
+    ///   match a whole query word (prefix allowed, so "scaffold" still
+    ///   catches "scaffolding" — but "art" no longer catches "start").
     public func matches(_ query: String) -> Bool {
         let lowerQuery = query.lowercased()
+        let queryWords: [String] = lowerQuery
+            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+            .map(String.init)
+
         return triggerKeywords.contains { keyword in
-            lowerQuery.contains(keyword.lowercased())
+            let k = keyword.lowercased().trimmingCharacters(in: .whitespaces)
+            guard !k.isEmpty else { return false }
+            if k.contains(" ") {
+                return lowerQuery.contains(k)
+            }
+            guard !Self.genericTriggerWords.contains(k) else { return false }
+            return queryWords.contains { $0 == k || $0.hasPrefix(k) }
         }
     }
+
+    /// Common English words that are useless as single-word triggers —
+    /// matching on them injects skills into unrelated queries. A word here
+    /// can still participate in a multi-word phrase trigger.
+    static let genericTriggerWords: Set<String> = [
+        // articles / pronouns / prepositions / conjunctions
+        "a", "an", "the", "i", "you", "he", "she", "it", "we", "they", "me", "my", "your",
+        "his", "her", "its", "our", "their", "this", "that", "these", "those",
+        "in", "on", "at", "of", "to", "for", "from", "with", "without", "by", "about",
+        "into", "onto", "over", "under", "up", "down", "out", "off", "and", "or", "but",
+        "if", "then", "else", "when", "while", "as", "so", "than", "too", "very",
+        // auxiliaries / common verbs
+        "is", "are", "was", "were", "be", "been", "being", "am", "do", "does", "did",
+        "have", "has", "had", "can", "could", "will", "would", "shall", "should",
+        "may", "might", "must", "get", "gets", "got", "make", "makes", "made",
+        "use", "uses", "used", "using", "go", "goes", "going", "want", "wants",
+        "need", "needs", "needed", "start", "starts", "starting", "run", "runs", "running",
+        "work", "works", "working", "help", "please", "let", "give", "take", "put",
+        // generic qualifiers / time words
+        "new", "old", "current", "currently", "now", "right", "just", "here", "there",
+        "all", "any", "some", "each", "every", "other", "more", "most", "first", "last",
+        "next", "before", "after", "again", "also", "only", "same", "own",
+        "today", "session", "thing", "things", "way", "one", "two", "how", "what",
+        "which", "who", "where", "why", "yes", "no", "not", "ok",
+    ]
 
     /// Render the skill as an instruction block for the system prompt.
     public func render() -> String {
