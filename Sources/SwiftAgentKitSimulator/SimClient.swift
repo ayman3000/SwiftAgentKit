@@ -9,6 +9,7 @@ public protocol SimDriving: Sendable {
     func type(bundleId: String, text: String, target: SimWire.Target?) async throws
     func swipe(bundleId: String, direction: String, target: SimWire.Target?) async throws
     func pressHome() async throws
+    func rotate(bundleId: String, orientation: String) async throws -> UITree
     func waitFor(bundleId: String, target: SimWire.Target, timeoutSeconds: Double, forDisappearance: Bool) async throws -> UITree
     func alert(accept: Bool) async throws
     func launch(bundleId: String, terminateFirst: Bool) async throws
@@ -81,6 +82,12 @@ public actor SimClient: SimDriving {
         _ = try await post("/swipe",
                            SimWire.SwipeRequest(bundleId: bundleId, direction: direction, target: target),
                            as: SimWire.OKResponse.self)
+    }
+
+    public func rotate(bundleId: String, orientation: String) async throws -> UITree {
+        try await post("/rotate",
+                       SimWire.RotateRequest(bundleId: bundleId, orientation: orientation),
+                       as: SimWire.TreeResponse.self).tree
     }
 
     public func pressHome() async throws {

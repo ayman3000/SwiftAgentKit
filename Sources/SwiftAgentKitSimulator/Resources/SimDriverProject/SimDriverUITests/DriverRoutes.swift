@@ -46,6 +46,22 @@ final class DriverRoutes {
                 default: return .json(SimWire.ErrorResponse(code: "bad_request", message: "direction must be up/down/left/right"), status: 400)
                 }
                 return .json(SimWire.OKResponse())
+            case ("POST", "/rotate"):
+                let r = try decode(SimWire.RotateRequest.self, req)
+                let orientation: UIDeviceOrientation
+                switch r.orientation {
+                case "portrait": orientation = .portrait
+                case "landscape_left": orientation = .landscapeLeft
+                case "landscape_right": orientation = .landscapeRight
+                case "portrait_upside_down": orientation = .portraitUpsideDown
+                default:
+                    return .json(SimWire.ErrorResponse(code: "bad_request",
+                        message: "orientation must be portrait/landscape_left/landscape_right/portrait_upside_down"), status: 400)
+                }
+                XCUIDevice.shared.orientation = orientation
+                // Give the app a beat to relayout before snapshotting.
+                Thread.sleep(forTimeInterval: 0.5)
+                return .json(SimWire.TreeResponse(tree: try snapshot(bundleId: r.bundleId)))
             case ("POST", "/press"):
                 let r = try decode(SimWire.PressRequest.self, req)
                 guard r.button == "home" else {

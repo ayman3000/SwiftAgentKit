@@ -163,6 +163,13 @@ public enum SimWire {
             self.bundleId = bundleId; self.direction = direction; self.target = target
         }
     }
+    public struct RotateRequest: Codable, Sendable, Equatable {
+        public var bundleId: String
+        public var orientation: String   // portrait | landscape_left | landscape_right | portrait_upside_down
+        public init(bundleId: String, orientation: String) {
+            self.bundleId = bundleId; self.orientation = orientation
+        }
+    }
     public struct PressRequest: Codable, Sendable, Equatable {
         public var button: String   // "home"
         public init(button: String) { self.button = button }

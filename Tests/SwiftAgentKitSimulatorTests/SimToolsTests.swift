@@ -32,6 +32,12 @@ final class MockDriver: SimDriving, @unchecked Sendable {
         if let e = errorToThrow { throw e }
     }
 
+    func rotate(bundleId: String, orientation: String) async throws -> UITree {
+        lastCall = "rotate:\(orientation)"
+        if let e = errorToThrow { throw e }
+        return treeToReturn
+    }
+
     func pressHome() async throws {
         lastCall = "pressHome"
         if let e = errorToThrow { throw e }
@@ -358,11 +364,41 @@ final class SimToolsTests: XCTestCase {
         XCTAssertFalse(SimListTool().requiresConfirmation)
     }
 
+
+    // MARK: sim_rotate
+
+    func testRotateSendsOrientationAndReturnsSlimUI() async throws {
+        let mock = MockDriver()
+        let tool = SimRotateTool(client: mock, session: makeSession())
+        let r = try await tool.execute(parameters: ["orientation": "landscape_left"])
+        XCTAssertFalse(r.isError)
+        XCTAssertEqual(mock.lastCall, "rotate:landscape_left")
+        XCTAssertTrue(r.result.contains("landscape_left"))
+        XCTAssertTrue(r.result.contains("UI of com.x"))   // slim tree of the post-rotation snapshot
+    }
+
+    func testRotateRejectsUnknownOrientation() async throws {
+        let mock = MockDriver()
+        let tool = SimRotateTool(client: mock, session: makeSession())
+        let r = try await tool.execute(parameters: ["orientation": "sideways"])
+        XCTAssertTrue(r.isError)
+        XCTAssertTrue(r.result.contains("portrait"))          // error names the valid options
+        XCTAssertTrue(r.result.contains("landscape_left"))
+        XCTAssertNotEqual(mock.lastCall, "rotate:sideways")   // never reached the driver
+    }
+
+    func testRotateRequiresOrientation() async throws {
+        let tool = SimRotateTool(client: MockDriver(), session: makeSession())
+        let r = try await tool.execute(parameters: [:])
+        XCTAssertTrue(r.isError)
+        XCTAssertTrue(r.result.contains("orientation"))
+    }
+
     // MARK: makeSimulatorTools
 
-    func testMakeSimulatorToolsReturns15Tools() {
+    func testMakeSimulatorToolsReturns16Tools() {
         let tools = makeSimulatorTools(session: SimSession(), client: MockDriver())
-        XCTAssertEqual(tools.count, 15)
+        XCTAssertEqual(tools.count, 16)
     }
 
     func testMakeSimulatorToolsHasExpectedNames() {
@@ -372,7 +408,7 @@ final class SimToolsTests: XCTestCase {
         let names = Set(tools.map { $0.name })
         let expected: Set<String> = ["sim_list", "sim_boot", "sim_launch", "sim_terminate",
                                      "sim_ui", "sim_find", "sim_tap", "sim_type", "sim_swipe",
-                                     "sim_press", "sim_wait", "sim_alert", "sim_screenshot",
+                                     "sim_press", "sim_wait", "sim_alert", "sim_screenshot", "sim_rotate",
                                      "sim_build_install", "sim_logs"]
         XCTAssertEqual(names, expected)
     }

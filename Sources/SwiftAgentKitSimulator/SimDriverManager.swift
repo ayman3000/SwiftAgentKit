@@ -25,7 +25,7 @@ public actor SimDriverManager {
     /// Bump whenever anything under Resources/SimDriverProject changes.
     /// v2 = loopback-only bind in DriverMain.swift.
     /// v3 = ref taps resolve back to the live element (element-anchored tap) in DriverRoutes.swift.
-    static let driverSourceVersion = 3
+    static let driverSourceVersion = 4
 
     public static func cacheDirectory(xcodeVersion: String, runtime: String) -> URL {
         let shortRuntime = runtime.replacingOccurrences(

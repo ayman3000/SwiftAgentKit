@@ -264,6 +264,58 @@ public struct SimSwipeTool: AgentTool {
     }
 }
 
+// MARK: - SimRotateTool
+
+/// Rotate the simulator to a specific orientation and return the app's fresh
+/// slim UI tree — so the agent can verify the layout actually adapted (the
+/// use case is "check this app in landscape").
+public struct SimRotateTool: AgentTool {
+    public let name = "sim_rotate"
+    public let description = """
+    Rotate the simulator to a specific orientation and return the resulting UI \
+    tree, so you can check whether the app's layout supports it. Use \
+    `landscape_left`/`landscape_right` to test landscape, `portrait` to return.
+    """
+    public let parameters = ToolParameters(
+        properties: [
+            "orientation": ToolParameterProperty(type: "string",
+                description: "Target orientation.",
+                enum: ["portrait", "landscape_left", "landscape_right", "portrait_upside_down"]),
+            "bundle_id": ToolParameterProperty(type: "string", description: "Defaults to the launched app."),
+        ],
+        required: ["orientation"])
+    let client: any SimDriving
+    let session: SimSession
+    public init(client: any SimDriving, session: SimSession) { self.client = client; self.session = session }
+
+    static let validOrientations = ["portrait", "landscape_left", "landscape_right", "portrait_upside_down"]
+
+    public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
+        let bundleId: String
+        switch resolveBundleId(parameters, session, toolName: name) {
+        case .missing(let e): return e
+        case .resolved(let b): bundleId = b
+        }
+        guard let orientation = parameters["orientation"] as? String else {
+            return .error(toolCallId: "", toolName: name, message: "sim_rotate requires `orientation`.")
+        }
+        guard Self.validOrientations.contains(orientation) else {
+            return .error(toolCallId: "", toolName: name,
+                message: "Unknown orientation '\(orientation)'. Use one of: \(Self.validOrientations.joined(separator: ", ")).")
+        }
+        do {
+            let tree = try await client.rotate(bundleId: bundleId, orientation: orientation)
+            return .success(toolCallId: "", toolName: name,
+                result: "Rotated to \(orientation).\n\n" + tree.renderSlim())
+        } catch let e as SimDriverError {
+            return .error(toolCallId: "", toolName: name,
+                message: e.localizedDescription + (e.tree.map { "\n\nCurrent UI:\n" + $0.renderCompact() } ?? ""))
+        } catch {
+            return .error(toolCallId: "", toolName: name, message: "Unexpected error: \(error.localizedDescription)")
+        }
+    }
+}
+
 // MARK: - SimPressTool
 
 public struct SimPressTool: AgentTool {
@@ -475,6 +527,7 @@ public func makeSimulatorTools(session: SimSession, client: any SimDriving) -> [
      SimTapTool(client: client, session: session),
      SimTypeTool(client: client, session: session), SimSwipeTool(client: client, session: session),
      SimPressTool(client: client, session: session), SimWaitTool(client: client, session: session),
+     SimRotateTool(client: client, session: session),
      SimAlertTool(client: client, session: session), SimScreenshotTool(client: client, session: session),
      SimBuildInstallTool(session: session), SimLogsTool(session: session)]
 }
