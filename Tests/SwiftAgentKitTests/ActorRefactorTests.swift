@@ -71,3 +71,19 @@ private struct StallingProvider: LLMProvider {
     await gate.release()
     _ = try await run.value
 }
+
+// MARK: - Retry classification
+
+@Test func connectionRefusedIsNotRetryable() {
+    // "Nothing is listening" (Ollama not launched) must fail fast — retrying
+    // burns ~40 silent seconds against a server that isn't there.
+    #expect(Agent.isRetryableLLMError(LLMError.networkError("Could not connect to the server.")) == false)
+    #expect(Agent.isRetryableLLMError(LLMError.networkError("Connection refused")) == false)
+}
+
+@Test func transientNetworkErrorsStillRetry() {
+    #expect(Agent.isRetryableLLMError(LLMError.networkError("The network connection was lost.")) == true)
+    #expect(Agent.isRetryableLLMError(LLMError.networkError("The request timed out.")) == true)
+    #expect(Agent.isRetryableLLMError(LLMError.httpError(503, nil)) == true)
+    #expect(Agent.isRetryableLLMError(LLMError.httpError(400, nil)) == false)
+}

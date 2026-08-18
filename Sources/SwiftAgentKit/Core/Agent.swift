@@ -571,7 +571,14 @@ public actor Agent {
                 return code == 429 || code >= 500   // rate-limit + server errors
             case .invalidRequest, .unsupportedOperation, .unknownProvider:
                 return false                          // permanent client errors
-            case .invalidResponse, .streamingError, .providerError, .networkError:
+            case .networkError(let message):
+                // "Nothing is listening" is not transient: a fresh install
+                // without Ollama running would otherwise sit through the full
+                // retry backoff (~40s of silence) before erroring. Genuine
+                // blips (resets, timeouts, dropped connections) stay retryable.
+                let m = message.lowercased()
+                return !(m.contains("could not connect") || m.contains("connection refused"))
+            case .invalidResponse, .streamingError, .providerError:
                 return true                           // transient (incl. Ollama load bodies)
             }
         default:
