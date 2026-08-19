@@ -69,3 +69,21 @@ import Testing
     #expect(worktreesSkill.matches("set up git worktrees for this feature") == true)
     #expect(worktreesSkill.matches("what is the isolation model here?") == true)
 }
+
+@Test func shortTriggerDoesNotPrefixMatchLongerUnrelatedWord() {
+    // Real-world false positive: "repo" (github-workflow trigger) prefix-matched
+    // "report" in "…and report what you found", injecting the skill into a
+    // simulator-testing prompt. Prefix matching exists for plurals/gerunds of
+    // DISTINCTIVE triggers ("scaffold" → "scaffolding") — a 4-letter trigger
+    // swallowing a different 6-letter word is not that.
+    let github = AgentSkill(name: "github-workflow",
+                            triggerKeywords: ["github", "clone", "branch", "commit", "repo"],
+                            instructions: "…")
+    #expect(github.matches("take a screenshot of each tab, and report what you found") == false)
+    #expect(github.matches("push this to the repo") == true)            // exact word still fires
+    #expect(github.matches("check both repos") == true)                 // plural still fires
+
+    // Long triggers keep their gerund/plural prefix behavior.
+    let scaffold = AgentSkill(name: "scaffold", triggerKeywords: ["scaffold"], instructions: "…")
+    #expect(scaffold.matches("scaffolding a new app") == true)
+}

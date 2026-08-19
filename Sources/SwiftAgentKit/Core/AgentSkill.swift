@@ -63,8 +63,10 @@ public struct AgentSkill: Sendable, Identifiable, Equatable {
     /// - Multi-word keywords ("new project") match as substrings — a phrase
     ///   is distinctive enough on its own.
     /// - Single-word keywords are ignored if they are stopwords, and must
-    ///   match a whole query word (prefix allowed, so "scaffold" still
-    ///   catches "scaffolding" — but "art" no longer catches "start").
+    ///   match a whole query word. Beyond exact equality, only inflected
+    ///   forms count ("scaffold" catches "scaffolding", "repo" catches
+    ///   "repos") — an arbitrary prefix does not ("repo" must NOT catch
+    ///   "report", "art" must not catch "start").
     public func matches(_ query: String) -> Bool {
         let lowerQuery = query.lowercased()
         let queryWords: [String] = lowerQuery
@@ -78,9 +80,16 @@ public struct AgentSkill: Sendable, Identifiable, Equatable {
                 return lowerQuery.contains(k)
             }
             guard !Self.genericTriggerWords.contains(k) else { return false }
-            return queryWords.contains { $0 == k || $0.hasPrefix(k) }
+            return queryWords.contains { word in
+                guard word.hasPrefix(k) else { return false }
+                return Self.inflectionSuffixes.contains(String(word.dropFirst(k.count)))
+            }
         }
     }
+
+    /// Word endings that make a query word count as a form of a trigger word
+    /// ("" = exact). Anything else is a different word, not an inflection.
+    static let inflectionSuffixes: Set<String> = ["", "s", "es", "ed", "d", "ing"]
 
     /// Common English words that are useless as single-word triggers —
     /// matching on them injects skills into unrelated queries. A word here
