@@ -123,8 +123,11 @@ public struct PatchFileTool: AgentTool {
     Edit an existing file by applying a unified diff (git / `diff -u` format). \
     Provide the smallest diff that makes the change — one or more `@@` hunks with \
     a few lines of surrounding context; `-` lines are removed, `+` lines added. \
-    Line numbers in `@@` headers may be approximate (matched by context). Prefer \
-    this over `write_file` for changes to an existing file. Requires approval.
+    Line numbers in `@@` headers may be approximate (matched by context, tolerant \
+    of whitespace drift). Prefer this over `write_file` for changes to an existing \
+    file. If a hunk fails, the error includes the file's current lines near the \
+    spot — regenerate the diff from those, don't fall back to rewriting the whole \
+    file. Requires approval.
     """
     public let parameters = ToolParameters(
         properties: [
@@ -166,10 +169,14 @@ public struct PatchFileTool: AgentTool {
         switch UnifiedDiff.apply(hunks, to: source) {
         case .failure(let err):
             switch err {
-            case .hunkNotFound(let index, let preview):
+            case .hunkNotFound(let index, let preview, let nearby):
                 return .error(toolCallId: "", toolName: name, message: """
                 Hunk \(index + 1) didn't match \(raw) — the surrounding lines weren't found: "\(preview)". \
-                Re-read the file and regenerate the diff against its current contents. Nothing was changed.
+                Nothing was changed. The file's CURRENT content near that spot is:
+
+                \(nearby)
+
+                Regenerate the diff against these actual lines (do not rewrite the whole file).
                 """)
             case .cannotAnchor(let index):
                 return .error(toolCallId: "", toolName: name, message: """

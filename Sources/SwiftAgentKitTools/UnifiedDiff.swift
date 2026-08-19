@@ -48,7 +48,10 @@ enum UnifiedDiff {
 
     enum ApplyError: Error, Equatable {
         /// A hunk's context/removed block was found nowhere in the source.
-        case hunkNotFound(index: Int, preview: String)
+        /// `nearby` is the file's actual, line-numbered content around the
+        /// hunk's hint line — handed back so the caller (an LLM) can regenerate
+        /// the diff anchored on reality instead of a stale mental copy.
+        case hunkNotFound(index: Int, preview: String, nearby: String)
         /// An insertion-only hunk couldn't be anchored (its line number is out of range).
         case cannotAnchor(index: Int)
     }
@@ -113,6 +116,10 @@ enum UnifiedDiff {
     // MARK: - Apply
 
     /// Apply hunks to `source`, matching each by context near its hint line.
+    /// Resilient to LLM drift: falls back to trailing-whitespace-tolerant
+    /// matching, then GNU-patch-style fuzz (dropping up to 2 drifted edge
+    /// CONTEXT lines — never +/- lines). Context lines are preserved from the
+    /// SOURCE, so a tolerant match never rewrites whitespace it didn't touch.
     /// All-or-nothing: any failure returns an error and no partial result.
     static func apply(_ hunks: [Hunk], to source: String) -> Result<String, ApplyError> {
         let hasTrailingNewline = source.hasSuffix("\n")
@@ -122,23 +129,36 @@ enum UnifiedDiff {
         var offset = 0   // cumulative shift from prior hunks
 
         for (i, hunk) in hunks.enumerated() {
-            let before = hunk.before
-            let after = hunk.after
             let hint = max(0, hunk.oldStart - 1 + offset)
 
-            if before.isEmpty {
+            if hunk.before.isEmpty {
                 // Pure insertion — anchor at the hinted line.
+                let after = hunk.after
                 guard hint <= lines.count else { return .failure(.cannotAnchor(index: i)) }
                 lines.insert(contentsOf: after, at: hint)
                 offset += after.count
                 continue
             }
 
-            guard let match = locate(before, in: lines, near: hint) else {
-                return .failure(.hunkNotFound(index: i, preview: preview(before)))
+            guard let (match, core) = resolve(hunk, in: lines, near: hint) else {
+                return .failure(.hunkNotFound(index: i, preview: preview(hunk.before),
+                                              nearby: nearbyRegion(lines, around: hint)))
             }
-            lines.replaceSubrange(match..<(match + before.count), with: after)
-            offset += after.count - before.count
+
+            // Rebuild the region from the hunk's line kinds so context lines
+            // keep the source's exact text (matters for tolerant matches).
+            var replacement: [String] = []
+            var beforeCount = 0
+            var si = match
+            for l in core {
+                switch l {
+                case .context: replacement.append(lines[si]); si += 1; beforeCount += 1
+                case .remove: si += 1; beforeCount += 1
+                case .add(let s): replacement.append(s)
+                }
+            }
+            lines.replaceSubrange(match..<(match + beforeCount), with: replacement)
+            offset += replacement.count - beforeCount
         }
 
         var result = lines.joined(separator: "\n")
@@ -146,17 +166,64 @@ enum UnifiedDiff {
         return .success(result)
     }
 
-    /// Find the start index where `block` occurs contiguously in `lines`,
-    /// choosing the occurrence nearest `hint`. Line numbers are hints only.
-    private static func locate(_ block: [String], in lines: [String], near hint: Int) -> Int? {
-        guard !block.isEmpty, block.count <= lines.count else { return nil }
-        var matches: [Int] = []
-        for start in 0...(lines.count - block.count) {
-            if Array(lines[start..<(start + block.count)]) == block {
-                matches.append(start)
+    /// Find where a hunk applies: exact match first, then trailing-whitespace-
+    /// tolerant, then fuzz 1–2 (eliding drifted edge context lines only).
+    /// Returns the match start and the (possibly edge-trimmed) hunk lines.
+    private static func resolve(_ hunk: Hunk, in lines: [String], near hint: Int)
+        -> (start: Int, core: [Line])? {
+        if let m = locate(hunk.before, in: lines, near: hint) { return (m, hunk.lines) }
+        if let m = locate(hunk.before, in: lines, near: hint, tolerant: true) { return (m, hunk.lines) }
+
+        // Fuzz: only leading/trailing runs of CONTEXT lines may be dropped.
+        let leadCtx = hunk.lines.prefix(while: { if case .context = $0 { return true }; return false }).count
+        let trailCtx = hunk.lines.reversed().prefix(while: { if case .context = $0 { return true }; return false }).count
+        for fuzz in 1...2 {
+            for lead in 0...min(fuzz, leadCtx) {
+                for trail in 0...min(fuzz, trailCtx) where max(lead, trail) == fuzz {
+                    let core = Array(hunk.lines.dropFirst(lead).dropLast(trail))
+                    let before = Hunk(oldStart: 0, lines: core).before
+                    guard !before.isEmpty else { continue }
+                    if let m = locate(before, in: lines, near: hint + lead)
+                        ?? locate(before, in: lines, near: hint + lead, tolerant: true) {
+                        return (m, core)
+                    }
+                }
             }
         }
+        return nil
+    }
+
+    /// Find the start index where `block` occurs contiguously in `lines`,
+    /// choosing the occurrence nearest `hint`. Line numbers are hints only.
+    /// `tolerant` compares with trailing whitespace stripped.
+    private static func locate(_ block: [String], in lines: [String], near hint: Int,
+                               tolerant: Bool = false) -> Int? {
+        guard !block.isEmpty, block.count <= lines.count else { return nil }
+        func eq(_ a: String, _ b: String) -> Bool {
+            tolerant ? rstrip(a) == rstrip(b) : a == b
+        }
+        var matches: [Int] = []
+        outer: for start in 0...(lines.count - block.count) {
+            for j in 0..<block.count where !eq(lines[start + j], block[j]) { continue outer }
+            matches.append(start)
+        }
         return matches.min { abs($0 - hint) < abs($1 - hint) }
+    }
+
+    private static func rstrip(_ s: String) -> Substring {
+        var v = Substring(s)
+        while let last = v.last, last == " " || last == "\t" { v.removeLast() }
+        return v
+    }
+
+    /// The file's actual, line-numbered content around `hint` — returned in
+    /// hunkNotFound errors so an LLM can regenerate its diff against reality.
+    private static func nearbyRegion(_ lines: [String], around hint: Int, radius: Int = 8) -> String {
+        guard !lines.isEmpty else { return "(file is empty)" }
+        let center = min(max(hint, 0), lines.count - 1)
+        let lo = max(0, center - radius)
+        let hi = min(lines.count - 1, center + radius)
+        return (lo...hi).map { "\($0 + 1) | \(lines[$0])" }.joined(separator: "\n")
     }
 
     private static func preview(_ block: [String]) -> String {

@@ -75,7 +75,7 @@ struct UnifiedDiffTests {
         let hunks = UnifiedDiff.parse(patch)!
         let result = UnifiedDiff.apply(hunks, to: source)
         guard case .failure(let err) = result else { Issue.record("expected failure"); return }
-        if case .hunkNotFound(let index, _) = err { #expect(index == 0) }
+        if case .hunkNotFound(let index, _, _) = err { #expect(index == 0) }
         else { Issue.record("expected hunkNotFound, got \(err)") }
     }
 
@@ -108,5 +108,45 @@ struct UnifiedDiffTests {
         let source = "x\ny\nz\nx\nw\n"
         let patch = "@@ -4,1 +4,1 @@\n-x\n+X\n"
         #expect(applied(patch, to: source) == "x\ny\nz\nX\nw\n")
+    }
+
+    // MARK: - Resilience (whitespace drift, fuzz, self-healing errors)
+
+    @Test func trailingWhitespaceDriftStillMatches() {
+        // Source lines carry trailing spaces the model's diff doesn't reproduce.
+        let source = "func a() {  \n    body\n}\n"
+        let patch = "@@ -1,3 +1,3 @@\n func a() {\n-    body\n+    newBody\n }\n"
+        #expect(applied(patch, to: source) == "func a() {  \n    newBody\n}\n")
+    }
+
+    @Test func fuzzDropsDriftedEdgeContext() {
+        // The hunk's first context line drifted (source has "// v2" not "// v1"),
+        // but the core (remove + trailing context) matches — GNU-patch-style fuzz
+        // should drop the unmatched edge context and still apply.
+        let source = "// v2\nlet x = 1\nlet y = 2\n"
+        let patch = "@@ -1,3 +1,3 @@\n // v1\n-let x = 1\n+let x = 10\n let y = 2\n"
+        #expect(applied(patch, to: source) == "// v2\nlet x = 10\nlet y = 2\n")
+    }
+
+    @Test func fuzzNeverDropsRemoveLines() {
+        // A hunk whose REMOVED line doesn't match must still fail — fuzz only
+        // elides edge context, never the change itself.
+        let source = "a\nb\nc\n"
+        let patch = "@@ -1,3 +1,3 @@\n a\n-NOPE\n+B\n c\n"
+        #expect(applied(patch, to: source) == nil)
+    }
+
+    @Test func hunkNotFoundCarriesCurrentFileRegion() {
+        // The error should hand back the file's ACTUAL lines near the hint so
+        // the model can regenerate an anchored diff instead of guessing again.
+        let source = (1...20).map { "line\($0)" }.joined(separator: "\n") + "\n"
+        let patch = "@@ -10,2 +10,2 @@\n stale-context\n-gone\n+replacement\n"
+        let hunks = UnifiedDiff.parse(patch)!
+        let result = UnifiedDiff.apply(hunks, to: source)
+        guard case .failure(.hunkNotFound(_, _, let nearby)) = result else {
+            Issue.record("expected hunkNotFound"); return
+        }
+        #expect(nearby.contains("line10"))
+        #expect(nearby.contains("10 |"))   // numbered, so the model can re-anchor
     }
 }
