@@ -2397,3 +2397,26 @@ func liveAgentRecallsToolConclusionAfterCompaction() async throws {
     #expect(llm[0].role == .tool)
     #expect(llm[0].images.map(\.base64) == [img.base64])
 }
+
+@Test func testCurrentUserQuerySurvivesWindowTrimming() {
+    // Real-world failure: in a single-task run the task statement is the OLDEST
+    // non-system message, so oldest-first window eviction killed it FIRST — after
+    // ~50 tool steps the model asked "what is the task?". The most recent user
+    // message (the active task) must be pinned through trimming.
+    let conv = Conversation(contextWindow: 8192, maxMessages: 200)
+    conv.setSystemMessage(.system("system"))
+    conv.append(.user("build and test the Gold Dollar app on the simulator"))
+    for i in 0..<40 {
+        let call = AgentToolCall(id: "c\(i)", name: "sim_ui", parameters: [:])
+        conv.append(.assistant(content: "", toolCalls: [call]))
+        conv.append(.tool(results: [.success(toolCallId: "c\(i)", toolName: "sim_ui",
+                                             result: String(repeating: "ui tree ", count: 400))]))
+    }
+
+    let forLLM = conv.messagesForLLMCall()
+    // Trimming must have happened (~37k estimated tokens vs an 8k window)…
+    #expect(forLLM.count < conv.allMessages().count + 1)
+    #expect(forLLM.count < 60)
+    // …but the task statement survives it.
+    #expect(forLLM.contains { $0.role == .user && $0.content.contains("Gold Dollar") })
+}
