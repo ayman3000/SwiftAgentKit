@@ -1252,6 +1252,11 @@ public actor Agent {
         var streamedText = ""
         var streamedToolCalls: [LLMToolCall] = []
         var sawNativeToolSignal = false
+        // Providers report real token usage on the final `.finish` chunk; capture
+        // it so the synthesized streaming response carries the model's actual
+        // consumed tokens rather than dropping them (which forced cost/context
+        // onto a local estimate).
+        var streamedUsage: LLMUsage? = nil
         for try await chunk in config.provider.stream(request) {
             switch chunk {
             case .text(let text):
@@ -1261,7 +1266,8 @@ public actor Agent {
             case .toolCall(let call):
                 streamedToolCalls.append(call)
                 sawNativeToolSignal = true
-            case .finish(let reason, _):
+            case .finish(let reason, let usage):
+                if let usage { streamedUsage = usage }
                 if reason == .toolCalls { sawNativeToolSignal = true }
             case .error(let error):
                 throw error
@@ -1277,6 +1283,7 @@ public actor Agent {
             let response = LLMResponse(
                 text: streamedText,
                 finishReason: .toolCalls,
+                usage: streamedUsage,
                 toolCalls: streamedToolCalls,
                 request: request,
                 providerName: type(of: config.provider).name
@@ -1307,7 +1314,7 @@ public actor Agent {
         let synthesized = LLMResponse(
             text: streamedText,
             finishReason: .stop,
-            usage: nil,
+            usage: streamedUsage,
             toolCalls: [],
             request: request,
             providerName: type(of: config.provider).name
