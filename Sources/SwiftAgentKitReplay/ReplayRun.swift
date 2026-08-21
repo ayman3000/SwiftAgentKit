@@ -52,6 +52,21 @@ public final class ReplayRun: @unchecked Sendable {
         }
     }
 
+    /// Run via the STREAMING path (`onText` non-nil) to completion, returning
+    /// the concatenated streamed text. Use this to exercise streaming-only
+    /// behavior (e.g. provider usage captured from the final `.finish` chunk).
+    @discardableResult
+    public func runStreaming(_ query: String) async throws -> String {
+        let observer = agent.onEvent { [weak self] event in
+            guard let self else { return }
+            self.lock.lock(); self._events.append(event); self.lock.unlock()
+        }
+        defer { agent.removeObserver(observer) }
+        var full = ""
+        for try await chunk in agent.runStreaming(query) { full += chunk }
+        return full
+    }
+
     public var capturedRequests: [LLMRequest] { provider.capturedRequests }
 
     public var events: [AgentEvent] {
