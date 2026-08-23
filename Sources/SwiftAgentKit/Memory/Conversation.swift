@@ -136,6 +136,16 @@ public class Conversation: @unchecked Sendable {
         messages.removeAll()
     }
 
+    /// Apply a pure transform to every stored NON-system message, in place.
+    /// For history-externalization flows (e.g. swapping image bytes for a
+    /// textual description). System messages pass through untouched; count
+    /// and order are preserved.
+    public func rewriteMessages(_ transform: (AgentMessage) -> AgentMessage) {
+        lock.lock()
+        defer { lock.unlock() }
+        messages = messages.map { $0.role == .system ? $0 : transform($0) }
+    }
+
     /// Replace the system message(s) with a new one.
     public func setSystemMessage(_ message: AgentMessage) {
         lock.lock()
