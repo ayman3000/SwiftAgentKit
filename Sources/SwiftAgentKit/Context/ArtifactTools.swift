@@ -50,22 +50,29 @@ public struct ArtifactReadTool: AgentTool {
     }
 }
 
-/// Search within a stored tool output for lines matching a substring.
+/// Search within a stored tool output for lines matching one or more
+/// substrings, with surrounding context lines.
 public struct ArtifactSearchTool: AgentTool {
     public let name = "artifact_search"
     public let description = """
-    Search a previous tool call's full output for lines containing a substring. \
-    Returns matching line numbers and text. Use the artifact id from the tool \
-    ledger.
+    Search a previous tool call's full output for lines containing substrings. \
+    Pass ALL the terms you want to check in ONE call via `queries` (e.g. \
+    ["error:", "TEST FAILED", "warning"]) instead of one call per term. Returns \
+    matching lines with 2 lines of context each. Use the artifact id from the \
+    tool ledger.
     """
     public let parameters = ToolParameters(
         properties: [
             "artifact_id": ToolParameterProperty(type: "string", description: "The artifact id, e.g. artifact-abc123"),
-            "query": ToolParameterProperty(type: "string", description: "Substring to search for (case-insensitive)"),
-            "max_matches": ToolParameterProperty(type: "integer", description: "Maximum matches to return (default 10)"),
+            "queries": ToolParameterProperty(type: "array", description: "Substrings to search for (case-insensitive) — batch every term you want to check into one call", itemsType: "string"),
+            "query": ToolParameterProperty(type: "string", description: "Single substring to search for (alternative to `queries`)"),
+            "max_matches": ToolParameterProperty(type: "integer", description: "Maximum matches per query (default 10)"),
         ],
-        required: ["artifact_id", "query"]
+        required: ["artifact_id"]
     )
+
+    /// Context lines shown above and below each match.
+    static let contextLines = 2
 
     private let store: any ArtifactStore
 
@@ -77,17 +84,57 @@ public struct ArtifactSearchTool: AgentTool {
         guard let id = parameters["artifact_id"] as? String, !id.isEmpty else {
             return .error(toolCallId: "", toolName: name, message: "artifact_search requires an artifact_id.")
         }
-        guard let query = parameters["query"] as? String, !query.isEmpty else {
-            return .error(toolCallId: "", toolName: name, message: "artifact_search requires a query.")
+        var queries: [String] = []
+        if let list = parameters["queries"] as? [Any] {
+            queries = list.compactMap { $0 as? String }.filter { !$0.isEmpty }
+        }
+        if let single = parameters["query"] as? String, !single.isEmpty {
+            queries.append(single)
+        }
+        guard !queries.isEmpty else {
+            return .error(toolCallId: "", toolName: name, message: "artifact_search requires `queries` (array) or `query` (string).")
         }
         let maxMatches = intValue(parameters["max_matches"]) ?? 10
 
-        let matches = await store.search(id, query: query, maxMatches: maxMatches)
-        if matches.isEmpty {
-            return .success(toolCallId: "", toolName: name, result: "No matches for \"\(query)\" in \(id).")
+        guard let artifact = await store.get(id) else {
+            return .error(toolCallId: "", toolName: name, message: "Unknown artifact: \(id)")
         }
-        let rendered = matches.map { "L\($0.line): \($0.text)" }.joined(separator: "\n")
+        let rendered = Self.render(content: artifact.content,
+                                   queries: queries,
+                                   maxMatchesPerQuery: maxMatches,
+                                   artifactID: id)
         return .success(toolCallId: "", toolName: name, result: rendered)
+    }
+
+    /// Render grouped, contextual matches for each query. Pure so it's testable.
+    static func render(content: String, queries: [String], maxMatchesPerQuery: Int, artifactID: String) -> String {
+        let lines = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let lowered = lines.map { $0.lowercased() }
+        var sections: [String] = []
+        for query in queries {
+            let needle = query.lowercased()
+            var matchIndices: [Int] = []
+            for (index, line) in lowered.enumerated() where line.contains(needle) {
+                matchIndices.append(index)
+                if matchIndices.count >= maxMatchesPerQuery { break }
+            }
+            if matchIndices.isEmpty {
+                sections.append("\"\(query)\": no matches")
+                continue
+            }
+            var blocks: [String] = []
+            for match in matchIndices {
+                let lo = max(0, match - contextLines)
+                let hi = min(lines.count - 1, match + contextLines)
+                let block = (lo...hi).map { i in
+                    let marker = i == match ? ">" : " "
+                    return "\(marker) L\(i + 1): \(lines[i].prefix(500))"
+                }.joined(separator: "\n")
+                blocks.append(block)
+            }
+            sections.append("\"\(query)\" — \(matchIndices.count) match\(matchIndices.count == 1 ? "" : "es"):\n" + blocks.joined(separator: "\n…\n"))
+        }
+        return "Results in \(artifactID):\n\n" + sections.joined(separator: "\n\n")
     }
 }
 

@@ -2420,3 +2420,69 @@ func liveAgentRecallsToolConclusionAfterCompaction() async throws {
     // …but the task statement survives it.
     #expect(forLLM.contains { $0.role == .user && $0.content.contains("Gold Dollar") })
 }
+
+// MARK: - Artifact triage ergonomics
+
+@Test func testActiveDisplayPreviewKeepsTail() async {
+    // xcodebuild-style output: boilerplate head, verdict at the END. The active
+    // preview must include the tail — a head-only preview hides the verdict and
+    // sends the model grepping the artifact keyword-by-keyword.
+    let manager = ContextManager(maxActiveResultChars: 120, inlineBudgetChars: 0)
+    let log = "Command line invocation: /Applications/Xcode.app/...\n"
+        + String(repeating: "CompileSwift normal arm64 SomeFile.swift\n", count: 50)
+        + "** TEST FAILED **"
+    let messages: [AgentMessage] = [
+        .user("run the tests"),
+        .assistant(content: "", toolCalls: [AgentToolCall(id: "c1", name: "run_shell")]),
+        .tool(results: [.success(toolCallId: "c1", toolName: "run_shell", result: log)]),
+    ]
+
+    let out = await manager.modelMessages(messages) { $0 }
+
+    let toolMsg = out.first { $0.role == .tool }
+    #expect(toolMsg?.content.contains("** TEST FAILED **") == true)          // tail preserved
+    #expect(toolMsg?.content.contains("Command line invocation") == true)    // head preserved
+    #expect(toolMsg?.content.contains("middle truncated") == true)           // cut is in the middle
+}
+
+@Test func testArtifactSearchBatchesMultipleQueriesWithContext() async throws {
+    let store = InMemoryArtifactStore()
+    let content = (1...20).map { "line \($0)" }.joined(separator: "\n")
+        .replacingOccurrences(of: "line 10", with: "error: something broke")
+    let artifact = await store.save(content, description: "test", toolCallID: nil)
+    let tool = ArtifactSearchTool(store: store)
+
+    let result = try await tool.execute(parameters: [
+        "artifact_id": artifact.id,
+        "queries": ["ERROR:", "TEST FAILED"],
+    ])
+
+    #expect(!result.isError)
+    // Case-insensitive hit, with the match marked and ±2 context lines…
+    #expect(result.result.contains("> L10: error: something broke"))
+    #expect(result.result.contains("L8: line 8"))
+    #expect(result.result.contains("L12: line 12"))
+    // …and the miss reported in the same single call.
+    #expect(result.result.contains("\"TEST FAILED\": no matches"))
+}
+
+@Test func testArtifactSearchSingleQueryStillWorks() async throws {
+    let store = InMemoryArtifactStore()
+    let artifact = await store.save("alpha\nbeta\ngamma", description: "t", toolCallID: nil)
+    let tool = ArtifactSearchTool(store: store)
+
+    let result = try await tool.execute(parameters: ["artifact_id": artifact.id, "query": "beta"])
+
+    #expect(!result.isError)
+    #expect(result.result.contains("> L2: beta"))
+}
+
+@Test func testArtifactSearchRequiresSomeQuery() async throws {
+    let store = InMemoryArtifactStore()
+    let artifact = await store.save("x", description: "t", toolCallID: nil)
+    let tool = ArtifactSearchTool(store: store)
+
+    let result = try await tool.execute(parameters: ["artifact_id": artifact.id])
+
+    #expect(result.isError)
+}

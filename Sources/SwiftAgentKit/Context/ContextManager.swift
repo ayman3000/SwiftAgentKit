@@ -355,8 +355,15 @@ public final class ContextManager: @unchecked Sendable {
             cacheActiveArtifact(result.toolCallId, artifact.id)
             artifactID = artifact.id
         }
-        let preview = String(result.result.prefix(maxActiveResultChars))
-        return "[Tool: \(name)] \(status)\n\(preview)\n… [truncated — full output in artifact \(artifactID); use artifact_read]"
+        // Build/test logs put the verdict at the END (a compiler head is
+        // boilerplate); a head-only preview hides it and sends the model
+        // grepping the artifact keyword-by-keyword. Keep a head AND a tail,
+        // cutting in the middle — same reasoning as the receipt summarizer.
+        let headLen = maxActiveResultChars / 3
+        let tailLen = maxActiveResultChars - headLen
+        let head = String(result.result.prefix(headLen))
+        let tail = String(result.result.suffix(tailLen))
+        return "[Tool: \(name)] \(status)\n\(head)\n… [middle truncated — full output in artifact \(artifactID); use artifact_read or artifact_search] …\n\(tail)"
     }
 
     private func cachedActiveArtifact(_ callID: String) -> String? {
