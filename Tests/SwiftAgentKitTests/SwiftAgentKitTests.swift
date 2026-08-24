@@ -2074,6 +2074,9 @@ private func readCall(_ id: String, path: String) -> AgentToolCall {
 
 @Test func testKeepLatestReadsDisabledRestoresOldBehavior() async {
     let manager = ContextManager(inlineBudgetChars: 900, keepLatestReadsInline: false)
+    // This test verifies the PROTECTION toggle, not eviction depth — pin the
+    // hysteresis to evict-just-enough so the depth matches its expectations.
+    manager.evictionTargetFraction = 1.0
     let readResult = "READ_OLD " + String(repeating: "r", count: 300)
     let messages: [AgentMessage] = [
         .user("start"),
