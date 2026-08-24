@@ -14,17 +14,39 @@ import Foundation
 public struct Artifact: Sendable, Identifiable, Equatable {
     public let id: String
     public let toolCallID: String?
+    /// Name of the tool that produced this output (nil for legacy saves).
+    /// Drives persistence filters (e.g. keep run_shell, skip read_file).
+    public let toolName: String?
     public let description: String
     public let content: String
     public let byteCount: Int
     public let createdAt: Date
 
-    public init(id: String, toolCallID: String?, description: String, content: String, createdAt: Date = Date()) {
+    public init(id: String, toolCallID: String?, toolName: String? = nil,
+                description: String, content: String, createdAt: Date = Date()) {
         self.id = id
         self.toolCallID = toolCallID
+        self.toolName = toolName
         self.description = description
         self.content = content
         self.byteCount = content.utf8.count
+        self.createdAt = createdAt
+    }
+}
+
+/// Lightweight listing row for `artifact_list` — no content payload.
+public struct ArtifactSummary: Sendable, Equatable {
+    public let id: String
+    public let toolName: String?
+    public let description: String
+    public let byteCount: Int
+    public let createdAt: Date
+
+    public init(id: String, toolName: String?, description: String, byteCount: Int, createdAt: Date) {
+        self.id = id
+        self.toolName = toolName
+        self.description = description
+        self.byteCount = byteCount
         self.createdAt = createdAt
     }
 }
@@ -64,7 +86,9 @@ public struct ArtifactMatch: Sendable, Equatable {
 /// conformers must be reference types (classes or actors).
 public protocol ArtifactStore: AnyObject, Sendable {
     /// Store a full output and return its artifact record (with a fresh id).
-    func save(_ content: String, description: String, toolCallID: String?) async -> Artifact
+    /// `toolName` is the producing tool (nil when unknown) — persistence
+    /// filters key off it (e.g. keep run_shell logs, skip re-derivable reads).
+    func save(_ content: String, description: String, toolCallID: String?, toolName: String?) async -> Artifact
     /// Fetch a stored artifact by id.
     func get(_ id: String) async -> Artifact?
     /// Read a bounded character range of an artifact.
@@ -73,18 +97,42 @@ public protocol ArtifactStore: AnyObject, Sendable {
     func search(_ id: String, query: String, maxMatches: Int) async -> [ArtifactMatch]
 }
 
+public extension ArtifactStore {
+    /// Legacy convenience — forwards to the tool-aware requirement (dynamic
+    /// dispatch, so conformers' filters always see the call).
+    func save(_ content: String, description: String, toolCallID: String?) async -> Artifact {
+        await save(content, description: description, toolCallID: toolCallID, toolName: nil)
+    }
+}
+
+/// Stores that can enumerate their contents — powers the `artifact_list`
+/// tool (discovery of prior-session outputs without preloading anything).
+public protocol ListableArtifactStore: ArtifactStore {
+    /// Newest-first summaries, bounded by `limit`.
+    func list(limit: Int) async -> [ArtifactSummary]
+}
+
 /// In-memory artifact store (process lifetime). Good for apps and tests; swap in
 /// a file-backed store for durability.
-public actor InMemoryArtifactStore: ArtifactStore {
+public actor InMemoryArtifactStore: ArtifactStore, ListableArtifactStore {
     private var artifacts: [String: Artifact] = [:]
 
     public init() {}
 
-    public func save(_ content: String, description: String, toolCallID: String?) -> Artifact {
+    public func save(_ content: String, description: String, toolCallID: String?, toolName: String?) -> Artifact {
         let id = "artifact-" + UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "").prefix(12)
-        let artifact = Artifact(id: String(id), toolCallID: toolCallID, description: description, content: content)
+        let artifact = Artifact(id: String(id), toolCallID: toolCallID, toolName: toolName,
+                                description: description, content: content)
         artifacts[artifact.id] = artifact
         return artifact
+    }
+
+    public func list(limit: Int) -> [ArtifactSummary] {
+        artifacts.values
+            .sorted { $0.createdAt > $1.createdAt }
+            .prefix(max(0, limit))
+            .map { ArtifactSummary(id: $0.id, toolName: $0.toolName, description: $0.description,
+                                   byteCount: $0.byteCount, createdAt: $0.createdAt) }
     }
 
     public func get(_ id: String) -> Artifact? {
