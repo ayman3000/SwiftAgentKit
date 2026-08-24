@@ -2656,3 +2656,51 @@ private struct NoopTool: AgentTool {
     // Transient: the note never lands in the persistent conversation.
     #expect(!agent.conversation.allMessages().contains { $0.content.contains("[Progress check]") })
 }
+
+// MARK: - Eager artifact persistence
+
+@Test func testRecordCompletedResultsPersistsWithoutSpill() async {
+    // A SHORT conversation (under inline budget → sifting never spills) must
+    // still land persist-worthy outputs in a restart-surviving store.
+    let dir = tempArtifactDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = FileArtifactStore(directory: dir)
+    let manager = ContextManager(store: store)   // default budgets, nothing spills
+    let log = String(repeating: "build line\n", count: 200)   // ~2.2k chars
+
+    await manager.recordCompletedResults([
+        .success(toolCallId: "c1", toolName: "run_shell", result: log),
+        .success(toolCallId: "c2", toolName: "run_shell", result: "exit 0"),          // tiny → skip
+        .error(toolCallId: "c3", toolName: "run_shell", message: String(repeating: "e", count: 2_000)), // error → skip
+        .success(toolCallId: "c4", toolName: "artifact_list", result: String(repeating: "a", count: 2_000)), // retrieval → skip
+    ])
+
+    let restarted = FileArtifactStore(directory: dir)
+    let listed = await restarted.list(limit: 10)
+    #expect(listed.count == 1)
+    #expect(listed.first?.toolName == "run_shell")
+}
+
+@Test func testEagerPersistDedupesWithReceiptSpill() async {
+    // Eager save first, then the receipt path for the SAME call — one artifact.
+    let dir = tempArtifactDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = FileArtifactStore(directory: dir)
+    let manager = ContextManager(store: store, summaryLength: 40, inlineBudgetChars: 0)
+    let log = String(repeating: "x", count: 2_000)
+    let result = AgentToolResult.success(toolCallId: "c1", toolName: "run_shell", result: log)
+
+    await manager.recordCompletedResults([result])
+    // Externalize the exchange → receipt path runs for the same tool call.
+    let messages: [AgentMessage] = [
+        .user("build"),
+        .assistant(content: "", toolCalls: [AgentToolCall(id: "c1", name: "run_shell")]),
+        .tool(results: [result]),
+        .assistant("done"),
+        .user("next"),
+    ]
+    _ = await manager.modelMessages(messages) { $0 }
+
+    let listed = await store.list(limit: 10)
+    #expect(listed.count == 1)   // no duplicate for the same call
+}

@@ -39,7 +39,7 @@ public final class ContextManager: @unchecked Sendable {
     /// Tools whose output IS the retrieval mechanism — never re-truncate or
     /// re-spill their results, or the model loops calling them to "get the full
     /// output" that keeps getting bounded.
-    private static let retrievalToolNames: Set<String> = ["artifact_read", "artifact_search"]
+    private static let retrievalToolNames: Set<String> = ["artifact_read", "artifact_search", "artifact_list"]
 
     /// Keep the whole conversation inline (no externalization) while its total
     /// size is under this many characters. ContextSift only earns its keep when
@@ -98,6 +98,30 @@ public final class ContextManager: @unchecked Sendable {
             tools.append(ArtifactListTool(store: listable))
         }
         return tools
+    }
+
+    /// Minimum characters for eager persistence — "exit 0"-style outputs
+    /// aren't worth a disk write.
+    public var eagerPersistMinChars = 1_000
+
+    /// Save completed tool results to the store AS THEY FINISH, not only when
+    /// sifting later spills them. Without this, a short run that never exceeds
+    /// the inline budget stores nothing — and a restart-surviving store
+    /// (FileArtifactStore) has no history to serve. Deduped with the spill
+    /// paths per tool-call id; errors, retrieval tools, and tiny outputs skip.
+    /// The store's own persistFilter still decides what reaches disk.
+    public func recordCompletedResults(_ results: [AgentToolResult]) async {
+        for result in results {
+            let name = result.toolName ?? "tool"
+            guard !result.isError,
+                  !Self.retrievalToolNames.contains(name),
+                  result.result.count >= eagerPersistMinChars,
+                  cachedActiveArtifact(result.toolCallId) == nil
+            else { continue }
+            let artifact = await store.save(result.result, description: "\(name) output",
+                                            toolCallID: result.toolCallId, toolName: name)
+            cacheActiveArtifact(result.toolCallId, artifact.id)
+        }
     }
 
     // MARK: - Build
@@ -267,8 +291,15 @@ public final class ContextManager: @unchecked Sendable {
         // Don't spill retrieval-tool output to a new artifact — that would nest
         // artifacts of artifacts and never surface the real content.
         if result.result.count > summaryLength && !Self.retrievalToolNames.contains(name) {
-            let artifact = await store.save(result.result, description: "\(name) output", toolCallID: result.toolCallId, toolName: name)
-            artifactIDs = [artifact.id]
+            // Reuse an artifact already saved for this call (eager persistence
+            // or an active-display spill) instead of storing a duplicate.
+            if let existing = cachedActiveArtifact(result.toolCallId) {
+                artifactIDs = [existing]
+            } else {
+                let artifact = await store.save(result.result, description: "\(name) output", toolCallID: result.toolCallId, toolName: name)
+                cacheActiveArtifact(result.toolCallId, artifact.id)
+                artifactIDs = [artifact.id]
+            }
         }
         let receipt = ToolReceipt(
             callID: result.toolCallId,

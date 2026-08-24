@@ -825,6 +825,9 @@ public actor Agent {
                             onTurnCompleted?(intercepted.text, true)
                             let turnActions = ToolActions()
                             let results = await dispatchToolCalls(toolCalls, turn: totalTurns, query: query, actions: turnActions)
+                // Eager persistence: restart-surviving stores capture every
+                // persist-worthy output, not just what sifting happens to spill.
+                if let cm = config.contextManager { await cm.recordCompletedResults(results) }
                             toolsExecuted += results.count
                             toolErrors += results.filter(\.isError).count
                             lastTurnErrors = repairableErrors(from: results, actions: turnActions)
@@ -1048,6 +1051,9 @@ public actor Agent {
                 // `config.parallelToolCalls` opts in)
                 let turnActions = ToolActions()
                 let results = await dispatchToolCalls(toolCalls, turn: totalTurns, query: query, actions: turnActions)
+                // Eager persistence: restart-surviving stores capture every
+                // persist-worthy output, not just what sifting happens to spill.
+                if let cm = config.contextManager { await cm.recordCompletedResults(results) }
                 toolsExecuted += results.count
                 toolErrors += results.filter(\.isError).count
                 lastTurnErrors = repairableErrors(from: results, actions: turnActions)
