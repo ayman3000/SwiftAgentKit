@@ -68,6 +68,13 @@ public struct AgentConfig: Sendable {
     /// agent uses its normal trim-based context handling.
     public var contextManager: ContextManager?
 
+    /// Fractions of `maxTurns` at which a one-line progress note is injected
+    /// into the model's context ("you have used N of M turns — re-check the
+    /// objective, stop grinding a single subproblem"). Catches slow-burn
+    /// thrash that loop detection (same call, same args) can't see. Empty
+    /// disables. Default [0.5, 0.8].
+    public var progressNudgeFractions: [Double]
+
     /// When `true`, tools marked `requiresConfirmation` run WITHOUT prompting via
     /// `AgentCallbacks.onToolConfirmation` — the agent has full autonomy. Default
     /// `false` (confirmation-gated). Can also be flipped at runtime with
@@ -124,7 +131,8 @@ public struct AgentConfig: Sendable {
         maxSubAgentConcurrency: Int = 1,
         maxVerificationRetries: Int = 3,
         loopDetection: LoopDetectionConfig? = .default,
-        parallelToolCalls: Bool = false
+        parallelToolCalls: Bool = false,
+        progressNudgeFractions: [Double] = [0.5, 0.8]
     ) {
         self.provider = provider
         self.model = model
@@ -146,6 +154,7 @@ public struct AgentConfig: Sendable {
         self.maxVerificationRetries = maxVerificationRetries
         self.loopDetection = loopDetection
         self.parallelToolCalls = parallelToolCalls
+        self.progressNudgeFractions = progressNudgeFractions
     }
 }
 
@@ -604,6 +613,28 @@ public actor Agent {
     /// 2. Enter the ReAct loop (if tools are registered and maxTurns > 0)
     /// 3. Return the final response
     ///
+    /// Turn numbers at which progress nudges fire. Only interior turns qualify
+    /// (a nudge at turn 1 or the final turn is noise), each fraction once.
+    static func nudgeTurns(maxTurns: Int, fractions: [Double]) -> Set<Int> {
+        guard maxTurns > 0 else { return [] }
+        return Set(fractions.compactMap { fraction -> Int? in
+            guard fraction > 0, fraction < 1 else { return nil }
+            let turn = Int((Double(maxTurns) * fraction).rounded())
+            return turn > 1 && turn < maxTurns ? turn : nil
+        })
+    }
+
+    /// The transient progress note injected at nudge turns.
+    static func progressNudge(turn: Int, maxTurns: Int) -> String {
+        """
+        [Progress check] You have used \(turn) of \(maxTurns) turns. Re-read the \
+        objective and your plan. If most recent turns went into one stubborn \
+        subproblem (e.g. one failing test), STOP grinding it: summarize what you \
+        tried, state the blocker, and either switch approach or finish with a \
+        report and a question. Do not repeat an approach that has already failed.
+        """
+    }
+
     public func run(_ query: String) async throws -> String {
         try await run(query, images: [])
     }
@@ -758,6 +789,8 @@ public actor Agent {
         // 3. Agent loop
         if config.maxTurns > 0 && !registeredTools.isEmpty {
             // ReAct loop with tools
+            var pendingNudges = Self.nudgeTurns(maxTurns: config.maxTurns,
+                                                fractions: config.progressNudgeFractions)
             while totalTurns < config.maxTurns {
                 if isCancelled {
                     emit(.cancelled)
@@ -766,7 +799,14 @@ public actor Agent {
                 totalTurns += 1
 
                 // Get messages for LLM call (trimmed to context window)
-                let messagesForLLM = conversation.messagesForLLMCall()
+                var messagesForLLM = conversation.messagesForLLMCall()
+                // Budget checkpoint: transient system note for THIS call only
+                // (not appended to the conversation), nudging the model to
+                // reassess instead of grinding one subproblem to the turn cap.
+                if pendingNudges.remove(totalTurns) != nil {
+                    messagesForLLM.append(.system(
+                        Self.progressNudge(turn: totalTurns, maxTurns: config.maxTurns)))
+                }
                 let removedCount = conversation.allMessages().count - messagesForLLM.count
                 if removedCount > 0 {
                     emit(.historyTrimmed(removedCount: removedCount, remainingCount: messagesForLLM.count))

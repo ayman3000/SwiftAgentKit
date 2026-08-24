@@ -2576,3 +2576,83 @@ private func tempArtifactDir() -> URL {
     let listed = await store.list(limit: 5)
     #expect(listed.first?.toolName == "run_shell")
 }
+
+// MARK: - Progress nudge (turn-budget checkpoint)
+
+@Test func testNudgeTurnSchedule() {
+    #expect(Agent.nudgeTurns(maxTurns: 200, fractions: [0.5, 0.8]) == [100, 160])
+    #expect(Agent.nudgeTurns(maxTurns: 40, fractions: [0.5, 0.8]) == [20, 32])
+    // Interior turns only: no nudge at turn 1 or at/after the cap.
+    #expect(Agent.nudgeTurns(maxTurns: 2, fractions: [0.5, 0.8]).isEmpty)
+    #expect(Agent.nudgeTurns(maxTurns: 0, fractions: [0.5]).isEmpty)
+    // Out-of-range fractions ignored; empty disables.
+    #expect(Agent.nudgeTurns(maxTurns: 100, fractions: [0, 1.0, 1.5]).isEmpty)
+    #expect(Agent.nudgeTurns(maxTurns: 100, fractions: []).isEmpty)
+}
+
+private final class RequestCapturingProvider: LLMProvider, @unchecked Sendable {
+    static let name = "capture-mock"
+    static let providerName = "capture-mock"
+    let configuration = LLMProviderConfiguration(
+        name: RequestCapturingProvider.providerName, baseURL: URL(string: "inproc://x")!)
+    private let lock = NSLock()
+    private(set) var requests: [LLMRequest] = []
+    private var remainingToolCalls: Int
+    init(toolCallTurns: Int) { remainingToolCalls = toolCallTurns }
+
+    func complete(_ request: LLMRequest) async throws -> LLMResponse {
+        let callTool: Bool = lock.withLock {
+            requests.append(request)
+            if remainingToolCalls > 0 { remainingToolCalls -= 1; return true }
+            return false
+        }
+        if callTool {
+            return LLMResponse(text: "", finishReason: .toolCalls,
+                               toolCalls: [LLMToolCall(id: UUID().uuidString, name: "noop", arguments: "{}")],
+                               request: request, providerName: Self.providerName)
+        }
+        return LLMResponse(text: "done", finishReason: .stop,
+                           request: request, providerName: Self.providerName)
+    }
+
+    func stream(_ request: LLMRequest) -> AsyncThrowingStream<LLMStreamChunk, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                let response = try await self.complete(request)
+                if !response.text.isEmpty { continuation.yield(.text(response.text)) }
+                continuation.yield(.finish(reason: .stop, usage: nil))
+                continuation.finish()
+            }
+        }
+    }
+}
+
+private struct NoopTool: AgentTool {
+    let name = "noop"
+    let description = "does nothing"
+    let parameters = ToolParameters(properties: [:], required: [])
+    func execute(parameters: [String: Any]) async throws -> AgentToolResult {
+        .success(toolCallId: "", toolName: name, result: "ok")
+    }
+}
+
+@Test func testProgressNudgeInjectedAtScheduledTurnOnly() async throws {
+    // maxTurns 4, fraction 0.5 → nudge exactly at turn 2. The model tool-calls
+    // 3 times then answers, so we capture 4 requests.
+    let provider = RequestCapturingProvider(toolCallTurns: 3)
+    let agent = Agent(config: AgentConfig(
+        provider: provider, maxTurns: 4, tools: [NoopTool()],
+        loopDetection: nil, progressNudgeFractions: [0.5]))
+    _ = try await agent.run("do the thing")
+
+    #expect(provider.requests.count == 4)
+    func hasNudge(_ r: LLMRequest) -> Bool {
+        r.messages.contains { $0.content.contains("[Progress check]") }
+    }
+    #expect(!hasNudge(provider.requests[0]))
+    #expect(hasNudge(provider.requests[1]))     // turn 2
+    #expect(!hasNudge(provider.requests[2]))    // fires once
+    #expect(!hasNudge(provider.requests[3]))
+    // Transient: the note never lands in the persistent conversation.
+    #expect(!agent.conversation.allMessages().contains { $0.content.contains("[Progress check]") })
+}
