@@ -91,8 +91,13 @@ public final class ContextManager: @unchecked Sendable {
 
     /// The retrieval tools the model uses to pull full outputs back from the
     /// store. Auto-registered by the agent when a context manager is set.
+    /// `artifact_list` joins them when the store can enumerate its contents.
     public var artifactTools: [any AgentTool] {
-        [ArtifactReadTool(store: store), ArtifactSearchTool(store: store)]
+        var tools: [any AgentTool] = [ArtifactReadTool(store: store), ArtifactSearchTool(store: store)]
+        if let listable = store as? any ListableArtifactStore {
+            tools.append(ArtifactListTool(store: listable))
+        }
+        return tools
     }
 
     // MARK: - Build
@@ -262,7 +267,7 @@ public final class ContextManager: @unchecked Sendable {
         // Don't spill retrieval-tool output to a new artifact — that would nest
         // artifacts of artifacts and never surface the real content.
         if result.result.count > summaryLength && !Self.retrievalToolNames.contains(name) {
-            let artifact = await store.save(result.result, description: "\(name) output", toolCallID: result.toolCallId)
+            let artifact = await store.save(result.result, description: "\(name) output", toolCallID: result.toolCallId, toolName: name)
             artifactIDs = [artifact.id]
         }
         let receipt = ToolReceipt(
@@ -351,7 +356,7 @@ public final class ContextManager: @unchecked Sendable {
         if let cached = cachedActiveArtifact(result.toolCallId) {
             artifactID = cached
         } else {
-            let artifact = await store.save(result.result, description: "\(name) output", toolCallID: result.toolCallId)
+            let artifact = await store.save(result.result, description: "\(name) output", toolCallID: result.toolCallId, toolName: name)
             cacheActiveArtifact(result.toolCallId, artifact.id)
             artifactID = artifact.id
         }

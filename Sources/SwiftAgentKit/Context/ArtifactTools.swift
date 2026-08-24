@@ -138,6 +138,51 @@ public struct ArtifactSearchTool: AgentTool {
     }
 }
 
+/// List stored tool outputs (including prior sessions, when the store is
+/// file-backed) so the model can discover retrievable history on demand.
+public struct ArtifactListTool: AgentTool {
+    public let name = "artifact_list"
+    public let description = """
+    List stored outputs of previous tool calls in this conversation — \
+    including ones from earlier sessions. Returns id, tool, description, age \
+    and size; use artifact_read or artifact_search with an id to retrieve one.
+    """
+    public let parameters = ToolParameters(
+        properties: [
+            "limit": ToolParameterProperty(type: "integer", description: "Maximum entries, newest first (default 25)"),
+        ],
+        required: []
+    )
+
+    private let store: any ListableArtifactStore
+
+    public init(store: any ListableArtifactStore) {
+        self.store = store
+    }
+
+    public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
+        let limit = intValue(parameters["limit"]) ?? 25
+        let summaries = await store.list(limit: limit)
+        guard !summaries.isEmpty else {
+            return .success(toolCallId: "", toolName: name, result: "No stored outputs for this conversation.")
+        }
+        let now = Date()
+        let lines = summaries.map { summary in
+            let age = Self.ageLabel(from: summary.createdAt, to: now)
+            let tool = summary.toolName ?? "tool"
+            return "\(summary.id) — \(tool) — \(summary.description) — \(age) — \(summary.byteCount) bytes"
+        }
+        return .success(toolCallId: "", toolName: name, result: lines.joined(separator: "\n"))
+    }
+
+    static func ageLabel(from created: Date, to now: Date) -> String {
+        let seconds = max(0, now.timeIntervalSince(created))
+        if seconds < 3600 { return "\(Int(seconds / 60))m ago" }
+        if seconds < 86_400 { return "\(Int(seconds / 3600))h ago" }
+        return "\(Int(seconds / 86_400))d ago"
+    }
+}
+
 // Tool arguments arrive as Int or Double depending on JSON decoding.
 private func intValue(_ value: Any?) -> Int? {
     if let i = value as? Int { return i }

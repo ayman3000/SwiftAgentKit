@@ -2486,3 +2486,93 @@ func liveAgentRecallsToolConclusionAfterCompaction() async throws {
 
     #expect(result.isError)
 }
+
+// MARK: - Persistent artifacts (FileArtifactStore + artifact_list)
+
+private func tempArtifactDir() -> URL {
+    FileManager.default.temporaryDirectory
+        .appendingPathComponent("sak-artifacts-\(UUID().uuidString)")
+}
+
+@Test func testFileArtifactStoreSurvivesRestart() async {
+    let dir = tempArtifactDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let first = FileArtifactStore(directory: dir)
+    let saved = await first.save("BUILD FAILED\nexit 65", description: "run_shell output",
+                                 toolCallID: "c1", toolName: "run_shell")
+
+    // A NEW store on the same directory (= app relaunch) serves the artifact.
+    let second = FileArtifactStore(directory: dir)
+    let loaded = await second.get(saved.id)
+    #expect(loaded?.content == "BUILD FAILED\nexit 65")
+    #expect(loaded?.toolName == "run_shell")
+    let matches = await second.search(saved.id, query: "exit 65", maxMatches: 5)
+    #expect(matches.count == 1)
+}
+
+@Test func testFileArtifactStoreFilterKeepsSessionTierOnly() async {
+    let dir = tempArtifactDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    // Re-derivable reads: retrievable in-session, NOT written to disk.
+    let store = FileArtifactStore(directory: dir, persistFilter: { $0 != "read_file" })
+    let read = await store.save("file contents", description: "read_file output",
+                                toolCallID: "c1", toolName: "read_file")
+    let inSession = await store.get(read.id)
+    #expect(inSession?.content == "file contents")
+
+    let restarted = FileArtifactStore(directory: dir)
+    let afterRestart = await restarted.get(read.id)
+    #expect(afterRestart == nil)
+}
+
+@Test func testFileArtifactStoreEvictsOldestOverBudget() async {
+    let dir = tempArtifactDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = FileArtifactStore(directory: dir, maxBytes: 250)
+    let a = await store.save(String(repeating: "a", count: 200), description: "run_shell output",
+                             toolCallID: nil, toolName: "run_shell")
+    let b = await store.save(String(repeating: "b", count: 200), description: "run_shell output",
+                             toolCallID: nil, toolName: "run_shell")
+    // Oldest (a) evicted from DISK; newest (b) kept.
+    let restarted = FileArtifactStore(directory: dir)
+    #expect(await restarted.get(a.id) == nil)
+    #expect(await restarted.get(b.id) != nil)
+}
+
+@Test func testArtifactListToolListsBothTiers() async throws {
+    let dir = tempArtifactDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let first = FileArtifactStore(directory: dir)
+    let old = await first.save("old log", description: "run_shell output",
+                               toolCallID: nil, toolName: "run_shell")
+
+    let second = FileArtifactStore(directory: dir)   // relaunch
+    let fresh = await second.save("fresh", description: "web_search output",
+                                  toolCallID: nil, toolName: "web_search")
+    let tool = ArtifactListTool(store: second)
+    let result = try await tool.execute(parameters: [:])
+    #expect(result.result.contains(old.id))      // prior session, from disk index
+    #expect(result.result.contains(fresh.id))    // current session
+    #expect(result.result.contains("run_shell"))
+
+    let empty = ArtifactListTool(store: FileArtifactStore(directory: tempArtifactDir()))
+    let none = try await empty.execute(parameters: [:])
+    #expect(none.result.contains("No stored outputs"))
+}
+
+@Test func testContextManagerSpillsWithToolName() async {
+    // The manager passes the producing tool's name so persistence filters work.
+    let dir = tempArtifactDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = FileArtifactStore(directory: dir)
+    let manager = ContextManager(store: store, maxActiveResultChars: 40, inlineBudgetChars: 0)
+    let messages: [AgentMessage] = [
+        .user("build it"),
+        .assistant(content: "", toolCalls: [AgentToolCall(id: "c1", name: "run_shell")]),
+        .tool(results: [.success(toolCallId: "c1", toolName: "run_shell",
+                                 result: String(repeating: "x", count: 500))]),
+    ]
+    _ = await manager.modelMessages(messages) { $0 }
+    let listed = await store.list(limit: 5)
+    #expect(listed.first?.toolName == "run_shell")
+}
