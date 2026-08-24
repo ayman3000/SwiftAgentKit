@@ -104,6 +104,55 @@ public final class ContextManager: @unchecked Sendable {
     /// aren't worth a disk write.
     public var eagerPersistMinChars = 1_000
 
+    /// Low watermark for eviction hysteresis: a budget breach evicts down to
+    /// this fraction of `inlineBudgetChars`, then the evicted set FREEZES
+    /// until the budget is breached again. Keeps the model-facing prefix
+    /// byte-stable between eviction events so provider prompt caches hit.
+    public var evictionTargetFraction: Double = 0.5
+
+    /// Head-message ids of exchanges evicted by previous calls. Sticky —
+    /// never un-evicted — so the prefix cannot flap.
+    private var stickyEvicted: Set<UUID> = []
+
+    private func currentStickyEvicted() -> Set<UUID> {
+        lock.lock(); defer { lock.unlock() }
+        return stickyEvicted
+    }
+
+    private func rememberEvicted(_ ids: [UUID]) {
+        lock.lock(); defer { lock.unlock() }
+        stickyEvicted.formUnion(ids)
+    }
+
+    /// Completed tool exchanges before `activeStart`: the assistant tool-call
+    /// turn (`head`), the indices of the whole exchange, and its char size.
+    private struct ExchangeSpan {
+        let head: Int
+        let indices: [Int]
+        let chars: Int
+    }
+
+    private func exchangeSpans(in rest: [AgentMessage], upTo activeStart: Int) -> [ExchangeSpan] {
+        var spans: [ExchangeSpan] = []
+        var i = 0
+        while i < activeStart {
+            guard rest[i].role == .assistant, rest[i].toolCalls?.isEmpty == false else { i += 1; continue }
+            var j = i + 1
+            var indices = [i]
+            while j < activeStart, rest[j].role == .tool {
+                indices.append(j)
+                j += 1
+            }
+            let chars = indices.reduce(0) { sum, idx in
+                sum + rest[idx].content.count
+                    + (rest[idx].toolResults?.reduce(0) { $0 + $1.result.count } ?? 0)
+            }
+            spans.append(ExchangeSpan(head: i, indices: indices, chars: chars))
+            i = j
+        }
+        return spans
+    }
+
     /// Save completed tool results to the store AS THEY FINISH, not only when
     /// sifting later spills them. Without this, a short run that never exceeds
     /// the inline budget stores nothing — and a restart-surviving store
@@ -173,39 +222,41 @@ public final class ContextManager: @unchecked Sendable {
             : [:]
         let protectedIndices = Set(latestReadIndexByPath.values)
 
-        // Over budget: externalize whole tool exchanges OLDEST-FIRST until we're
-        // back under budget, keeping the most RECENT tool results inline. This
-        // preserves the working set an iterative task needs (run → read error →
-        // fix → rerun) while still capping growth. An exchange is an
+        // Over budget: externalize whole tool exchanges OLDEST-FIRST, keeping
+        // the most RECENT tool results inline. An exchange is an
         // assistant-with-toolCalls turn plus its following tool-result messages;
         // evicting whole exchanges keeps tool_call/result pairing valid.
+        //
+        // CACHE-STABILITY HYSTERESIS: continuous eviction (evict just enough,
+        // every turn) changes the model-facing prefix on every call, so
+        // provider prompt caches never hit. Instead, evictions are STICKY
+        // (remembered by message id, never undone) and a budget breach evicts
+        // down to `evictionTargetFraction` of the budget — then the evicted
+        // set, the ledger, and the whole prefix stay byte-stable until roughly
+        // half a budget of new content accumulates.
         var externalized = Set<Int>()   // indices in `rest` to move to the ledger
         var remaining = totalChars
-        var i = 0
-        while i < activeStart && remaining > inlineBudgetChars {
-            if rest[i].role == .assistant, rest[i].toolCalls?.isEmpty == false {
-                var j = i + 1
-                var span = [i]
-                while j < activeStart, rest[j].role == .tool {
-                    span.append(j)
-                    j += 1
-                }
+        let spans = exchangeSpans(in: rest, upTo: activeStart)
+        let sticky = currentStickyEvicted()
+        for span in spans where sticky.contains(rest[span.head].id) {
+            span.indices.forEach { externalized.insert($0) }
+            remaining -= span.chars
+        }
+        if remaining > inlineBudgetChars {
+            let fraction = min(1, max(0, evictionTargetFraction))
+            let target = Int(Double(inlineBudgetChars) * fraction)
+            var newlyEvicted: [UUID] = []
+            for span in spans where !externalized.contains(span.head) {
+                guard remaining > target else { break }
                 // Keep the whole exchange inline if it holds a latest-per-path
                 // read (preserving tool_call/result pairing); evict the rest.
-                if span.contains(where: { protectedIndices.contains($0) }) {
-                    i = j
-                    continue
-                }
-                let exchangeChars = span.reduce(0) { sum, idx in
-                    sum + rest[idx].content.count
-                        + (rest[idx].toolResults?.reduce(0) { $0 + $1.result.count } ?? 0)
-                }
-                span.forEach { externalized.insert($0) }
-                remaining -= exchangeChars
-                i = j
-            } else {
-                i += 1
+                // Sticky evictions above are exempt — never un-evict.
+                if span.indices.contains(where: { protectedIndices.contains($0) }) { continue }
+                span.indices.forEach { externalized.insert($0) }
+                remaining -= span.chars
+                newlyEvicted.append(rest[span.head].id)
             }
+            if !newlyEvicted.isEmpty { rememberEvicted(newlyEvicted) }
         }
 
         // Receipts for the externalized (older) tool results only.

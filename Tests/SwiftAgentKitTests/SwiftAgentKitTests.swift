@@ -2704,3 +2704,56 @@ private struct NoopTool: AgentTool {
     let listed = await store.list(limit: 10)
     #expect(listed.count == 1)   // no duplicate for the same call
 }
+
+// MARK: - Cache-stable eviction (hysteresis)
+
+private func completedShellExchange(id i: Int, size: Int) -> [AgentMessage] {
+    [
+        .assistant(content: "", toolCalls: [AgentToolCall(id: "hx\(i)", name: "run_shell")]),
+        .tool(results: [.success(toolCallId: "hx\(i)", toolName: "run_shell",
+                                 result: String(repeating: "o", count: size))]),
+    ]
+}
+
+@Test func testEvictionHysteresisKeepsPrefixByteStable() async {
+    // The cache contract: between eviction events, everything the model sees
+    // before the newest content is BYTE-IDENTICAL to the previous call —
+    // system block (incl. ledger) and all prior messages. Continuous eviction
+    // (the old behavior) broke this on every call once over budget.
+    let manager = ContextManager(inlineBudgetChars: 1_000)
+    var messages: [AgentMessage] = [.system("You are helpful."), .user("do the long task")]
+    for i in 0..<6 { messages.append(contentsOf: completedShellExchange(id: i, size: 400)) }
+    messages.append(.assistant("progress so far"))
+
+    let first = await manager.modelMessages(messages) { $0 }
+
+    // One SMALL new completed exchange (within the hysteresis slack).
+    messages.append(contentsOf: completedShellExchange(id: 99, size: 100))
+    messages.append(.assistant("more progress"))
+    let second = await manager.modelMessages(messages) { $0 }
+
+    // The entire first output is a byte-identical prefix of the second.
+    #expect(second.count > first.count)
+    for (index, message) in first.enumerated() {
+        #expect(second[index].role == message.role)
+        #expect(second[index].content == message.content)
+    }
+}
+
+@Test func testEvictionBreachEvictsToLowWatermark() async {
+    // A breach must evict PAST the budget down to the target fraction, buying
+    // slack so subsequent turns don't each trigger a fresh eviction.
+    let manager = ContextManager(inlineBudgetChars: 1_000)   // target = 500
+    var messages: [AgentMessage] = [.user("go")]
+    for i in 0..<6 { messages.append(contentsOf: completedShellExchange(id: i, size: 400)) }
+    messages.append(.assistant("done step"))
+
+    let out = await manager.modelMessages(messages) { $0 }
+
+    // 6 exchanges ≈ 2400 chars; target 500 → at least 5 evicted (ledger'd).
+    let system = out.first { $0.role == .system }?.content ?? ""
+    let ledgerLines = system.split(separator: "\n").filter { $0.hasPrefix("- ") }.count
+    #expect(ledgerLines >= 5)
+    // Inline tool results that remain: at most one exchange.
+    #expect(out.filter { $0.role == .tool }.count <= 1)
+}
