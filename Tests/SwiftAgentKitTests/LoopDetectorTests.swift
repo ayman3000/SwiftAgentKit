@@ -157,3 +157,37 @@ struct LoopDetectorTests {
     #expect(stops >= 1)
     #expect(cycleActions == 0)
 }
+
+@Test func fourToolCycleFromLiveRunIsStopped() {
+    // The exact live evasion after the length-3 guard shipped: a 4-tool
+    // cycle (terminate → launch → wait → screenshot) that ALSO starves the
+    // per-signature window (6 calls = 1.5 cycles → count 2, no nudge).
+    let d = LoopDetector(config: .default)
+    let cycle = ["sim_terminate:{\"b\":\"x\"}", "sim_launch:{\"b\":\"x\"}",
+                 "sim_wait:{\"b\":\"x\"}", "sim_screenshot"]
+    var nudgedAt: Int?, stoppedAt: Int?
+    for rep in 1...6 {
+        for sig in cycle {
+            switch d.record([sig]) {
+            case .nudge(let s, _) where s.hasPrefix("cycle["): nudgedAt = nudgedAt ?? rep
+            case .stop(let s, _) where s.hasPrefix("cycle["): stoppedAt = stoppedAt ?? rep
+            default: break
+            }
+        }
+        if stoppedAt != nil { break }
+    }
+    #expect(nudgedAt == 3)    // warned at 3 verbatim repetitions
+    #expect(stoppedAt == 4)   // stopped one repetition later, not at 5
+}
+
+@Test func fiveToolCycleDetected() {
+    let d = LoopDetector(config: .default)
+    let cycle = (0..<5).map { "t\($0):a" }
+    var stopped = false
+    for _ in 1...5 {
+        for sig in cycle {
+            if case .stop(let s, _) = d.record([sig]), s.hasPrefix("cycle[") { stopped = true }
+        }
+    }
+    #expect(stopped)
+}
