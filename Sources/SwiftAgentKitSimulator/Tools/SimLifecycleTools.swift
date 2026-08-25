@@ -18,7 +18,20 @@ public struct SimListTool: AgentTool {
         do {
             let devices = try await Simctl.listDevices()
             if devices.isEmpty {
-                return .success(toolCallId: "", toolName: name, result: "No simulators available.")
+                // Fresh machine (new Xcode install, no runtimes downloaded).
+                // A bare "none available" was observed sending the model into
+                // a retry loop — give it the actionable next step instead.
+                return .success(toolCallId: "", toolName: name, result: """
+                    No simulators exist on this Mac — likely a fresh Xcode with no iOS \
+                    runtime downloaded. Do NOT call sim_list again; it will not change. \
+                    To fix, run via run_shell: `xcrun simctl runtime list` to check \
+                    installed runtimes; if none, download one with \
+                    `xcodebuild -downloadPlatform iOS` (several GB, takes minutes), \
+                    then create a device: \
+                    `xcrun simctl create "iPhone 16" com.apple.CoreSimulator.SimDeviceType.iPhone-16`. \
+                    Or ask the user to open Xcode → Settings → Components and install an \
+                    iOS simulator runtime.
+                    """)
             }
             let lines = devices.map { d in
                 "\(d.isBooted ? "● " : "○ ")\(d.name) [\(d.udid)] \(d.runtime)\(d.isBooted ? " (Booted)" : "")"
