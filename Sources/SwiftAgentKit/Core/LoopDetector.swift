@@ -28,8 +28,11 @@ public enum LoopAction: Sendable, Equatable {
 /// Detects a stalled agent: the same (tool + args) signature repeating within a
 /// recent window. Pure and deterministic — no LLM, no I/O.
 final class LoopDetector {
-    /// Longest repeating cycle the cycle guard looks for (A→B and A→B→C).
-    static let maxCycleLength = 3
+    /// Longest repeating cycle the cycle guard looks for. Was 3; a live run
+    /// promptly evaded it with a 4-tool cycle (terminate → launch → wait →
+    /// screenshot, verbatim) — which ALSO starves the per-signature window
+    /// (6 calls hold 1.5 cycles → count 2, below even the nudge).
+    static let maxCycleLength = 5
 
     private let config: LoopDetectionConfig
     private var history: [String] = []
@@ -89,6 +92,10 @@ final class LoopDetector {
         // endless rotate/screenshot loop the user had to interrupt by hand.
         // Detect the trailing block of length 2…maxCycleLength repeating
         // verbatim, and nudge/stop on the REPETITION count instead.
+        // A long block repeating VERBATIM is damning much sooner than a single
+        // repeated call: stop cycles one repetition after the nudge instead of
+        // waiting for stopThreshold (5 reps of a 4-cycle = 20 wasted calls).
+        let cycleStop = max(config.nudgeThreshold + 1, 4)
         for length in 2...Self.maxCycleLength {
             guard fullHistory.count >= length * config.nudgeThreshold else { continue }
             let block = Array(fullHistory.suffix(length))
@@ -103,7 +110,7 @@ final class LoopDetector {
             // matched signatures; the label is for the nudge message/event).
             let names = block.map { String($0.split(separator: ":", maxSplits: 1).first ?? Substring($0)) }
             let sig = "cycle[" + names.joined(separator: " → ") + "]"
-            if reps >= config.stopThreshold {
+            if reps >= cycleStop {
                 return .stop(signature: sig, count: reps)
             }
             if !nudged.contains(sig), pendingNudge == nil {
