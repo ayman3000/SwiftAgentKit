@@ -84,3 +84,76 @@ struct LoopDetectorTests {
         #expect(suggestion?.contains("different approach") == true)
     }
 }
+
+// MARK: - Repeating-cycle guard (A→B→A→B evades per-signature counting)
+
+@Test func alternatingCycleNudgesThenStops() {
+    // The observed live failure: sim_rotate → sim_screenshot repeated
+    // endlessly. Per-signature counting peaks at windowSize/2 = 3 < stop(5),
+    // so the old detector could NEVER stop it. The cycle guard must.
+    let d = LoopDetector(config: .default)   // nudge 3, stop 5
+    let rotate = "sim_rotate:{\"orientation\":\"landscape_left\"}"
+    let shot = "sim_screenshot"
+    var actions: [LoopAction] = []
+    for _ in 0..<6 {
+        actions.append(d.record([rotate]))
+        actions.append(d.record([shot]))
+    }
+    // A nudge fires once the block has repeated nudgeThreshold times…
+    #expect(actions.contains { if case .nudge(let s, _) = $0 { return s.hasPrefix("cycle[") } ; return false })
+    // …and the run STOPS at stopThreshold repetitions instead of spinning forever.
+    #expect(actions.contains { if case .stop(let s, _) = $0 { return s.hasPrefix("cycle[") } ; return false })
+}
+
+@Test func cycleSignatureUsesToolNamesOnly() {
+    // Per-signature nudges legitimately fire first (each tool hits count 3);
+    // the CYCLE guard is what eventually STOPS the run — and its label must
+    // read as tool names, not raw signatures with JSON args.
+    let d = LoopDetector(config: .default)
+    let a = "tool_a:{\"x\":1}", b = "tool_b:{\"y\":2}"
+    var stopLabel: String?
+    for _ in 0..<8 {
+        if case .stop(let s, _) = d.record([a, b]) { stopLabel = s; break }
+    }
+    #expect(stopLabel == "cycle[tool_a → tool_b]")
+}
+
+@Test func threeToolCycleDetected() {
+    let d = LoopDetector(config: .default)
+    var stopped = false
+    for _ in 0..<6 {
+        for sig in ["a:1", "b:2", "c:3"] {
+            if case .stop(let s, _) = d.record([sig]), s.hasPrefix("cycle[") { stopped = true }
+        }
+    }
+    #expect(stopped)
+}
+
+@Test func variedWorkIsNotACycle() {
+    // Legitimate iterative work (read → patch → build with CHANGING args)
+    // must never trip the cycle guard.
+    let d = LoopDetector(config: .default)
+    var tripped = false
+    for i in 0..<12 {
+        let sigs = ["read_file:{\"path\":\"f\(i)\"}", "apply_patch:{\"n\":\(i)}", "run_shell:{\"c\":\(i)}"]
+        for sig in sigs {
+            if case .none = d.record([sig]) { continue } else { tripped = true }
+        }
+    }
+    #expect(!tripped)
+}
+
+@Test func uniformRunsStillHandledByPerSignatureGuard() {
+    // AAAA… must keep its original nudge/stop shape (not double-fire as a cycle).
+    let d = LoopDetector(config: .default)
+    var stops = 0, cycleActions = 0
+    for _ in 0..<8 {
+        switch d.record(["same:call"]) {
+        case .stop(let s, _): stops += 1; if s.hasPrefix("cycle[") { cycleActions += 1 }
+        case .nudge(let s, _): if s.hasPrefix("cycle[") { cycleActions += 1 }
+        case .none: break
+        }
+    }
+    #expect(stops >= 1)
+    #expect(cycleActions == 0)
+}

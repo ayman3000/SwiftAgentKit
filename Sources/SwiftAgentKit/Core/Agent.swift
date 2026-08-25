@@ -1233,11 +1233,19 @@ public actor Agent {
             break
         case .nudge(let sig, let count):
             emit(.loopDetected(signature: sig, count: count, action: .nudged))
-            let toolName = String(sig.split(separator: ":", maxSplits: 1).first ?? Substring(sig))
-            conversation.append(.user(
-                "You've called `\(toolName)` with the same arguments \(count) times "
-                + "without new progress. Change your approach, or finish and summarize "
-                + "what you have. Do not repeat that call."))
+            if sig.hasPrefix("cycle[") {
+                conversation.append(.user(
+                    "You're repeating the tool cycle \(sig) — \(count) rounds with no "
+                    + "new information. Break the cycle: the state will not change by "
+                    + "looking again. Act on what you have, change approach, or finish "
+                    + "and summarize."))
+            } else {
+                let toolName = String(sig.split(separator: ":", maxSplits: 1).first ?? Substring(sig))
+                conversation.append(.user(
+                    "You've called `\(toolName)` with the same arguments \(count) times "
+                    + "without new progress. Change your approach, or finish and summarize "
+                    + "what you have. Do not repeat that call."))
+            }
         case .stop(let sig, let count):
             emit(.loopDetected(signature: sig, count: count, action: .stopped))
             let summary = makeRunSummary(
