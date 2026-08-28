@@ -1800,6 +1800,45 @@ private func firstArtifactID(in text: String) -> String? {
     }
 }
 
+@Test func testLedgerNotesOmittedReceiptsBeyondCap() async {
+    // More externalized exchanges than ledger slots → the ledger must say how
+    // many older calls fell off and point at artifact_list (Listable store).
+    let manager = ContextManager(ledgerEntries: 3, summaryLength: 40, inlineBudgetChars: 0)
+    var messages: [AgentMessage] = [.system("sys"), .user("do five things")]
+    for i in 1...5 {
+        messages.append(.assistant(content: "", toolCalls: [AgentToolCall(id: "c\(i)", name: "run_shell")]))
+        messages.append(.tool(results: [.success(toolCallId: "c\(i)", toolName: "run_shell",
+                                                 result: "output \(i) " + String(repeating: "x", count: 200))]))
+        messages.append(.assistant("done \(i)"))
+    }
+    messages.append(.user("next"))
+
+    let out = await manager.modelMessages(messages) { $0 }
+    let system = out.first { $0.role == .system }?.content ?? ""
+    // 5 receipts, 3 shown → 2 omitted, with the discovery hint.
+    #expect(system.contains("(+2 older tool calls not shown — use artifact_list"))
+    // Ledger shows only the newest 3.
+    #expect(!system.contains("output 1"))
+    #expect(system.contains("output 5"))
+}
+
+@Test func testLedgerHasNoOmittedLineWhenAllReceiptsFit() async {
+    let manager = ContextManager(summaryLength: 40, inlineBudgetChars: 0)
+    let messages: [AgentMessage] = [
+        .system("sys"),
+        .user("read"),
+        .assistant(content: "", toolCalls: [AgentToolCall(id: "c1", name: "read_file")]),
+        .tool(results: [.success(toolCallId: "c1", toolName: "read_file",
+                                 result: String(repeating: "x", count: 200))]),
+        .assistant("done"),
+        .user("next"),
+    ]
+    let out = await manager.modelMessages(messages) { $0 }
+    let system = out.first { $0.role == .system }?.content ?? ""
+    #expect(system.contains("tool ledger"))
+    #expect(!system.contains("not shown"))
+}
+
 @Test func testContextManagerDoesNotRetruncateArtifactReads() async {
     // Small active bound so a normal result would be truncated…
     let manager = ContextManager(maxActiveResultChars: 40, inlineBudgetChars: 0)
