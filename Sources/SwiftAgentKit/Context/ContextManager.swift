@@ -273,7 +273,17 @@ public final class ContextManager: @unchecked Sendable {
         // (some providers keep only a single system block).
         var systemParts = systemBlocks
         if !receipts.isEmpty {
-            let lines = receipts.suffix(ledgerEntries).map { "- " + $0.ledgerLine() }.joined(separator: "\n")
+            var lines = receipts.suffix(ledgerEntries).map { "- " + $0.ledgerLine() }.joined(separator: "\n")
+            // Receipts past the ledger cap vanish from the prompt entirely; on a
+            // long run the model has no way to know that older outputs exist,
+            // let alone how to reach them. One count line keeps the store
+            // discoverable (artifact_list is registered iff the store is Listable).
+            let omitted = receipts.count - min(receipts.count, ledgerEntries)
+            if omitted > 0 {
+                let hint = store is any ListableArtifactStore
+                    ? " — use artifact_list to enumerate all stored outputs" : ""
+                lines += "\n(+\(omitted) older tool call\(omitted == 1 ? "" : "s") not shown\(hint))"
+            }
             systemParts.append(
                 "Older tool ledger — these tool calls already completed and their full output is "
                 + "NOT in this message; retrieve it with artifact_read / artifact_search using the "
