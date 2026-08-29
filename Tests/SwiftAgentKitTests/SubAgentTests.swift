@@ -416,6 +416,20 @@ final class FlakyProvider: LLMProvider, @unchecked Sendable {
     #expect(Agent.isRetryableLLMError(LLMError.providerError("upstream")) == true)
 }
 
+@Test func testQuotaExhausted429IsNotRetried() {
+    // A quota-exhausted 429 resets in HOURS (observed live: ChatGPT Plus
+    // "usage_limit_reached", resets_in_seconds:10654) — backing off for
+    // seconds only wastes ~30s per message. Rate-limit 429s (no quota
+    // marker) stay retryable.
+    let codexBody = Data(#"{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","plan_type":"plus","resets_in_seconds":10654}}"#.utf8)
+    #expect(Agent.isRetryableLLMError(LLMError.httpError(429, codexBody)) == false)
+    #expect(Agent.isRetryableLLMError(LLMError.httpError(429, Data(#"{"error":{"type":"insufficient_quota"}}"#.utf8))) == false)
+    // Same markers via providerError (some providers wrap the body).
+    #expect(Agent.isRetryableLLMError(LLMError.providerError("Codex inference HTTP 429: usage_limit_reached")) == false)
+    // Plain 429 with no quota marker: still a transient rate blip.
+    #expect(Agent.isRetryableLLMError(LLMError.httpError(429, Data(#"{"error":"slow down"}"#.utf8))) == true)
+}
+
 @Test func testPermanentErrorNotRetried() async throws {
     // A 400 must surface immediately without cycling through retries.
     let provider = FlakyProvider(failures: 10, error: LLMError.httpError(400, nil), then: [.text("never")])
