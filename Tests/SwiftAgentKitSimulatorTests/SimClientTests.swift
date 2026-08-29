@@ -153,5 +153,108 @@ final class SimClientTests: XCTestCase {
             XCTAssertNil(error.tree)
         }
     }
+
+    // MARK: - Reconnect policy
+    // Live failure mode (Quakely run, 2026-08-29): the in-simulator driver dies
+    // (10-min idle exit / broken automation session) while the host-side
+    // xcodebuild wrapper lingers, so every later sim_* call fails. The client
+    // must relaunch the driver — bounded — and retry safe requests.
+
+    /// Thread-safe relaunch-call counter usable as the client's relaunch hook.
+    private final class RelaunchSpy: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _count = 0
+        var count: Int { lock.lock(); defer { lock.unlock() }; return _count }
+        func bump() { lock.lock(); defer { lock.unlock() }; _count += 1 }
+    }
+
+    private func fatalErrorBody() -> Data {
+        encode(SimWire.ErrorResponse(
+            code: "internal",
+            message: "Error Domain=com.apple.dt.xctest.automation-support.error Code=8 \"Error getting main window kAXErrorServerNotFound\"",
+            tree: nil))
+    }
+
+    // A session-fatal driver error (kAXErrorServerNotFound) on an IDEMPOTENT
+    // call → relaunch once and retry; the retried call succeeds.
+    func testSessionFatalErrorRelaunchesAndRetriesIdempotentCall() async throws {
+        let tree = makeTree(generation: 9)
+        let server = try StubHTTPServer.make(scenarios: [
+            .init(path: "/tree", status: 500, body: fatalErrorBody()),
+            .init(path: "/tree", status: 200, body: encode(SimWire.TreeResponse(tree: tree))),
+        ])
+        defer { server.stop() }
+        let spy = RelaunchSpy()
+        let client = SimClient(baseURL: URL(string: "http://127.0.0.1:\(server.portNumber)")!,
+                               relaunch: { spy.bump() })
+        let result = try await client.snapshot(bundleId: "com.example.App")
+        XCTAssertEqual(result.generation, 9)
+        XCTAssertEqual(spy.count, 1)
+    }
+
+    // The same session-fatal error on a NON-idempotent call (tap) must surface
+    // without relaunch — re-POSTing an action could double-fire it.
+    func testSessionFatalErrorDoesNotRetryNonIdempotentCall() async throws {
+        let server = try StubHTTPServer.make(scenarios: [
+            .init(path: "/tap", status: 500, body: fatalErrorBody()),
+        ])
+        defer { server.stop() }
+        let spy = RelaunchSpy()
+        let client = SimClient(baseURL: URL(string: "http://127.0.0.1:\(server.portNumber)")!,
+                               relaunch: { spy.bump() })
+        do {
+            try await client.tap(bundleId: "com.example.App",
+                                 target: SimWire.Target(ref: "r0", generation: 1), longPress: false)
+            XCTFail("Expected SimDriverError")
+        } catch let error as SimDriverError {
+            XCTAssertTrue(error.message.contains("kAXErrorServerNotFound"))
+        }
+        XCTAssertEqual(spy.count, 0)
+    }
+
+    // An ordinary driver error (stale ref, wait timeout, …) is the driver
+    // WORKING — never relaunch for those.
+    func testOrdinaryDriverErrorDoesNotRelaunch() async throws {
+        let server = try StubHTTPServer.make(scenarios: [
+            .init(path: "/tree", status: 409,
+                  body: encode(SimWire.ErrorResponse(code: "stale_ref", message: "ref r9 is stale", tree: nil))),
+        ])
+        defer { server.stop() }
+        let spy = RelaunchSpy()
+        let client = SimClient(baseURL: URL(string: "http://127.0.0.1:\(server.portNumber)")!,
+                               relaunch: { spy.bump() })
+        do {
+            _ = try await client.snapshot(bundleId: "com.example.App")
+            XCTFail("Expected SimDriverError")
+        } catch let error as SimDriverError {
+            XCTAssertEqual(error.code, "stale_ref")
+        }
+        XCTAssertEqual(spy.count, 0)
+    }
+
+    // Transport failure (nothing listening) → relaunch and retry, ANY endpoint
+    // (a connect failure means the request never arrived, so re-POST is safe).
+    // The relaunch budget is bounded per client: after it's spent, transport
+    // failures surface immediately with no further relaunch attempts.
+    func testTransportFailureRelaunchBudgetIsBounded() async throws {
+        // Port from a listener we immediately stop — nothing is listening.
+        let dead = try StubHTTPServer.make(scenarios: [])
+        let port = dead.portNumber
+        dead.stop()
+        let spy = RelaunchSpy()
+        let client = SimClient(baseURL: URL(string: "http://127.0.0.1:\(port)")!,
+                               relaunch: { spy.bump() })
+        for _ in 0..<(SimClient.maxRelaunchesPerClient + 2) {
+            do {
+                _ = try await client.snapshot(bundleId: "com.example.App")
+                XCTFail("Expected transport error")
+            } catch is SimDriverError {
+                XCTFail("Expected a transport error, not a driver error")
+            } catch {
+                // expected: URLError connection failure
+            }
+        }
+        XCTAssertEqual(spy.count, SimClient.maxRelaunchesPerClient)
+    }
 }
 #endif

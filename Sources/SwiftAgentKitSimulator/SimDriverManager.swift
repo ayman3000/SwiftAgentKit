@@ -96,7 +96,16 @@ public actor SimDriverManager {
     }
 
     public func launch(udid: String, runtime: String) async throws {
-        guard !isRunning else { return }
+        // `child` is the HOST-side xcodebuild wrapper — it can outlive the
+        // in-simulator server (10-min idle exit, broken automation session).
+        // Trusting isRunning alone made relaunch a silent no-op while every
+        // sim call kept failing (observed live). Health-probe the actual
+        // server: alive → nothing to do; dead → kill the wrapper and start
+        // a fresh test session.
+        if isRunning {
+            if await isHealthy() { return }
+            shutdownNow()
+        }
         let xctestrun = try await ensureBuilt(udid: udid, runtime: runtime)
         try injectPort(into: xctestrun)
 
@@ -129,6 +138,15 @@ public actor SimDriverManager {
         }
         let out = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
         try out.write(to: xctestrun)
+    }
+
+    /// One quick /health probe — is the in-simulator server actually serving?
+    private func isHealthy() async -> Bool {
+        let url = URL(string: "http://127.0.0.1:\(port)/health")!
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 3
+        guard let (_, resp) = try? await URLSession.shared.data(for: req) else { return false }
+        return (resp as? HTTPURLResponse)?.statusCode == 200
     }
 
     private func waitForHealth(timeout: Double) async throws {
