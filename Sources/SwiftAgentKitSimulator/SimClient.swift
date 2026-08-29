@@ -33,28 +33,33 @@ public struct SimDriverError: Error, LocalizedError, Sendable {
 // MARK: - SimClient
 
 public actor SimClient: SimDriving {
-    private let manager: SimDriverManager?
-    private let udid: String?
-    private let runtime: String?
     private let baseURL: URL
     private let session: URLSession
+    /// Relaunches the driver (production: `SimDriverManager.launch`, which
+    /// health-checks and replaces a dead session). nil = no recovery possible.
+    private let relaunch: (@Sendable () async throws -> Void)?
+
+    /// Driver relaunches allowed over this client's lifetime. Each relaunch
+    /// costs seconds (health wait) — the bound stops a broken environment
+    /// (e.g. a simulator that can't host the driver) from rebuild-looping
+    /// while still surviving the routine idle-exit/dead-session cases.
+    public static let maxRelaunchesPerClient = 3
+    private var relaunchesRemaining = SimClient.maxRelaunchesPerClient
 
     public init(manager: SimDriverManager, udid: String, runtime: String) async {
-        self.manager = manager
-        self.udid = udid
-        self.runtime = runtime
         // manager.port is a nonisolated let in Swift 6.2 — no await needed.
         self.baseURL = URL(string: "http://127.0.0.1:\(manager.port)")!
+        self.relaunch = { try await manager.launch(udid: udid, runtime: runtime) }
         let cfg = URLSessionConfiguration.ephemeral
         cfg.timeoutIntervalForRequest = 120   // /wait can legitimately take a while
         self.session = URLSession(configuration: cfg)
     }
 
-    /// Test-only: point at a stub server, no manager.
+    /// Test-only: point at a stub server, with an optional relaunch hook.
     /// Uses a short-timeout session so a misbehaving stub fails fast instead of hanging.
-    init(baseURL: URL) {
-        self.manager = nil; self.udid = nil; self.runtime = nil
+    init(baseURL: URL, relaunch: (@Sendable () async throws -> Void)? = nil) {
         self.baseURL = baseURL
+        self.relaunch = relaunch
         let cfg = URLSessionConfiguration.ephemeral
         cfg.timeoutIntervalForRequest = 10
         self.session = URLSession(configuration: cfg)
@@ -98,11 +103,12 @@ public actor SimClient: SimDriving {
 
     public func waitFor(bundleId: String, target: SimWire.Target, timeoutSeconds: Double,
                         forDisappearance: Bool) async throws -> UITree {
+        // Waiting only observes — safe to retry after a driver relaunch.
         try await post("/wait",
                        SimWire.WaitRequest(bundleId: bundleId, target: target,
                                            timeoutSeconds: timeoutSeconds,
                                            forDisappearance: forDisappearance),
-                       as: SimWire.TreeResponse.self).tree
+                       as: SimWire.TreeResponse.self, idempotent: true).tree
     }
 
     public func alert(accept: Bool) async throws {
@@ -130,15 +136,16 @@ public actor SimClient: SimDriving {
     // MARK: Transport helpers
 
     private func get<T: Decodable>(_ path: String, query: [String: String], as type: T.Type) async throws -> T {
-        try await decode(await rawData(request(path: path, query: query)))
+        try await decode(await rawData(request(path: path, query: query), idempotent: true))
     }
 
-    private func post<B: Encodable, T: Decodable>(_ path: String, _ body: B, as type: T.Type) async throws -> T {
+    private func post<B: Encodable, T: Decodable>(_ path: String, _ body: B, as type: T.Type,
+                                                  idempotent: Bool = false) async throws -> T {
         var req = request(path: path, query: [:])
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONEncoder().encode(body)
-        return try await decode(await rawData(req))
+        return try await decode(await rawData(req, idempotent: idempotent))
     }
 
     private func request(path: String, query: [String: String]) -> URLRequest {
@@ -147,17 +154,40 @@ public actor SimClient: SimDriving {
         return URLRequest(url: comps.url!)
     }
 
-    /// Execute `req` with a single relaunch-retry on transport failure.
-    private func rawData(_ req: URLRequest) async throws -> Data {
+    /// The driver responded, but its XCUITest automation session is broken —
+    /// only a fresh test-without-building run fixes it. Observed live as
+    /// `Error getting main window kAXErrorServerNotFound` (Code=8) after the
+    /// in-simulator server's automation session died mid-run.
+    private func isSessionFatal(_ error: SimDriverError) -> Bool {
+        error.message.contains("kAXErrorServerNotFound")
+    }
+
+    private func consumeRelaunchBudget() -> Bool {
+        guard relaunch != nil, relaunchesRemaining > 0 else { return false }
+        relaunchesRemaining -= 1
+        return true
+    }
+
+    /// Execute `req`, relaunching the driver (bounded per client) and retrying
+    /// once when recovery is safe:
+    /// - TRANSPORT failure: the request never arrived → safe to retry ANY
+    ///   endpoint. This is the driver's idle-exit / dead-server case.
+    /// - SESSION-FATAL driver error (`isSessionFatal`): the server answered but
+    ///   its automation session is dead. `idempotent` requests (tree reads,
+    ///   screenshots, waits) retry after relaunch; actions (tap/type/…) surface
+    ///   the error — re-POSTing could double-fire them.
+    /// Ordinary driver errors (stale ref, wait timeout) are the driver WORKING
+    /// and always surface unchanged.
+    private func rawData(_ req: URLRequest, idempotent: Bool = true) async throws -> Data {
         do {
             return try await send(req)
         } catch let e as SimDriverError {
-            // Driver answered with an error — not a transport problem.
-            throw e
+            guard isSessionFatal(e), idempotent, consumeRelaunchBudget() else { throw e }
+            try await relaunch?()
+            return try await send(req)
         } catch {
-            // Transport failure → relaunch driver once and retry.
-            guard let manager, let udid, let runtime else { throw error }
-            try await manager.launch(udid: udid, runtime: runtime)
+            guard consumeRelaunchBudget() else { throw error }
+            try await relaunch?()
             return try await send(req)
         }
     }
