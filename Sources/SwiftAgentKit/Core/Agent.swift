@@ -572,11 +572,25 @@ public actor Agent {
     /// permanent client errors (4xx other than 429, malformed request,
     /// unsupported op) are not — retrying them only burns the backoff schedule
     /// before surfacing the same error.
+    /// Quota exhaustion masquerading as a 429: the limit resets in HOURS
+    /// (ChatGPT Plus "usage_limit_reached" observed live with
+    /// resets_in_seconds:10654), so seconds of backoff only stall every
+    /// message ~30s before failing anyway. Rate-limit 429s carry no such
+    /// marker and stay retryable.
+    private static func isQuotaExhaustedMessage(_ text: String) -> Bool {
+        let t = text.lowercased()
+        return t.contains("usage_limit_reached") || t.contains("insufficient_quota")
+    }
+
     static func isRetryableLLMError(_ error: Error) -> Bool {
         switch error {
         case let llm as LLMError:
             switch llm {
-            case .httpError(let code, _):
+            case .httpError(let code, let body):
+                if code == 429, let body,
+                   isQuotaExhaustedMessage(String(decoding: body, as: UTF8.self)) {
+                    return false                      // quota exhausted — resets in hours
+                }
                 return code == 429 || code >= 500   // rate-limit + server errors
             case .invalidRequest, .unsupportedOperation, .unknownProvider:
                 return false                          // permanent client errors
@@ -587,7 +601,9 @@ public actor Agent {
                 // blips (resets, timeouts, dropped connections) stay retryable.
                 let m = message.lowercased()
                 return !(m.contains("could not connect") || m.contains("connection refused"))
-            case .invalidResponse, .streamingError, .providerError:
+            case .providerError(let message):
+                return !isQuotaExhaustedMessage(message)  // transient unless quota-exhausted
+            case .invalidResponse, .streamingError:
                 return true                           // transient (incl. Ollama load bodies)
             }
         default:
