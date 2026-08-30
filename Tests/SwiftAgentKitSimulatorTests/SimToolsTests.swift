@@ -629,5 +629,54 @@ final class SimToolsTests: XCTestCase {
         XCTAssertTrue(r.result.contains("Swiped"))
         XCTAssertTrue(r.result.contains("generation 1"))
     }
+
+    // MARK: Flutter opaque-tree diagnosis
+    // Live failure (Saggel, 2026-08-30): a Flutter app without semantics enabled
+    // presents XCUITest a tree of unlabeled "Other" containers — the agent
+    // tap-looped for dozens of turns because nothing explained WHY the tree was
+    // meaningless. sim_ui must diagnose the signature and state the fix.
+
+    private func opaqueFlutterTree() -> UITree {
+        func other(_ ref: String, _ children: [UINode] = []) -> UINode {
+            UINode(ref: ref, type: "Other", label: nil, identifier: nil, value: nil,
+                   frame: CGRect(x: 0, y: 0, width: 402, height: 874),
+                   isHittable: true, isEnabled: true, children: children)
+        }
+        let root = UINode(ref: "e1", type: "Application", label: nil, identifier: nil,
+                          value: nil, frame: CGRect(x: 0, y: 0, width: 402, height: 874),
+                          isHittable: true, isEnabled: true,
+                          children: [other("e7", [other("e9", [other("e11")])])])
+        return UITree(generation: 14, bundleId: "com.example.saggel", root: root)
+    }
+
+    private func labeledTree() -> UITree {
+        let button = UINode(ref: "e3", type: "Button", label: "Add lesson", identifier: nil,
+                            value: nil, frame: CGRect(x: 0, y: 0, width: 100, height: 44),
+                            isHittable: true, isEnabled: true, children: [])
+        let root = UINode(ref: "e1", type: "Application", label: nil, identifier: nil,
+                          value: nil, frame: CGRect(x: 0, y: 0, width: 402, height: 874),
+                          isHittable: true, isEnabled: true, children: [button])
+        return UITree(generation: 2, bundleId: "com.x", root: root)
+    }
+
+    func testSimUIDiagnosesOpaqueFlutterTree() async throws {
+        let mock = MockDriver()
+        mock.treeToReturn = opaqueFlutterTree()
+        let tool = SimUITool(client: mock, session: makeSession())
+        let result = try await tool.execute(parameters: [:])
+        XCTAssertTrue(result.result.contains("semantics"),
+                      "opaque tree must carry the Flutter-semantics diagnosis")
+        XCTAssertTrue(result.result.contains("ensureSemantics()"),
+                      "diagnosis must name the concrete fix")
+        XCTAssertTrue(result.result.lowercased().contains("do not tap blindly"))
+    }
+
+    func testSimUINoDiagnosisOnLabeledTree() async throws {
+        let mock = MockDriver()
+        mock.treeToReturn = labeledTree()
+        let tool = SimUITool(client: mock, session: makeSession())
+        let result = try await tool.execute(parameters: [:])
+        XCTAssertFalse(result.result.contains("ensureSemantics"))
+    }
 }
 #endif

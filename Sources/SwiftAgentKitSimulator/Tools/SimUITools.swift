@@ -85,8 +85,11 @@ public struct SimUITool: AgentTool {
         do {
             let tree = try await client.snapshot(bundleId: bundleId)
             let full = (parameters["full"] as? Bool) ?? false
+            let rendered = full ? tree.renderCompact() : tree.renderSlim()
+            // Opaque canvas-app trees get the diagnosis appended so the agent
+            // fixes the app's semantics instead of tap-looping (Saggel lesson).
             return .success(toolCallId: "", toolName: name,
-                            result: full ? tree.renderCompact() : tree.renderSlim())
+                            result: rendered + (tree.semanticsDiagnosis ?? ""))
         } catch let e as SimDriverError {
             return .error(toolCallId: "", toolName: name,
                 message: e.localizedDescription + (e.tree.map { "\n\nCurrent UI:\n" + $0.renderCompact() } ?? ""))
