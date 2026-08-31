@@ -93,11 +93,17 @@ public struct FileWriteTool: AgentTool {
         let url = URL(fileURLWithPath: path)
         let append = boolValue(parameters["append"]) ?? false
 
+        // TRANSACTION: snapshot the original so a corrupted write can be
+        // rolled back — content sometimes arrives damaged in transit (see
+        // WriteVerifier). A broken write must never persist.
+        let existedBefore = FileManager.default.fileExists(atPath: path)
+        let original: Data? = existedBefore ? FileManager.default.contents(atPath: path) : nil
+
         do {
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
 
-            if append, FileManager.default.fileExists(atPath: path) {
+            if append, existedBefore {
                 let handle = try FileHandle(forWritingTo: url)
                 defer { try? handle.close() }
                 try handle.seekToEnd()
@@ -108,6 +114,25 @@ public struct FileWriteTool: AgentTool {
         } catch {
             return .error(toolCallId: "", toolName: name, message: "Write failed: \(error.localizedDescription)")
         }
+
+        // Verify what LANDED (for append: the whole resulting file).
+        let landed = (append && existedBefore)
+            ? (FileManager.default.contents(atPath: path)
+                .flatMap { String(data: $0, encoding: .utf8) } ?? content)
+            : content
+        if let reason = await WriteVerifier.corruptionReason(path: path, content: landed) {
+            if let original {
+                try? original.write(to: url, options: .atomic)      // restore
+            } else {
+                try? FileManager.default.removeItem(at: url)        // never existed
+            }
+            return .error(toolCallId: "", toolName: name, message: """
+            Write to \(raw) REJECTED — \(reason).
+
+            \(WriteVerifier.retryGuidance)
+            """)
+        }
+
         let verb = append ? "Appended" : "Wrote"
         return .success(toolCallId: "", toolName: name, result: "\(verb) \(content.utf8.count) bytes to \(raw).")
     }
@@ -185,6 +210,16 @@ public struct PatchFileTool: AgentTool {
                 """)
             }
         case .success(let patched):
+            // TRANSACTION: verify the patched result before it can persist —
+            // a hunk that applies cleanly can still leave broken syntax when
+            // the patch content itself was corrupted in transit.
+            if let reason = await WriteVerifier.corruptionReason(path: path, content: patched) {
+                return .error(toolCallId: "", toolName: name, message: """
+                Patch to \(raw) REJECTED — applying it would leave the file broken: \(reason).
+
+                \(WriteVerifier.retryGuidance)
+                """)
+            }
             do {
                 try Data(patched.utf8).write(to: URL(fileURLWithPath: path), options: .atomic)
             } catch {
