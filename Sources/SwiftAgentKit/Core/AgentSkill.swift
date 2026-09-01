@@ -2,39 +2,38 @@
 //  AgentSkill.swift
 //  SwiftAgentKit
 //
-//  Progressive-disclosure skill system — injects instruction blocks into
-//  the system prompt only when the query matches trigger keywords.
+//  Model-driven skill selection. The system prompt carries a compact,
+//  always-present INDEX of every skill (one line: name — description);
+//  the model loads a skill's full instructions on demand with the
+//  `use_skill` tool. The MODEL chooses skills by meaning.
 //
-//  This keeps the token budget small for small/local models. Instead of
-//  stuffing every instruction into the system prompt, skills are loaded
-//  on demand based on what the user is actually asking about.
+//  History: selection used to be keyword-trigger matching against the
+//  user's query. That failed exactly when intent was phrased in words a
+//  skill author didn't predict ("let's brainstorm" found nothing), and
+//  the model could never reach for a skill mid-task. Triggers survive
+//  only as parsed-but-unused file metadata for compatibility.
 //
-//  Example:
-//  ```
-//  AgentSkill(
-//      name: "scaffolding",
-//      triggerKeywords: ["scaffold", "create project", "new app", "xcode project"],
-//      instructions: "When scaffolding a project: 1. Ask for project name. 2. Create directory. 3. Create Package.swift..."
-//  )
-//  ```
-//
-//  The skill is only injected when the user says "scaffold a new project" —
-//  not when they ask "read this file". This saves hundreds of tokens per query.
+//  Progressive disclosure is preserved where it matters: the index costs
+//  ~15 tokens per skill; a skill's full body enters context only in the
+//  conversations that actually load it.
 //
 
 import Foundation
 
-/// A skill is a block of instructions injected into the system prompt
-/// only when the user's query matches trigger keywords.
-///
-/// This is the **progressive disclosure** pattern — keep the system prompt
-/// small by default, and only expand it when the user's query actually
-/// needs specific domain knowledge.
-///
+/// A named block of instructions the model can load on demand via
+/// `use_skill`. The `description` is the skill's entire discoverability
+/// surface — it is what the model reads in the index when deciding
+/// whether the skill fits the task.
 public struct AgentSkill: Sendable, Identifiable, Equatable {
 
     public let id: String
     public var name: String
+    /// One-line summary shown in the system-prompt index. Required for
+    /// discoverability; derived from the body's first line for legacy
+    /// skill files that predate the field.
+    public var description: String
+    /// Legacy metadata (pre-index selection). Parsed and preserved so old
+    /// skill files round-trip, but NOT used for selection.
     public var triggerKeywords: [String]
     public var instructions: String
 
@@ -44,109 +43,50 @@ public struct AgentSkill: Sendable, Identifiable, Equatable {
     public init(
         id: String = UUID().uuidString,
         name: String,
-        triggerKeywords: [String],
+        description: String = "",
+        triggerKeywords: [String] = [],
         instructions: String,
         tier: String? = nil
     ) {
         self.id = id
         self.name = name
+        let trimmed = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.description = trimmed.isEmpty
+            ? Self.derivedDescription(from: instructions) : trimmed
         self.triggerKeywords = triggerKeywords
         self.instructions = instructions
         self.tier = tier
     }
 
-    /// Check if this skill should be activated for the given query.
-    ///
-    /// Trigger lists are often model-authored and contain generic English
-    /// words ("current", "work", "needs") that would light the skill up on
-    /// every ordinary query under a raw substring check. Matching rules:
-    /// - Multi-word keywords ("new project") match as substrings — a phrase
-    ///   is distinctive enough on its own.
-    /// - Single-word keywords are ignored if they are stopwords, and must
-    ///   match a whole query word. Beyond exact equality, only inflected
-    ///   forms count ("scaffold" catches "scaffolding", "repo" catches
-    ///   "repos") — an arbitrary prefix does not ("repo" must NOT catch
-    ///   "report", "art" must not catch "start").
-    public func matches(_ query: String) -> Bool {
-        let lowerQuery = query.lowercased()
-        let queryWords: [String] = lowerQuery
-            .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
-            .map(String.init)
-
-        return triggerKeywords.contains { keyword in
-            let k = keyword.lowercased().trimmingCharacters(in: .whitespaces)
-            guard !k.isEmpty else { return false }
-            if k.contains(" ") {
-                return lowerQuery.contains(k)
-            }
-            guard !Self.genericTriggerWords.contains(k) else { return false }
-            return queryWords.contains { word in
-                guard word.hasPrefix(k) else { return false }
-                return Self.inflectionSuffixes.contains(String(word.dropFirst(k.count)))
-            }
-        }
+    /// Fallback description for skills authored before the field existed:
+    /// the first non-empty instruction line, flattened, capped at 120 chars.
+    public static func derivedDescription(from instructions: String) -> String {
+        let firstLine = instructions
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { !$0.isEmpty } ?? ""
+        return String(firstLine.prefix(120))
     }
 
-    /// Word endings that make a query word count as a form of a trigger word
-    /// ("" = exact). Anything else is a different word, not an inflection.
-    static let inflectionSuffixes: Set<String> = ["", "s", "es", "ed", "d", "ing"]
-
-    /// Common English words that are useless as single-word triggers —
-    /// matching on them injects skills into unrelated queries. A word here
-    /// can still participate in a multi-word phrase trigger.
-    static let genericTriggerWords: Set<String> = [
-        // articles / pronouns / prepositions / conjunctions
-        "a", "an", "the", "i", "you", "he", "she", "it", "we", "they", "me", "my", "your",
-        "his", "her", "its", "our", "their", "this", "that", "these", "those",
-        "in", "on", "at", "of", "to", "for", "from", "with", "without", "by", "about",
-        "into", "onto", "over", "under", "up", "down", "out", "off", "and", "or", "but",
-        "if", "then", "else", "when", "while", "as", "so", "than", "too", "very",
-        // auxiliaries / common verbs
-        "is", "are", "was", "were", "be", "been", "being", "am", "do", "does", "did",
-        "have", "has", "had", "can", "could", "will", "would", "shall", "should",
-        "may", "might", "must", "get", "gets", "got", "make", "makes", "made",
-        "use", "uses", "used", "using", "go", "goes", "going", "want", "wants",
-        "need", "needs", "needed", "start", "starts", "starting", "run", "runs", "running",
-        "work", "works", "working", "help", "please", "let", "give", "take", "put",
-        // generic qualifiers / time words
-        "new", "old", "current", "currently", "now", "right", "just", "here", "there",
-        "all", "any", "some", "each", "every", "other", "more", "most", "first", "last",
-        "next", "before", "after", "again", "also", "only", "same", "own",
-        "today", "session", "thing", "things", "way", "one", "two", "how", "what",
-        "which", "who", "where", "why", "yes", "no", "not", "ok",
-    ]
-
-    /// Render the skill as an instruction block for the system prompt.
+    /// Render the skill's full instructions for a `use_skill` load.
     public func render() -> String {
         """
-
-        --- Skill: \(name) ---
+        [Skill "\(name)" loaded — follow these instructions for this task:]
         \(instructions)
-        --- End Skill: \(name) ---
-
         """
+    }
+
+    /// The skill's single line in the system-prompt index.
+    public func indexLine() -> String {
+        "- \(name) — \(description)"
     }
 }
 
-/// A registry of skills that handles progressive disclosure.
+/// A registry of skills backing the system-prompt index and `use_skill`.
 ///
-/// Thread-safe via actor isolation. The registry holds all skills,
-/// and the agent queries it per-request to find which skills match
-/// the current query. Only matching skills are injected into the
-/// system prompt.
-///
-/// Usage:
-/// ```swift
-/// let registry = SkillRegistry()
-/// await registry.register(AgentSkill(
-///     name: "chart",
-///     triggerKeywords: ["chart", "graph", "plot", "visualization"],
-///     instructions: "When creating charts: use the Charts framework..."
-/// ))
-/// let active = await registry.matchingSkills(for: "Create a bar chart of sales data")
-/// // → returns the chart skill
-/// ```
-///
+/// Thread-safe via actor isolation. The index is query-independent and
+/// byte-stable (alphabetical) so the system prompt stays cache-friendly
+/// across steps; it only changes when skills are added or removed.
 public actor SkillRegistry {
 
     private var skills: [AgentSkill] = []
@@ -179,18 +119,25 @@ public actor SkillRegistry {
         filteredByTier(skills)
     }
 
-    /// Find skills that match the given query (respecting tier filter).
-    public func matchingSkills(for query: String) -> [AgentSkill] {
-        let candidates = filteredByTier(skills)
-        return candidates.filter { $0.matches(query) }
+    /// Resolve a skill by exact name (respecting tier filter) — the
+    /// `use_skill` lookup. A tier-hidden skill is unloadable, not just
+    /// invisible.
+    public func skill(named name: String) -> AgentSkill? {
+        filteredByTier(skills).first { $0.name == name }
     }
 
-    /// Build the system prompt augmentation for matching skills.
-    /// Returns an empty string if no skills match.
-    public func systemPromptAugmentation(for query: String) -> String {
-        let matched = matchingSkills(for: query)
-        guard !matched.isEmpty else { return "" }
-        return matched.map { $0.render() }.joined()
+    /// The always-present system-prompt index: one line per skill,
+    /// alphabetical by name (byte-stable for prompt caching). Empty
+    /// string when no skills are registered.
+    public func skillIndex() -> String {
+        let visible = filteredByTier(skills).sorted { $0.name < $1.name }
+        guard !visible.isEmpty else { return "" }
+        return """
+
+        Skills — reusable procedures. BEFORE starting a task that matches one, \
+        load it with `use_skill(name)` and follow it:
+        \(visible.map { $0.indexLine() }.joined(separator: "\n"))
+        """
     }
 
     /// Clear all skills.

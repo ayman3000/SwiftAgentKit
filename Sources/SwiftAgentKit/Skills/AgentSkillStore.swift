@@ -27,7 +27,8 @@ public protocol AgentSkillStore: Sendable {
 /// File format (human-editable):
 ///
 ///     # <name>
-///     Triggers: keyword one, keyword two
+///     Description: one line the model reads in the skills index
+///     Triggers: legacy keyword one, keyword two   (parsed, unused)
 ///
 ///     <instructions…>
 ///
@@ -53,9 +54,11 @@ public final class FileAgentSkillStore: AgentSkillStore, @unchecked Sendable {
         try lock.withLock {
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
             let url = directory.appendingPathComponent("\(Self.slugify(skill.name)).md")
-            let triggers = skill.triggerKeywords.joined(separator: ", ")
-            let body = "# \(skill.name)\nTriggers: \(triggers)\n\n\(skill.instructions)\n"
-            try body.write(to: url, atomically: true, encoding: .utf8)
+            var header = "# \(skill.name)\nDescription: \(skill.description)\n"
+            if !skill.triggerKeywords.isEmpty {
+                header += "Triggers: \(skill.triggerKeywords.joined(separator: ", "))\n"
+            }
+            try (header + "\n\(skill.instructions)\n").write(to: url, atomically: true, encoding: .utf8)
         }
     }
 
@@ -85,6 +88,7 @@ public final class FileAgentSkillStore: AgentSkillStore, @unchecked Sendable {
 
     public static func parse(_ markdown: String) -> AgentSkill? {
         var name: String?
+        var description = ""
         var triggers: [String] = []
         var instructionLines: [String] = []
         var inBody = false
@@ -96,14 +100,18 @@ public final class FileAgentSkillStore: AgentSkillStore, @unchecked Sendable {
                 continue
             }
             if !inBody {
-                if trimmed.isEmpty { continue }   // skip blanks between title / triggers / body
+                if trimmed.isEmpty { continue }   // skip blanks in the header block
+                if trimmed.lowercased().hasPrefix("description:") {
+                    description = String(trimmed.dropFirst("description:".count))
+                        .trimmingCharacters(in: .whitespaces)
+                    continue
+                }
                 if trimmed.lowercased().hasPrefix("triggers:") {
                     let raw = trimmed.dropFirst("triggers:".count)
                     triggers = raw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-                    inBody = true
                     continue
                 }
-                inBody = true   // first non-empty, non-triggers line starts the body
+                inBody = true   // first non-header line starts the body
             }
             instructionLines.append(line)
         }
@@ -111,7 +119,10 @@ public final class FileAgentSkillStore: AgentSkillStore, @unchecked Sendable {
         guard let name, !name.isEmpty else { return nil }
         let instructions = instructionLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !instructions.isEmpty else { return nil }
-        return AgentSkill(name: name, triggerKeywords: triggers, instructions: instructions)
+        // Legacy files have no Description: line — AgentSkill.init derives one
+        // from the body's first line so every skill is index-visible.
+        return AgentSkill(name: name, description: description,
+                          triggerKeywords: triggers, instructions: instructions)
     }
 
     static func slugify(_ s: String) -> String {

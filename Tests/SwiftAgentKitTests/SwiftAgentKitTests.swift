@@ -996,96 +996,88 @@ struct DelayTool: AgentTool {
     }
 }
 
-@Test func testAgentSkillMatches() {
-    let skill = AgentSkill(
-        name: "chart",
-        triggerKeywords: ["chart", "graph", "plot"],
-        instructions: "Use Charts framework."
-    )
-    #expect(skill.matches("Create a bar chart of sales") == true)
-    #expect(skill.matches("Read this file") == false)
-}
-
-@Test func testAgentSkillRender() {
+@Test func testAgentSkillRenderAndIndexLine() {
     let skill = AgentSkill(
         name: "scaffold",
-        triggerKeywords: ["scaffold", "new project"],
+        description: "Scaffolds new projects with official CLIs.",
         instructions: "Ask for project name first."
     )
     let rendered = skill.render()
-    #expect(rendered.contains("scaffold"))
+    #expect(rendered.contains("Skill \"scaffold\" loaded"))
     #expect(rendered.contains("Ask for project name"))
+    #expect(skill.indexLine() == "- scaffold — Scaffolds new projects with official CLIs.")
 }
 
-@Test func testSkillRegistryMatching() async {
+@Test func testAgentSkillDerivesDescriptionFromBody() {
+    let skill = AgentSkill(
+        name: "legacy",
+        instructions: "Building a project? Work like an engineer, not a chatbot:\n1. Think."
+    )
+    #expect(skill.description == "Building a project? Work like an engineer, not a chatbot:")
+    let long = AgentSkill(name: "long", instructions: String(repeating: "x", count: 500))
+    #expect(long.description.count == 120)
+}
+
+@Test func testSkillIndexIsAlphabeticalAndStable() async {
     let registry = SkillRegistry()
-    await registry.register(AgentSkill(
-        name: "chart",
-        triggerKeywords: ["chart", "graph"],
-        instructions: "Chart instructions."
-    ))
-    await registry.register(AgentSkill(
-        name: "scaffold",
-        triggerKeywords: ["scaffold", "new project"],
-        instructions: "Scaffold instructions."
-    ))
-
-    let matched = await registry.matchingSkills(for: "Create a chart")
-    #expect(matched.count == 1)
-    #expect(matched[0].name == "chart")
+    await registry.register(AgentSkill(name: "zeta", description: "Z things.", instructions: "z"))
+    await registry.register(AgentSkill(name: "alpha", description: "A things.", instructions: "a"))
+    let index = await registry.skillIndex()
+    #expect(index.contains("use_skill"))
+    let alphaPos = index.range(of: "- alpha — A things.")!.lowerBound
+    let zetaPos = index.range(of: "- zeta — Z things.")!.lowerBound
+    #expect(alphaPos < zetaPos)
+    // Byte-stable: same registry, same index (prompt-cache requirement).
+    let again = await registry.skillIndex()
+    #expect(index == again)
 }
 
-@Test func testSkillRegistryNoMatch() async {
+@Test func testSkillIndexEmptyWhenNoSkills() async {
     let registry = SkillRegistry()
-    await registry.register(AgentSkill(
-        name: "chart",
-        triggerKeywords: ["chart"],
-        instructions: "Chart instructions."
-    ))
-
-    let matched = await registry.matchingSkills(for: "Read a file")
-    #expect(matched.isEmpty)
+    let index = await registry.skillIndex()
+    #expect(index.isEmpty)
 }
 
-@Test func testSkillRegistryPromptAugmentation() async {
+@Test func testSkillLookupByName() async {
     let registry = SkillRegistry()
-    await registry.register(AgentSkill(
-        name: "chart",
-        triggerKeywords: ["chart"],
-        instructions: "Use Charts framework."
-    ))
-
-    let aug = await registry.systemPromptAugmentation(for: "Make a chart")
-    #expect(aug.contains("chart"))
-    #expect(aug.contains("Charts framework"))
-
-    let noAug = await registry.systemPromptAugmentation(for: "Read a file")
-    #expect(noAug.isEmpty)
+    await registry.register(AgentSkill(name: "chart", description: "Charts.", instructions: "Use Charts framework."))
+    let found = await registry.skill(named: "chart")
+    #expect(found?.instructions == "Use Charts framework.")
+    let missing = await registry.skill(named: "nope")
+    #expect(missing == nil)
 }
 
-@Test func testSkillRegistryTierFilter() async {
+@Test func testUseSkillToolLoadsAndSelfCorrects() async throws {
     let registry = SkillRegistry()
-    await registry.register(AgentSkill(
-        name: "free-skill",
-        triggerKeywords: ["test"],
-        instructions: "Free."
-    ))
-    await registry.register(AgentSkill(
-        name: "pro-skill",
-        triggerKeywords: ["test"],
-        instructions: "Pro.",
-        tier: "pro"
-    ))
+    await registry.register(AgentSkill(name: "chart", description: "Charts.", instructions: "Use Charts framework."))
+    let tool = UseSkillTool(registry: registry)
 
-    // No filter → both match
-    let allMatched = await registry.matchingSkills(for: "test something")
-    #expect(allMatched.count == 2)
+    let ok = try await tool.execute(parameters: ["name": "chart"])
+    #expect(!ok.isError)
+    #expect(ok.result.contains("Charts framework"))
 
-    // Pro filter → only pro skill + tierless skills
-    await registry.setTierFilter("pro")
-    let proMatched = await registry.matchingSkills(for: "test something")
-    #expect(proMatched.count == 2) // free-skill has no tier → included; pro-skill has tier pro → included
+    let bad = try await tool.execute(parameters: ["name": "grap"])
+    #expect(bad.isError)
+    #expect(bad.result.contains("chart"))   // unknown name returns available skills
 }
+
+@Test func testSkillRegistryTierFilterHidesFromIndexAndLookup() async {
+    let registry = SkillRegistry()
+    await registry.register(AgentSkill(name: "free-skill", description: "Free.", instructions: "Free."))
+    await registry.register(AgentSkill(name: "pro-skill", description: "Pro.", instructions: "Pro.", tier: "pro"))
+
+    let all = await registry.skillIndex()
+    #expect(all.contains("free-skill") && all.contains("pro-skill"))
+
+    await registry.setTierFilter("free")
+    let filtered = await registry.skillIndex()
+    #expect(filtered.contains("free-skill"))
+    #expect(!filtered.contains("pro-skill"))
+    // Tier-hidden skills are unloadable, not just invisible.
+    let hidden = await registry.skill(named: "pro-skill")
+    #expect(hidden == nil)
+}
+
 // MARK: - Agent Registration Race Regression
 
 final class AgentMockURLProtocol: URLProtocol, @unchecked Sendable {
@@ -2156,7 +2148,8 @@ private func tempSkillDir() -> URL {
     #expect(skill.name == "Scaffold SwiftUI view")
     #expect(skill.triggerKeywords.contains("swiftui"))
     #expect(skill.instructions.contains("#Preview"))
-    #expect(skill.matches("please make a new SwiftUI screen"))
+    // No Description: authored → derived from the body's first line.
+    #expect(skill.description.hasPrefix("1. Create the file."))
 }
 
 @Test func testSkillStoreParsesTriggersAfterBlankLine() async throws {
@@ -2200,7 +2193,7 @@ private func tempSkillDir() -> URL {
 
     let result = try await tool.execute(parameters: [
         "name": "Fix flaky test",
-        "triggers": "flaky, retry, intermittent",
+        "description": "Diagnoses and quarantines flaky tests.",
         "instructions": "Re-run 3x; if it passes sometimes, quarantine and open an issue.",
     ])
     #expect(result.isError == false)
@@ -2208,9 +2201,11 @@ private func tempSkillDir() -> URL {
     // Persisted…
     let persisted = try await store.loadAll()
     #expect(persisted.contains { $0.name == "Fix flaky test" })
-    // …and live in the registry (fires on a matching query).
-    let active = await registry.matchingSkills(for: "this test is flaky")
-    #expect(active.contains { $0.name == "Fix flaky test" })
+    // …and live in the registry, visible in the index and loadable.
+    let index = await registry.skillIndex()
+    #expect(index.contains("Fix flaky test — Diagnoses and quarantines flaky tests."))
+    let loaded = await registry.skill(named: "Fix flaky test")
+    #expect(loaded?.instructions.contains("quarantine") == true)
 }
 
 // MARK: - Live model smoke test (gated)

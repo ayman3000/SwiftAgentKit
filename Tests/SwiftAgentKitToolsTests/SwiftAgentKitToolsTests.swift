@@ -174,13 +174,13 @@ private func tempDir() -> URL {
 }
 
 @Test func importSkillReturnsParsedCandidateForSkillFile() async throws {
-    let md = "# demo\nTriggers: demo\n\nstep 1\n"
+    let md = "# demo\nDescription: A demo skill.\n\nstep 1\n"
     let tool = ImportSkillTool(fetch: { _ in (Data(md.utf8), URLResponse()) })
     let r = try await tool.execute(parameters: ["url": "https://example.com/skill.md"])
     #expect(r.isError == false)
     #expect(r.result.contains("UNTRUSTED"))
     #expect(r.result.contains("name: demo"))
-    #expect(r.result.contains("triggers: demo"))
+    #expect(r.result.contains("description: A demo skill."))
 }
 
 @Test func importSkillReturnsRawForNonSkillContent() async throws {
