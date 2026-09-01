@@ -1,89 +1,67 @@
 //
-//  SkillTriggerQualityTests.swift
-//  SwiftAgentKit
+//  SkillIndexQualityTests.swift — model-driven skill selection.
 //
-//  Trigger-quality hardening: model-authored trigger lists routinely contain
-//  generic English words ("current", "work", "needs"), and the old raw
-//  substring match made every ordinary query light up unrelated skills.
-//  New contract: phrases match as substrings; single words must be
-//  non-stopwords and match a whole query word (prefix allowed for plurals
-//  and gerunds).
+//  Selection used to be keyword-trigger matching (see git history for the
+//  trigger-quality suite). The model now chooses from an always-present
+//  index and loads instructions with use_skill; these tests cover the file
+//  format's Description line and legacy-file fallback.
 //
 
-import Foundation
 import Testing
+import Foundation
 @testable import SwiftAgentKit
 
-@Test func genericStopwordTriggersDoNotFire() {
-    // The real-world case: dev-workflow skills imported with prose-derived
-    // trigger lists were activated by "current" in a time question.
-    let subagentSkill = AgentSkill(
-        name: "subagent-driven-development",
-        triggerKeywords: ["subagent", "driven", "development", "executing", "implementation",
-                          "plans", "independent", "tasks", "current", "session"],
-        instructions: "…"
-    )
-    let worktreesSkill = AgentSkill(
-        name: "using-git-worktrees",
-        triggerKeywords: ["git", "worktrees", "starting", "feature", "work", "needs",
-                          "isolation", "current", "workspace", "executing", "implementation", "plans"],
-        instructions: "…"
-    )
+@Test func parsesDescriptionLine() {
+    let md = """
+    # deploy
+    Description: Ships a release to production safely.
+    Triggers: legacy, words
 
-    let query = "What time is it right now? Use your current time tool."
-    #expect(subagentSkill.matches(query) == false)
-    #expect(worktreesSkill.matches(query) == false)
+    1. Run the tests.
+    2. Tag and push.
+    """
+    let skill = FileAgentSkillStore.parse(md)
+    #expect(skill?.name == "deploy")
+    #expect(skill?.description == "Ships a release to production safely.")
+    #expect(skill?.triggerKeywords == ["legacy", "words"])   // preserved, unused
+    #expect(skill?.instructions.hasPrefix("1. Run the tests.") == true)
 }
 
-@Test func distinctiveSingleWordStillFiresAlone() {
-    let skill = AgentSkill(name: "chart", triggerKeywords: ["chart", "graph", "plot"], instructions: "…")
-    #expect(skill.matches("Create a bar chart of sales") == true)
-    #expect(skill.matches("Read this file") == false)
+@Test func legacyFileWithoutDescriptionDerivesOne() {
+    let md = """
+    # project-builder
+    Triggers: create project, new project
+
+    Building a project? Work like an engineer, not a chatbot:
+    1. Think.
+    """
+    let skill = FileAgentSkillStore.parse(md)
+    #expect(skill?.description == "Building a project? Work like an engineer, not a chatbot:")
 }
 
-@Test func singleWordMatchesWholeWordsAndPrefixesOnly() {
-    let scaffold = AgentSkill(name: "scaffold", triggerKeywords: ["scaffold"], instructions: "…")
-    #expect(scaffold.matches("scaffolding a new app") == true)      // prefix covers gerund
-    #expect(scaffold.matches("please scaffold it") == true)         // whole word
+@Test func headerLinesParseInAnyOrder() {
+    let md = """
+    # x
+    Triggers: a, b
+    Description: Does x.
 
-    // Raw substring accidents must be gone: "art" inside "start".
-    let art = AgentSkill(name: "art", triggerKeywords: ["art"], instructions: "…")
-    #expect(art.matches("start the timer") == false)
-    #expect(art.matches("generate some art for me") == true)
+    Body here.
+    """
+    let skill = FileAgentSkillStore.parse(md)
+    #expect(skill?.description == "Does x.")
+    #expect(skill?.instructions == "Body here.")
 }
 
-@Test func phraseTriggersStillMatchAsSubstrings() {
-    let skill = AgentSkill(name: "scaffold", triggerKeywords: ["new project"], instructions: "…")
-    #expect(skill.matches("Set up a new project for me") == true)
-    #expect(skill.matches("open the project") == false)
-}
-
-@Test func realDomainTriggersStillReachTheirSkills() {
-    // The same imported skills must still fire for the queries they are FOR.
-    let worktreesSkill = AgentSkill(
-        name: "using-git-worktrees",
-        triggerKeywords: ["git", "worktrees", "starting", "feature", "work", "needs",
-                          "isolation", "current", "workspace", "executing", "implementation", "plans"],
-        instructions: "…"
-    )
-    #expect(worktreesSkill.matches("set up git worktrees for this feature") == true)
-    #expect(worktreesSkill.matches("what is the isolation model here?") == true)
-}
-
-@Test func shortTriggerDoesNotPrefixMatchLongerUnrelatedWord() {
-    // Real-world false positive: "repo" (github-workflow trigger) prefix-matched
-    // "report" in "…and report what you found", injecting the skill into a
-    // simulator-testing prompt. Prefix matching exists for plurals/gerunds of
-    // DISTINCTIVE triggers ("scaffold" → "scaffolding") — a 4-letter trigger
-    // swallowing a different 6-letter word is not that.
-    let github = AgentSkill(name: "github-workflow",
-                            triggerKeywords: ["github", "clone", "branch", "commit", "repo"],
-                            instructions: "…")
-    #expect(github.matches("take a screenshot of each tab, and report what you found") == false)
-    #expect(github.matches("push this to the repo") == true)            // exact word still fires
-    #expect(github.matches("check both repos") == true)                 // plural still fires
-
-    // Long triggers keep their gerund/plural prefix behavior.
-    let scaffold = AgentSkill(name: "scaffold", triggerKeywords: ["scaffold"], instructions: "…")
-    #expect(scaffold.matches("scaffolding a new app") == true)
+@Test func saveRoundTripsDescription() async throws {
+    let dir = FileManager.default.temporaryDirectory
+        .appendingPathComponent("skill-store-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = FileAgentSkillStore(directory: dir)
+    try await store.save(AgentSkill(name: "round trip",
+                                    description: "Round-trips descriptions.",
+                                    instructions: "Do the thing."))
+    let loaded = try await store.loadAll()
+    #expect(loaded.count == 1)
+    #expect(loaded.first?.description == "Round-trips descriptions.")
+    #expect(loaded.first?.instructions == "Do the thing.")
 }

@@ -441,6 +441,7 @@ public actor Agent {
         skillStore = store
         guard let store = store else { return }
         register(LearnSkillTool(store: store, registry: skillRegistry))
+        register(UseSkillTool(registry: skillRegistry))
         trackRegistrationTask(Task { [skillRegistry] in
             if let skills = try? await store.loadAll() {
                 await skillRegistry.registerAll(skills)
@@ -757,16 +758,14 @@ public actor Agent {
             effectiveSystemPrompt += toolInstruction
         }
 
-        // Progressive disclosure: inject matching skills into system prompt
-        let skillAugmentation = await skillRegistry.systemPromptAugmentation(for: query)
-        if !skillAugmentation.isEmpty || !effectiveSystemPrompt.isEmpty {
-            // Build dynamic system message: base prompt + matching skills
-            let augmentedSystem = effectiveSystemPrompt + "\n" + skillAugmentation
-            conversation.setSystemMessage(.system(augmentedSystem))
-
-            // Emit skill activation event
-            let matchedNames = await skillRegistry.matchingSkills(for: query).map { $0.name }
-            emit(.skillsActivated(names: matchedNames))
+        // Model-driven skills: a compact, query-independent index of every
+        // skill goes into the system prompt; the model loads full
+        // instructions on demand with `use_skill`. The index is byte-stable
+        // (alphabetical, changes only when skills change) so the prompt
+        // prefix stays cache-friendly across steps and turns.
+        let skillIndex = await skillRegistry.skillIndex()
+        if !skillIndex.isEmpty || !effectiveSystemPrompt.isEmpty {
+            conversation.setSystemMessage(.system(effectiveSystemPrompt + skillIndex))
         }
 
         var totalTurns = 0

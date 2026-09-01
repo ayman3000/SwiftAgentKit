@@ -23,18 +23,19 @@ public final class LearnSkillTool: AgentTool, @unchecked Sendable {
     public let description = """
     Save a reusable skill so you handle a recurring task better next time. Call \
     this after you work out how to do a repeatable multi-step task, or after \
-    correcting a mistake, so the lesson sticks. Provide a short `name`, comma- \
-    separated `triggers` (keywords that should activate it later), and clear \
-    step-by-step `instructions`. Don't ask permission — just save it.
+    correcting a mistake, so the lesson sticks. Provide a short `name`, a one- \
+    line `description` (this is how the skill is found later — say what task it \
+    is for, not how it works), and clear step-by-step `instructions`. Don't ask \
+    permission — just save it.
     """
 
     public let parameters = ToolParameters(
         properties: [
             "name": ToolParameterProperty(type: "string", description: "Short skill name, e.g. \"scaffold swiftui view\"."),
-            "triggers": ToolParameterProperty(type: "string", description: "Comma-separated keywords that should activate this skill."),
+            "description": ToolParameterProperty(type: "string", description: "One line saying what task this skill is for — shown in the skills index the model reads."),
             "instructions": ToolParameterProperty(type: "string", description: "Step-by-step instructions for the task."),
         ],
-        required: ["name", "triggers", "instructions"]
+        required: ["name", "description", "instructions"]
     )
 
     private let store: any AgentSkillStore
@@ -51,9 +52,13 @@ public final class LearnSkillTool: AgentTool, @unchecked Sendable {
         else {
             return .error(toolCallId: "", toolName: name, message: "learn_skill requires `name` and `instructions`.")
         }
-        let triggers = Self.triggers(from: parameters["triggers"])
+        let skillDescription = (parameters["description"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
-        let skill = AgentSkill(name: name, triggerKeywords: triggers, instructions: instructions)
+        // AgentSkill.init derives a description from the body when the model
+        // omits one — a skill must never be invisible in the index.
+        let skill = AgentSkill(name: name, description: skillDescription,
+                               instructions: instructions)
         do {
             try await store.save(skill)
         } catch {
@@ -63,18 +68,7 @@ public final class LearnSkillTool: AgentTool, @unchecked Sendable {
         await registry.unregister(named: name)
         await registry.register(skill)
 
-        let triggerList = triggers.isEmpty ? "(no triggers)" : triggers.joined(separator: ", ")
-        return .success(toolCallId: "", toolName: name, result: "Learned skill \"\(name)\" (triggers: \(triggerList)).")
-    }
-
-    /// Accept comma-separated string or an array of strings.
-    private static func triggers(from value: Any?) -> [String] {
-        if let s = value as? String {
-            return s.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-        }
-        if let arr = value as? [Any] {
-            return arr.compactMap { $0 as? String }.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-        }
-        return []
+        return .success(toolCallId: "", toolName: name,
+                        result: "Learned skill \"\(name)\" — \(skill.description). Load it later with use_skill.")
     }
 }

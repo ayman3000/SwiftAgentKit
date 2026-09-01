@@ -38,8 +38,10 @@ public final class ContextManager: @unchecked Sendable {
 
     /// Tools whose output IS the retrieval mechanism — never re-truncate or
     /// re-spill their results, or the model loops calling them to "get the full
-    /// output" that keeps getting bounded.
-    private static let retrievalToolNames: Set<String> = ["artifact_read", "artifact_search", "artifact_list"]
+    /// output" that keeps getting bounded. `use_skill` is here for a related
+    /// reason: a loaded skill's instructions must stay live for the whole run
+    /// (a skill loaded at step 3 evicted by step 60 silently derails the task).
+    private static let retrievalToolNames: Set<String> = ["artifact_read", "artifact_search", "artifact_list", "use_skill"]
 
     /// Keep the whole conversation inline (no externalization) while its total
     /// size is under this many characters. ContextSift only earns its keep when
