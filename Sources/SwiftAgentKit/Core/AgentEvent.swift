@@ -111,6 +111,9 @@ public enum AgentEvent: Sendable {
 
     /// A streaming text chunk was received.
     case streamChunk(String)
+    /// A delta of the model's separated reasoning arrived while streaming.
+    /// Distinct from `streamChunk` — never answer text.
+    case reasoningChunk(String)
 
     /// Streaming completed.
     case streamFinished

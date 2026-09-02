@@ -46,6 +46,7 @@ public final class RecordingProvider: LLMProvider, @unchecked Sendable {
                     for try await chunk in base.stream(request) {
                         switch chunk {
                         case .text(let t): text += t
+                        case .reasoning: break   // transient; not part of the scripted turn
                         case .toolCall(let c): toolCalls.append(c)
                         case .finish(let r, let u): finish = r; usage = u
                         case .error(let e): throw e
