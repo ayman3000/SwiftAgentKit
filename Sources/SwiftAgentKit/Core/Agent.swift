@@ -697,7 +697,7 @@ public actor Agent {
     /// `runStreaming(_:)` (streaming). When `onText` is non-nil, each turn is
     /// streamed and assistant text deltas are delivered to `onText` as they
     /// arrive — including the final answer, token-by-token.
-    private func runLoop(query: String, images: [LLMImage], onText: (@Sendable (String) -> Void)?, onTurnCompleted: (@Sendable (String, Bool) -> Void)? = nil) async throws -> String {
+    private func runLoop(query: String, images: [LLMImage], onText: (@Sendable (String) -> Void)?, onReasoning: (@Sendable (String) -> Void)? = nil, onTurnCompleted: (@Sendable (String, Bool) -> Void)? = nil) async throws -> String {
         guard beginRunIfIdle() else {
             throw AgentError.runInProgress
         }
@@ -892,7 +892,7 @@ public actor Agent {
                 var llmAttempt = 0
                 while true {
                     do {
-                        agentResponse = try await executeTurn(request: request, onText: onText)
+                        agentResponse = try await executeTurn(request: request, onText: onText, onReasoning: onReasoning)
                         break
                     } catch is CancellationError {
                         throw AgentError.cancelled
@@ -1166,7 +1166,7 @@ public actor Agent {
 
             var agentResponse: AgentLLMResponse
             do {
-                agentResponse = try await executeTurn(request: request, onText: onText)
+                agentResponse = try await executeTurn(request: request, onText: onText, onReasoning: onReasoning)
             } catch {
                 if let onModelError = callbacks?.onModelError {
                     if let fallback = await onModelError(error, state) {
@@ -1311,7 +1311,8 @@ public actor Agent {
     ///   native tool calling) are still detected.
     private func executeTurn(
         request: LLMRequest,
-        onText: (@Sendable (String) -> Void)?
+        onText: (@Sendable (String) -> Void)?,
+        onReasoning: (@Sendable (String) -> Void)? = nil
     ) async throws -> AgentLLMResponse {
         guard let onText else {
             let response = try await config.provider.complete(request)
@@ -1319,6 +1320,11 @@ public actor Agent {
         }
 
         var streamedText = ""
+        // Separated reasoning (Ollama `thinking`, OpenAI `reasoning_content`,
+        // Anthropic thinking deltas). Kept OUT of streamedText so it never
+        // becomes the answer, but carried on the synthesized response so the
+        // reasoning-only continuation guard works for streamed turns too.
+        var streamedReasoning = ""
         var streamedToolCalls: [LLMToolCall] = []
         var sawNativeToolSignal = false
         // Providers report real token usage on the final `.finish` chunk; capture
@@ -1332,6 +1338,10 @@ public actor Agent {
                 streamedText += text
                 onText(text)
                 emit(.streamChunk(text))
+            case .reasoning(let delta):
+                streamedReasoning += delta
+                onReasoning?(delta)
+                emit(.reasoningChunk(delta))
             case .toolCall(let call):
                 streamedToolCalls.append(call)
                 sawNativeToolSignal = true
@@ -1351,6 +1361,7 @@ public actor Agent {
         if !streamedToolCalls.isEmpty && streamedToolCalls.allSatisfy({ !$0.name.isEmpty }) {
             let response = LLMResponse(
                 text: streamedText,
+                reasoning: streamedReasoning.isEmpty ? nil : streamedReasoning,
                 finishReason: .toolCalls,
                 usage: streamedUsage,
                 toolCalls: streamedToolCalls,
@@ -1382,6 +1393,7 @@ public actor Agent {
         // calls are still recognized (parity with the non-streaming path).
         let synthesized = LLMResponse(
             text: streamedText,
+            reasoning: streamedReasoning.isEmpty ? nil : streamedReasoning,
             finishReason: .stop,
             usage: streamedUsage,
             toolCalls: [],
@@ -1549,6 +1561,7 @@ public actor Agent {
                     _ = try await self.runLoop(
                         query: query, images: images,
                         onText: { continuation.yield(.delta($0)) },
+                        onReasoning: { continuation.yield(.reasoningDelta($0)) },
                         onTurnCompleted: { continuation.yield(.turnCompleted(text: $0, wasToolCallTurn: $1)) })
                     continuation.finish()
                 } catch { continuation.finish(throwing: error) }
