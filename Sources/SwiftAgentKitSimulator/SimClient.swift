@@ -23,7 +23,13 @@ public struct SimDriverError: Error, LocalizedError, Sendable {
     public var code: String
     public var message: String
     public var tree: UITree?
-    public var errorDescription: String? { "\(code): \(message)" }
+    public var errorDescription: String? {
+        // A stale ref is almost always a wrong `generation` argument (a model
+        // once passed `true`); say what to pass, not just "call sim_ui again".
+        code == "stale_ref"
+            ? "\(code): \(message). Pass `generation` as the integer shown at the top of the LATEST sim_ui result (not a boolean), and use a ref from that same result."
+            : "\(code): \(message)"
+    }
 
     public init(code: String, message: String, tree: UITree? = nil) {
         self.code = code; self.message = message; self.tree = tree

@@ -112,7 +112,7 @@ public struct SimTapTool: AgentTool {
     public let parameters = ToolParameters(
         properties: [
             "ref": ToolParameterProperty(type: "string", description: "Element ref from sim_ui, e.g. e12."),
-            "generation": ToolParameterProperty(type: "integer", description: "Generation of the snapshot the ref came from."),
+            "generation": ToolParameterProperty(type: "integer", description: "The integer `generation` printed at the top of the latest sim_ui result the ref came from (e.g. 3). Not a boolean; refs from an older generation are rejected as stale_ref."),
             "label": ToolParameterProperty(type: "string", description: "Exact accessibility label to tap (firstMatch)."),
             "identifier": ToolParameterProperty(type: "string", description: "Accessibility identifier to tap."),
             "long_press": ToolParameterProperty(type: "boolean", description: "Long-press instead of tap."),
@@ -176,7 +176,7 @@ public struct SimTypeTool: AgentTool {
         properties: [
             "text": ToolParameterProperty(type: "string", description: "Text to type."),
             "ref": ToolParameterProperty(type: "string", description: "Element ref to focus before typing."),
-            "generation": ToolParameterProperty(type: "integer", description: "Generation of the snapshot the ref came from."),
+            "generation": ToolParameterProperty(type: "integer", description: "The integer `generation` printed at the top of the latest sim_ui result the ref came from (e.g. 3). Not a boolean; refs from an older generation are rejected as stale_ref."),
             "label": ToolParameterProperty(type: "string", description: "Accessibility label of element to focus."),
             "identifier": ToolParameterProperty(type: "string", description: "Accessibility identifier of element to focus."),
             "bundle_id": ToolParameterProperty(type: "string", description: "Defaults to the launched app."),
@@ -228,7 +228,7 @@ public struct SimSwipeTool: AgentTool {
                 description: "Swipe direction: up, down, left, or right.",
                 enum: ["up", "down", "left", "right"]),
             "ref": ToolParameterProperty(type: "string", description: "Element ref to swipe on."),
-            "generation": ToolParameterProperty(type: "integer", description: "Generation of the snapshot the ref came from."),
+            "generation": ToolParameterProperty(type: "integer", description: "The integer `generation` printed at the top of the latest sim_ui result the ref came from (e.g. 3). Not a boolean; refs from an older generation are rejected as stale_ref."),
             "label": ToolParameterProperty(type: "string", description: "Accessibility label of element to swipe on."),
             "identifier": ToolParameterProperty(type: "string", description: "Accessibility identifier of element to swipe on."),
             "bundle_id": ToolParameterProperty(type: "string", description: "Defaults to the launched app."),
