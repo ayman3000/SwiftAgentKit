@@ -26,9 +26,13 @@ public struct SimDriverError: Error, LocalizedError, Sendable {
     public var errorDescription: String? {
         // A stale ref is almost always a wrong `generation` argument (a model
         // once passed `true`); say what to pass, not just "call sim_ui again".
-        code == "stale_ref"
-            ? "\(code): \(message). Pass `generation` as the integer shown at the top of the LATEST sim_ui result (not a boolean), and use a ref from that same result."
-            : "\(code): \(message)"
+        if code == "stale_ref" {
+            return "\(code): \(message). Pass `generation` as the integer shown at the top of the LATEST sim_ui result (not a boolean), and use a ref from that same result."
+        }
+        if message.contains("kAXErrorAPIDisabled") {
+            return "\(code): \(message). The simulator device has no visible window (it was booted headless), so its accessibility bridge is off. The window was opened automatically; if this persists, open Simulator.app → File → Open Simulator → the device, then retry."
+        }
+        return "\(code): \(message)"
     }
 
     public init(code: String, message: String, tree: UITree? = nil) {
@@ -44,6 +48,11 @@ public actor SimClient: SimDriving {
     /// Relaunches the driver (production: `SimDriverManager.launch`, which
     /// health-checks and replaces a dead session). nil = no recovery possible.
     private let relaunch: (@Sendable () async throws -> Void)?
+    /// Shows the device's Simulator window (production: `Simctl.ensureDeviceWindow`).
+    /// A headless device answers every UI call with kAXErrorAPIDisabled; revealing
+    /// the window fixes it, so the failed call is retried once after that.
+    private let revealWindow: (@Sendable () async -> Void)?
+    private var windowRevealsRemaining = 1
 
     /// Driver relaunches allowed over this client's lifetime. Each relaunch
     /// costs seconds (health wait) — the bound stops a broken environment
@@ -56,16 +65,22 @@ public actor SimClient: SimDriving {
         // manager.port is a nonisolated let in Swift 6.2 — no await needed.
         self.baseURL = URL(string: "http://127.0.0.1:\(manager.port)")!
         self.relaunch = { try await manager.launch(udid: udid, runtime: runtime) }
+        self.revealWindow = { await Simctl.ensureDeviceWindow(udid: udid) }
         let cfg = URLSessionConfiguration.ephemeral
         cfg.timeoutIntervalForRequest = 120   // /wait can legitimately take a while
         self.session = URLSession(configuration: cfg)
+        // Devices booted by `flutter run` / a shell command have no window; give
+        // them one before the first UI call rather than after its failure.
+        Task { await Simctl.ensureDeviceWindowIfHeadless(udid: udid) }
     }
 
     /// Test-only: point at a stub server, with an optional relaunch hook.
     /// Uses a short-timeout session so a misbehaving stub fails fast instead of hanging.
-    init(baseURL: URL, relaunch: (@Sendable () async throws -> Void)? = nil) {
+    init(baseURL: URL, relaunch: (@Sendable () async throws -> Void)? = nil,
+         revealWindow: (@Sendable () async -> Void)? = nil) {
         self.baseURL = baseURL
         self.relaunch = relaunch
+        self.revealWindow = revealWindow
         let cfg = URLSessionConfiguration.ephemeral
         cfg.timeoutIntervalForRequest = 10
         self.session = URLSession(configuration: cfg)
@@ -168,6 +183,14 @@ public actor SimClient: SimDriving {
         error.message.contains("kAXErrorServerNotFound")
     }
 
+    /// The device has no visible Simulator window (booted headless): XCUITest
+    /// cannot reach the app at all, so NOTHING was executed — safe to retry
+    /// any endpoint once the window is up. Observed live 2026-09-06 as
+    /// `Error getting main window kAXErrorAPIDisabled` after `simctl boot`.
+    private func isWindowMissing(_ error: SimDriverError) -> Bool {
+        error.message.contains("kAXErrorAPIDisabled")
+    }
+
     private func consumeRelaunchBudget() -> Bool {
         guard relaunch != nil, relaunchesRemaining > 0 else { return false }
         relaunchesRemaining -= 1
@@ -188,6 +211,11 @@ public actor SimClient: SimDriving {
         do {
             return try await send(req)
         } catch let e as SimDriverError {
+            if isWindowMissing(e), let revealWindow, windowRevealsRemaining > 0 {
+                windowRevealsRemaining -= 1
+                await revealWindow()
+                return try await send(req)
+            }
             guard isSessionFatal(e), idempotent, consumeRelaunchBudget() else { throw e }
             try await relaunch?()
             return try await send(req)

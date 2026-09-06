@@ -168,6 +168,50 @@ final class SimClientTests: XCTestCase {
         func bump() { lock.lock(); defer { lock.unlock() }; _count += 1 }
     }
 
+    private func axDisabledBody() -> Data {
+        encode(SimWire.ErrorResponse(
+            code: "internal",
+            message: "Error Domain=com.apple.dt.xctest.automation-support.error Code=... \"Error getting main window kAXErrorAPIDisabled\"",
+            tree: nil))
+    }
+
+    // A headless device (no Simulator window) answers kAXErrorAPIDisabled and
+    // executed nothing → reveal the window and retry once, even for an action.
+    func testWindowMissingRevealsWindowAndRetriesAnyCall() async throws {
+        let server = try StubHTTPServer.make(scenarios: [
+            .init(path: "/tap", status: 500, body: axDisabledBody()),
+            .init(path: "/tap", status: 200, body: encode(SimWire.OKResponse(ok: true))),
+        ])
+        defer { server.stop() }
+        let relaunches = RelaunchSpy(), reveals = RelaunchSpy()
+        let client = SimClient(baseURL: URL(string: "http://127.0.0.1:\(server.portNumber)")!,
+                               relaunch: { relaunches.bump() }, revealWindow: { reveals.bump() })
+        try await client.tap(bundleId: "com.example.App",
+                             target: SimWire.Target(ref: "r0", generation: 1), longPress: false)
+        XCTAssertEqual(reveals.count, 1)
+        XCTAssertEqual(relaunches.count, 0)
+    }
+
+    // Only one reveal per client: if the window still doesn't help, surface the
+    // error with the human hint instead of looping.
+    func testWindowMissingSurfacesHintAfterOneReveal() async throws {
+        let server = try StubHTTPServer.make(scenarios: [
+            .init(path: "/tree", status: 500, body: axDisabledBody()),
+            .init(path: "/tree", status: 500, body: axDisabledBody()),
+        ])
+        defer { server.stop() }
+        let reveals = RelaunchSpy()
+        let client = SimClient(baseURL: URL(string: "http://127.0.0.1:\(server.portNumber)")!,
+                               revealWindow: { reveals.bump() })
+        do {
+            _ = try await client.snapshot(bundleId: "com.example.App")
+            XCTFail("Expected SimDriverError")
+        } catch let error as SimDriverError {
+            XCTAssertTrue(error.errorDescription?.contains("no visible window") == true)
+        }
+        XCTAssertEqual(reveals.count, 1)
+    }
+
     private func fatalErrorBody() -> Data {
         encode(SimWire.ErrorResponse(
             code: "internal",

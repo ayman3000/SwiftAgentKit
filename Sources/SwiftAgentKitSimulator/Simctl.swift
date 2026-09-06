@@ -50,25 +50,52 @@ public enum Simctl {
         }
         let (bsStatus, bsOut) = try await run(["simctl", "bootstatus", udid], timeout: 180)  // wait until usable
         guard bsStatus == 0 else { throw SimctlError.commandFailed("simctl bootstatus failed: \(bsOut)") }
-        // `simctl boot` only boots the device headlessly — no visible window. Open the
-        // Simulator GUI so it attaches to the just-booted device and the user can watch.
-        // Best-effort: a failure here must not fail the boot (device is already usable).
-        await openSimulatorUI()
+        // `simctl boot` only boots the device headlessly — no visible window. A
+        // headless device is not just invisible: XCUITest's accessibility bridge
+        // reports kAXErrorAPIDisabled for it, so every UI tool fails. Show the
+        // device's window. Best-effort: a failure here must not fail the boot.
+        await ensureDeviceWindow(udid: udid)
     }
 
-    /// Launch (or foreground) the Simulator.app GUI. It attaches to whatever devices
-    /// are already booted, so calling this after `simctl boot` reveals the running device.
-    public static func openSimulatorUI() async {
-        _ = try? await runOpen(["-a", "Simulator"], timeout: 20)
+    /// Launch (or foreground) the Simulator.app GUI. With a `udid`, a freshly
+    /// launched Simulator.app opens THAT device's window (`-CurrentDeviceUDID`);
+    /// a bare open only activates the app, which may be showing another device.
+    public static func openSimulatorUI(udid: String? = nil) async {
+        var args = ["-a", "Simulator"]
+        if let udid { args += ["--args", "-CurrentDeviceUDID", udid] }
+        _ = try? await runTool("/usr/bin/open", args, timeout: 20)
     }
 
-    /// Short-lived `/usr/bin/open` invocation. Separate from `run` (which uses `xcrun`).
+    /// Whether Simulator.app (the GUI) is running. Cheap (`pgrep`).
+    public static func isSimulatorAppRunning() async -> Bool {
+        guard let (status, _) = try? await runTool("/usr/bin/pgrep", ["-x", "Simulator"], timeout: 5) else { return false }
+        return status == 0
+    }
+
+    /// Make sure the device has a visible window: launch Simulator.app on that
+    /// device when it isn't running, otherwise just bring it forward (it attaches
+    /// to booted devices on its own). Waits briefly so the accessibility bridge
+    /// is up before the caller retries a UI call.
+    public static func ensureDeviceWindow(udid: String) async {
+        let wasRunning = await isSimulatorAppRunning()
+        await openSimulatorUI(udid: wasRunning ? nil : udid)
+        try? await Task.sleep(nanoseconds: wasRunning ? 500_000_000 : 2_000_000_000)
+    }
+
+    /// Only act when the GUI is absent — the common "booted by `flutter run` or
+    /// a shell command" case. Called when a driver client is created.
+    public static func ensureDeviceWindowIfHeadless(udid: String) async {
+        guard await !isSimulatorAppRunning() else { return }
+        await ensureDeviceWindow(udid: udid)
+    }
+
+    /// Short-lived invocation of an arbitrary tool. Separate from `run` (which uses `xcrun`).
     @discardableResult
-    private static func runOpen(_ args: [String], timeout: Double) async throws -> (status: Int32, output: String) {
+    private static func runTool(_ path: String, _ args: [String], timeout: Double) async throws -> (status: Int32, output: String) {
         try await withCheckedThrowingContinuation { cont in
             DispatchQueue.global().async {
                 let p = Process()
-                p.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+                p.executableURL = URL(fileURLWithPath: path)
                 p.arguments = args
                 let pipe = Pipe()
                 p.standardOutput = pipe; p.standardError = pipe
