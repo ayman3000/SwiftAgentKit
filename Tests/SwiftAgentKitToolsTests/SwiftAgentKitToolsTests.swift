@@ -135,6 +135,43 @@ private func tempDir() -> URL {
     #expect(result.result.contains("timeout"))      // reported as a timeout, not a clean exit
 }
 
+/// Per-call `timeout_seconds` overrides the instance default and is clamped to 1...900.
+@Test func shellTimeoutParameterClamps() {
+    #expect(ShellTool.effectiveTimeout(nil, default: 120) == 120)
+    #expect(ShellTool.effectiveTimeout("junk", default: 120) == 120)
+    #expect(ShellTool.effectiveTimeout(30, default: 120) == 30)
+    #expect(ShellTool.effectiveTimeout("45", default: 120) == 45)
+    #expect(ShellTool.effectiveTimeout(0, default: 120) == 1)
+    #expect(ShellTool.effectiveTimeout(-5, default: 120) == 1)
+    #expect(ShellTool.effectiveTimeout(5_000, default: 120) == 900)
+    #expect(ShellTool.maxTimeoutSeconds == 900)
+}
+
+/// A short `timeout_seconds` kills a longer command and the message is unambiguous
+/// about what happened and how to avoid it.
+@Test func shellTimeoutParameterKillsAndExplains() async throws {
+    let start = Date()
+    let result = try await ShellTool().execute(
+        parameters: ["command": "echo phase-one; sleep 5; echo phase-two", "timeout_seconds": 1]
+    )
+    let elapsed = Date().timeIntervalSince(start)
+    #expect(elapsed < 4)
+    #expect(result.result.contains("phase-one"))
+    #expect(result.result.contains("phase-two") == false)
+    #expect(result.result.contains("run_shell timeout"))
+    #expect(result.result.contains("timeout_seconds"))
+    #expect(result.result.contains("exit 137"))
+}
+
+/// A fast command with a generous `timeout_seconds` completes normally.
+@Test func shellTimeoutParameterAllowsFastCommand() async throws {
+    let result = try await ShellTool().execute(parameters: ["command": "echo quick", "timeout_seconds": 5])
+    #expect(result.isError == false)
+    #expect(result.result.contains("quick"))
+    #expect(result.result.hasPrefix("exit 0"))
+    #expect(result.result.contains("timeout") == false)
+}
+
 /// The Stop button: cancelling the surrounding task must SIGKILL the process
 /// group and return promptly (not wait out the command or the timeout).
 @Test func shellCancellationStopsPromptly() async throws {

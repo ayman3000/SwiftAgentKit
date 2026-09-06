@@ -29,13 +29,16 @@ public struct ShellTool: AgentTool {
     Every call must be approved by the user. Optionally set `working_directory`. \
     For long-lived servers (e.g. `npm start`, `ng serve`, `vite`) set \
     `background: true` (auto-detected for common dev servers) — the command keeps \
-    running and the tool returns immediately with its pid and any startup output.
+    running and the tool returns immediately with its pid and any startup output. \
+    Foreground commands are killed after `timeout_seconds` (default 120); for \
+    builds and test suites pass a larger `timeout_seconds` (up to 900).
     """
     public let parameters = ToolParameters(
         properties: [
             "command": ToolParameterProperty(type: "string", description: "The shell command to run, e.g. `ls -la`."),
             "working_directory": ToolParameterProperty(type: "string", description: "Directory to run in (a leading ~ is expanded)."),
             "background": ToolParameterProperty(type: "boolean", description: "Run detached for long-lived servers; returns immediately with the pid instead of waiting for exit."),
+            "timeout_seconds": ToolParameterProperty(type: "integer", description: "Seconds to allow before the command is killed. Default 120; up to 900 for builds and test suites."),
         ],
         required: ["command"]
     )
@@ -53,6 +56,8 @@ public struct ShellTool: AgentTool {
     /// How long a `background` command is observed before returning, to capture
     /// startup output (a server's "listening on…" line) without waiting for exit.
     private let backgroundGraceSeconds: Double
+    /// Upper bound for a per-call `timeout_seconds` override.
+    public static let maxTimeoutSeconds = 900
 
     public init(
         defaultWorkingDirectory: URL? = nil,
@@ -75,10 +80,18 @@ public struct ShellTool: AgentTool {
 
         let cwd = resolveWorkingDirectory(parameters)
         let background = (parameters["background"] as? Bool) ?? Self.looksLikeLongLivedServer(command)
+        let timeout = Self.effectiveTimeout(parameters["timeout_seconds"], default: timeoutSeconds)
 
         return background
             ? await runBackground(command: command, cwd: cwd)
-            : await runForeground(command: command, cwd: cwd)
+            : await runForeground(command: command, cwd: cwd, timeoutSeconds: timeout)
+    }
+
+    /// Per-call `timeout_seconds` (clamped to 1...`maxTimeoutSeconds`) or the
+    /// instance default when absent/unparseable. Not used for `background` runs.
+    static func effectiveTimeout(_ raw: Any?, default defaultSeconds: Double) -> Double {
+        guard let requested = intValue(raw) else { return defaultSeconds }
+        return Double(min(max(requested, 1), maxTimeoutSeconds))
     }
 
     // MARK: - Foreground
@@ -87,7 +100,7 @@ public struct ShellTool: AgentTool {
     /// against the wall-clock timeout and cooperative task cancellation; whichever
     /// "stop" fires first SIGKILLs the whole process group, which closes the pipe
     /// and unblocks the read.
-    private func runForeground(command: String, cwd: String?) async -> AgentToolResult {
+    private func runForeground(command: String, cwd: String?, timeoutSeconds: Double) async -> AgentToolResult {
         let pipe = Pipe()
         let writeFD = pipe.fileHandleForWriting.fileDescriptor
         // Mark both ends close-on-exec so unrelated concurrent spawns don't inherit
@@ -141,7 +154,10 @@ public struct ShellTool: AgentTool {
         if cancelled {
             header = "stopped by user"
         } else if stop == .timedOut {
-            header = "exit \(status.exitCode) (terminated after \(Int(timeoutSeconds))s timeout)"
+            header = "exit \(status.exitCode). Killed after \(Int(timeoutSeconds)) s (run_shell timeout). "
+                + "The output below is everything captured before the kill — the command may or may not "
+                + "have finished its work. For builds and test suites pass timeout_seconds (up to "
+                + "\(Self.maxTimeoutSeconds)), or use background: true for servers."
         } else {
             header = "exit \(status.exitCode)"
         }
