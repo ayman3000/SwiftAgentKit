@@ -123,11 +123,15 @@ public struct AgentTokenUsage: Sendable, Equatable {
     public let promptTokens: Int?
     public let completionTokens: Int?
     public let totalTokens: Int?
+    /// Prompt tokens served from the provider's prompt cache (subset of
+    /// promptTokens); nil when the provider didn't report it.
+    public let cachedTokens: Int?
 
-    public init(promptTokens: Int?, completionTokens: Int?, totalTokens: Int?) {
+    public init(promptTokens: Int?, completionTokens: Int?, totalTokens: Int?, cachedTokens: Int? = nil) {
         self.promptTokens = promptTokens
         self.completionTokens = completionTokens
         self.totalTokens = totalTokens
+        self.cachedTokens = cachedTokens
     }
 
     public static func from(_ usage: LLMUsage?) -> AgentTokenUsage? {
@@ -135,7 +139,8 @@ public struct AgentTokenUsage: Sendable, Equatable {
         return AgentTokenUsage(
             promptTokens: usage.promptTokens,
             completionTokens: usage.completionTokens,
-            totalTokens: usage.totalTokens
+            totalTokens: usage.totalTokens,
+            cachedTokens: usage.cachedTokens
         )
     }
 }
