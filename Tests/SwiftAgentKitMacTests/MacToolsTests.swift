@@ -71,11 +71,24 @@ final class MacToolsTests: XCTestCase {
         XCTAssertFalse(MacWaitTool(client: MockAX(), allowlistProvider: allow).requiresConfirmation)
     }
 
-    func testMacAppsListsOnlyAllowlisted() async throws {
+    func testMacAppsSeparatesAllowedFromRequestable() async throws {
         let mock = MockAX()
         let r = try await MacAppsTool(client: mock, allowlistProvider: allow).execute(parameters: [:])
+        let allowedPart = r.result.components(separatedBy: "not yet allowed")[0]
+        XCTAssertTrue(allowedPart.contains("com.apple.TextEdit"))
+        XCTAssertFalse(allowedPart.contains("com.apple.mail"))
+        // A running app outside the allowlist is listed as requestable, with the how-to.
+        XCTAssertTrue(r.result.contains("not yet allowed"))
+        XCTAssertTrue(r.result.contains("com.apple.mail"))
+        XCTAssertTrue(r.result.contains("autonomous mode"))
+    }
+
+    func testMacAppsWithNothingAllowedStillPointsAtRequesting() async throws {
+        let mock = MockAX()
+        let r = try await MacAppsTool(client: mock, allowlistProvider: { [] }).execute(parameters: [:])
+        XCTAssertTrue(r.result.contains("No allowed apps are running yet"))
         XCTAssertTrue(r.result.contains("com.apple.TextEdit"))
-        XCTAssertFalse(r.result.contains("com.apple.mail"))
+        XCTAssertTrue(r.result.contains("mac_launch"))
     }
 
     func testMacAppsWorksWithoutAX() async throws {

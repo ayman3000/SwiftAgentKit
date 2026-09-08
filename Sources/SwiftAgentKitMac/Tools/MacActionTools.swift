@@ -192,14 +192,17 @@ public struct MacKeyTool: AgentTool {
 public struct MacLaunchTool: AgentTool {
     public let name = "mac_launch"
     public let description = """
-    Launch a native macOS app by bundle ID. Only apps in the conversation allowlist can \
-    be launched. After launching, use mac_ui to inspect the app's UI.
+    Launch a native macOS app by bundle ID, or bring it to the front if it is already \
+    running. An app not yet allowed for this conversation is requested on first use \
+    (automatic in autonomous mode, otherwise the user is asked once). After launching, \
+    use mac_ui to inspect the app's UI. Do not use the shell or AppleScript to open or \
+    drive a GUI app instead.
     """
     public let parameters = ToolParameters(
         properties: [
             "bundle_id": ToolParameterProperty(
                 type: "string",
-                description: "Bundle id of the app to launch (must be in the allowlist — see mac_apps)."),
+                description: "Bundle id of the app to launch (see mac_apps; an app not yet allowed is requested on first use)."),
         ],
         required: ["bundle_id"])
     public var requiresConfirmation: Bool { true }

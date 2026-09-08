@@ -4,13 +4,18 @@ import SwiftAgentKit
 
 // MARK: - MacAppsTool
 
-/// Lists all allowlisted apps that are currently running on this Mac.
+/// Lists the running apps the model may drive now, and the running apps it may
+/// still request. Access to an app outside the allowlist is granted on first use
+/// by the host (automatically in autonomous mode, otherwise by asking the user).
 public struct MacAppsTool: AgentTool {
     public let name = "mac_apps"
     public let description = """
-    List the native macOS apps that are currently running AND permitted for this \
-    conversation. Use the bundle IDs here with the other mac_* tools. If the app you \
-    need is not listed, ask the user to allow it or launch it with mac_launch.
+    List the native macOS apps running on this Mac: the ones already allowed for this \
+    conversation, and the ones you can still request. Use the bundle IDs here with the \
+    other mac_* tools. To use an app that is not yet allowed, just call the mac_* tool \
+    you need (mac_launch, mac_ui, ...) with its bundle id: access is granted \
+    automatically in autonomous mode, otherwise the user is asked once. Never drive a \
+    GUI app through the shell or AppleScript instead of these tools.
     """
     public let parameters = ToolParameters.empty
     public var requiresConfirmation: Bool { false }
@@ -24,15 +29,25 @@ public struct MacAppsTool: AgentTool {
     }
 
     public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
-        let allowed = AppResolver.filterAllowed(client.runningApps(), allowlist: allowlistProvider())
+        let running = client.runningApps()
+        let allowlist = allowlistProvider()
+        let allowed = AppResolver.filterAllowed(running, allowlist: allowlist)
+        let requestable = running.filter { !allowlist.contains($0.bundleId) }
+        var out: [String] = []
         if allowed.isEmpty {
-            return .success(
-                toolCallId: "",
-                toolName: name,
-                result: "No allowed apps are running. Ask the user to allow an app, or launch one with mac_launch.")
+            out.append("No allowed apps are running yet.")
+        } else {
+            out.append("Allowed and running:")
+            out += allowed.map { "  \($0.name) — \($0.bundleId)" }
         }
-        let lines = allowed.map { "\($0.name) — \($0.bundleId)" }.joined(separator: "\n")
-        return .success(toolCallId: "", toolName: name, result: lines)
+        if !requestable.isEmpty {
+            out.append("Running, not yet allowed (call any mac_* tool with the bundle id to request access; "
+                       + "granted automatically in autonomous mode, otherwise the user is asked once):")
+            out += requestable.map { "  \($0.name) — \($0.bundleId)" }
+        }
+        out.append("An app that is not running can be started with mac_launch and its bundle id; "
+                   + "access is requested the same way.")
+        return .success(toolCallId: "", toolName: name, result: out.joined(separator: "\n"))
     }
 }
 
@@ -45,8 +60,9 @@ public struct MacUITool: AgentTool {
     Read the accessibility tree of a native macOS app (element refs, roles, titles, \
     values, available actions). Use this to see and navigate GUI-only apps that have \
     no CLI/API. Prefer this over guessing coordinates. Refs are valid only until the \
-    next snapshot (each tree shows its generation). Only apps allowed for this \
-    conversation are accessible.
+    next snapshot (each tree shows its generation). An app not yet allowed for this \
+    conversation is requested on first use (automatic in autonomous mode, otherwise \
+    the user is asked once).
     """
     public let parameters = ToolParameters(
         properties: [
