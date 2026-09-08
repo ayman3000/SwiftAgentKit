@@ -95,6 +95,13 @@ public struct AgentConfig: Sendable {
     /// concurrent requests. Tool execution within a child is unaffected.
     public var maxSubAgentConcurrency: Int
 
+    /// Provider/model that CHILD agents run on. nil = inherit the parent's.
+    /// Lets an app route delegated side-tasks to a cheaper or faster model
+    /// while the parent keeps the strong one (plan/verify on the strong
+    /// model, execute the bulk of tool calls on the cheap one).
+    public var subAgentProvider: (any LLMProvider)?
+    public var subAgentModel: String?
+
     /// Max times an unsatisfied `AgentCallbacks.verifyCompletion` verdict may
     /// re-nudge the model to keep working before the agent stops anyway. Bounds
     /// goal-driven looping (also bounded by `maxTurns`). Default 3.
@@ -129,6 +136,8 @@ public struct AgentConfig: Sendable {
         autonomousMode: Bool = false,
         enableSubAgents: Bool = false,
         maxSubAgentConcurrency: Int = 1,
+        subAgentProvider: (any LLMProvider)? = nil,
+        subAgentModel: String? = nil,
         maxVerificationRetries: Int = 3,
         loopDetection: LoopDetectionConfig? = .default,
         parallelToolCalls: Bool = false,
@@ -151,6 +160,8 @@ public struct AgentConfig: Sendable {
         self.autonomousMode = autonomousMode
         self.enableSubAgents = enableSubAgents
         self.maxSubAgentConcurrency = maxSubAgentConcurrency
+        self.subAgentProvider = subAgentProvider
+        self.subAgentModel = subAgentModel
         self.maxVerificationRetries = maxVerificationRetries
         self.loopDetection = loopDetection
         self.parallelToolCalls = parallelToolCalls

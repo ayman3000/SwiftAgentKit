@@ -29,6 +29,22 @@ actor GateCounter { private(set) var n = 0; func bump() { n += 1 } }
     #expect(await child.skillRegistry.allSkills().isEmpty)      // child does not
 }
 
+@Test func testChildRunsOnTheSubAgentModelWhenSet() async throws {
+    // Plan/verify on the strong model, execute on the cheap one: the child
+    // takes `subAgentProvider`/`subAgentModel`, the parent keeps its own.
+    let cheap = PlainAnswerProvider(text: "cheap")
+    let agent = Agent(config: AgentConfig(
+        provider: PlainAnswerProvider(text: "strong"), model: "strong-1",
+        subAgentProvider: cheap, subAgentModel: "cheap-1"))
+    let child = await SubAgentSpawner(parent: agent).makeChild()
+    #expect(child.config.model == "cheap-1")
+    #expect(child.config.subAgentProvider == nil)
+    #expect(agent.config.model == "strong-1")
+    // Without a sub-agent pair the child inherits the parent's model.
+    let plain = Agent(config: AgentConfig(provider: PlainAnswerProvider(text: "x"), model: "only"))
+    #expect(await SubAgentSpawner(parent: plain).makeChild().config.model == "only")
+}
+
 @Test func testChildInheritsToolsMinusExcluded() async throws {
     let agent = Agent(config: AgentConfig(
         provider: PlainAnswerProvider(text: "x"),

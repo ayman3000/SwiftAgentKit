@@ -81,6 +81,15 @@ public final class SubAgentSpawner: @unchecked Sendable {
         await parent.flushRegistrations()
 
         var config = parent.config
+        // A dedicated sub-agent provider/model, when the app set one; the
+        // parent's otherwise. Cleared on the child so a grandchild can't
+        // inherit a stale pair (children can't spawn anyway).
+        if let childProvider = config.subAgentProvider {
+            config.provider = childProvider
+            config.model = config.subAgentModel
+        }
+        config.subAgentProvider = nil
+        config.subAgentModel = nil
         config.enableSubAgents = false   // defense in depth vs. recursion
         config.maxTurns = min(config.maxTurns, Self.maxChildTurns)
         config.tools = []                       // registered explicitly below
