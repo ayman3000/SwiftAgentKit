@@ -91,7 +91,7 @@ public final class SubAgentSpawner: @unchecked Sendable {
         config.subAgentProvider = nil
         config.subAgentModel = nil
         config.enableSubAgents = false   // defense in depth vs. recursion
-        config.maxTurns = min(config.maxTurns, Self.maxChildTurns)
+        config.maxTurns = min(config.maxTurns, max(1, config.maxSubAgentTurns))
         config.tools = []                       // registered explicitly below
 
         var prompt = config.systemPrompt ?? ""

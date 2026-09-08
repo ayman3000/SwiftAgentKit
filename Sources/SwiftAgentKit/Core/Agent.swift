@@ -95,6 +95,11 @@ public struct AgentConfig: Sendable {
     /// concurrent requests. Tool execution within a child is unaffected.
     public var maxSubAgentConcurrency: Int
 
+    /// Turn ceiling for a child agent. Bounded side-tasks finish well inside
+    /// the default; a child that must READ a lot (reviewing a codebase, say)
+    /// needs more, so the app can raise it. Applied as min(maxTurns, this).
+    public var maxSubAgentTurns: Int
+
     /// Provider/model that CHILD agents run on. nil = inherit the parent's.
     /// Lets an app route delegated side-tasks to a cheaper or faster model
     /// while the parent keeps the strong one (plan/verify on the strong
@@ -136,6 +141,7 @@ public struct AgentConfig: Sendable {
         autonomousMode: Bool = false,
         enableSubAgents: Bool = false,
         maxSubAgentConcurrency: Int = 1,
+        maxSubAgentTurns: Int = SubAgentSpawner.maxChildTurns,
         subAgentProvider: (any LLMProvider)? = nil,
         subAgentModel: String? = nil,
         maxVerificationRetries: Int = 3,
@@ -160,6 +166,7 @@ public struct AgentConfig: Sendable {
         self.autonomousMode = autonomousMode
         self.enableSubAgents = enableSubAgents
         self.maxSubAgentConcurrency = maxSubAgentConcurrency
+        self.maxSubAgentTurns = maxSubAgentTurns
         self.subAgentProvider = subAgentProvider
         self.subAgentModel = subAgentModel
         self.maxVerificationRetries = maxVerificationRetries

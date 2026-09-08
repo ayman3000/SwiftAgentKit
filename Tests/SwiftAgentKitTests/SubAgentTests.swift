@@ -45,6 +45,22 @@ actor GateCounter { private(set) var n = 0; func bump() { n += 1 } }
     #expect(await SubAgentSpawner(parent: plain).makeChild().config.model == "only")
 }
 
+@Test func testChildTurnCeilingIsConfigurable() async throws {
+    // Default keeps the historical bound; a read-heavy child (reviewing a
+    // codebase) needs more, so the app can raise it.
+    let plain = Agent(config: AgentConfig(provider: PlainAnswerProvider(text: "x"), maxTurns: 100))
+    #expect(await SubAgentSpawner(parent: plain).makeChild().config.maxTurns == SubAgentSpawner.maxChildTurns)
+
+    let raised = Agent(config: AgentConfig(provider: PlainAnswerProvider(text: "x"),
+                                           maxTurns: 100, maxSubAgentTurns: 40))
+    #expect(await SubAgentSpawner(parent: raised).makeChild().config.maxTurns == 40)
+
+    // Never more than the parent's own budget.
+    let small = Agent(config: AgentConfig(provider: PlainAnswerProvider(text: "x"),
+                                          maxTurns: 6, maxSubAgentTurns: 40))
+    #expect(await SubAgentSpawner(parent: small).makeChild().config.maxTurns == 6)
+}
+
 @Test func testChildInheritsToolsMinusExcluded() async throws {
     let agent = Agent(config: AgentConfig(
         provider: PlainAnswerProvider(text: "x"),
