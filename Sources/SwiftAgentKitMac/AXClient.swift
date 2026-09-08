@@ -727,7 +727,9 @@ public actor AXClient: AXDriving {
         _ node: UINode,
         target: MacTarget
     ) -> (AXUIElement, UINode)? {
-        let titleMatch = target.title.map      { node.title      == $0 } ?? true
+        // `title` also matches a node's visible value: table cells expose their
+        // text as value, and rows beyond the render cap are only known by text.
+        let titleMatch = target.title.map      { node.title == $0 || node.value == $0 } ?? true
         let idMatch    = target.identifier.map { node.identifier == $0 } ?? true
         let refMatch   = target.ref.map        { node.ref        == $0 } ?? true
         if titleMatch && idMatch && refMatch, let box = refCache[node.ref] {

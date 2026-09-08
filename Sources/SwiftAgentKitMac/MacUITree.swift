@@ -38,20 +38,103 @@ public struct UITree: Codable, Sendable, Equatable {
         node.isRenderable || node.children.contains(where: hasRenderableSubtree)
     }
 
+    /// Rows a single table/outline/list may show before the rest is summarised.
+    /// A file manager pane can hold hundreds of rows; the model needs to see the
+    /// shape and a good sample, and can still target any row by its text.
+    public static let maxRowsPerContainer = 60
+
+    /// Roles that are pure layout: they get no line of their own when they carry
+    /// no title, identifier, value or action — their children are hoisted.
+    static let wrapperRoles: Set<String> = ["AXGroup", "AXCell", "AXGenericElement", "AXUnknown"]
+
+    /// Roles the user can operate; a row containing one is rendered in full.
+    static let interactiveRoles: Set<String> = [
+        "AXButton", "AXTextField", "AXTextArea", "AXCheckBox", "AXRadioButton",
+        "AXPopUpButton", "AXMenuButton", "AXComboBox", "AXSlider", "AXDisclosureTriangle",
+        "AXLink", "AXIncrementor", "AXSwitch", "AXToggle", "AXColorWell", "AXSearchField",
+    ]
+
+    private func isWrapper(_ node: UINode) -> Bool {
+        Self.wrapperRoles.contains(node.role) && node.title == nil && node.identifier == nil
+            && node.value == nil && node.actions.isEmpty
+    }
+
+    private func containsInteractive(_ node: UINode) -> Bool {
+        node.children.contains { Self.interactiveRoles.contains($0.role) || containsInteractive($0) }
+    }
+
+    /// The visible text of a subtree, in document order: titles and values of leaves.
+    private func leafTexts(_ node: UINode) -> [String] {
+        var out: [String] = []
+        func walk(_ n: UINode) {
+            if n.children.isEmpty {
+                if let t = n.title, !t.isEmpty { out.append(t) }
+                if let v = n.value, !v.isEmpty, v != n.title { out.append(v) }
+            } else {
+                n.children.forEach(walk)
+            }
+        }
+        walk(node)
+        return out
+    }
+
+    private func describe(_ node: UINode) -> String {
+        var line = "\(node.ref) \(node.role)"
+        if let t = node.title { line += " \"\(t)\"" }
+        if let i = node.identifier { line += " id=\(i)" }
+        if let v = node.value { line += " value=\(v)" }
+        if !node.isEnabled { line += " (disabled)" }
+        if !node.actions.isEmpty { line += " [\(node.actions.joined(separator: ", "))]" }
+        return line
+    }
+
+    /// Compact text for the model. Three reductions keep a data-heavy window
+    /// (a file manager, a mail list) to a few hundred lines instead of thousands:
+    /// layout wrappers get no line, a plain table row becomes one line of its
+    /// cell texts, and a container shows at most `maxRowsPerContainer` rows.
     public func renderCompact() -> String {
         var out = "UI of \(bundleId) — generation \(generation)\n"
+        func emit(_ text: String, _ depth: Int) { out += String(repeating: "  ", count: depth) + text + "\n" }
+
         func walk(_ node: UINode, depth: Int) {
             let kept = node.children.filter(hasRenderableSubtree)
             guard node.isRenderable || !kept.isEmpty else { return }
-            var line = String(repeating: "  ", count: depth) + "\(node.ref) \(node.role)"
-            if let t = node.title { line += " \"\(t)\"" }
-            if let i = node.identifier { line += " id=\(i)" }
-            if let v = node.value { line += " value=\(v)" }
-            if !node.isEnabled { line += " (disabled)" }
-            if !node.actions.isEmpty { line += " [\(node.actions.joined(separator: ", "))]" }
-            out += line + "\n"
-            kept.forEach { walk($0, depth: depth + 1) }
+
+            // Layout-only wrapper: hoist the children, spend no line.
+            if isWrapper(node) {
+                renderChildren(kept, depth: depth)
+                return
+            }
+            // Plain data row: one line of its texts, the row's ref stays clickable.
+            if node.role == "AXRow" && !containsInteractive(node) {
+                let texts = leafTexts(node)
+                var line = "\(node.ref) AXRow"
+                if !texts.isEmpty { line += ": " + texts.joined(separator: " | ") }
+                if !node.isEnabled { line += " (disabled)" }
+                if !node.actions.isEmpty { line += " [\(node.actions.joined(separator: ", "))]" }
+                emit(line, depth)
+                return
+            }
+            emit(describe(node), depth)
+            renderChildren(kept, depth: depth + 1)
         }
+
+        func renderChildren(_ children: [UINode], depth: Int) {
+            var rowsShown = 0
+            var rowsHidden = 0
+            for child in children {
+                if child.role == "AXRow" {
+                    if rowsShown >= Self.maxRowsPerContainer { rowsHidden += 1; continue }
+                    rowsShown += 1
+                }
+                walk(child, depth: depth)
+            }
+            if rowsHidden > 0 {
+                emit("… \(rowsHidden) more rows not shown. Any row can still be targeted: pass its text as "
+                     + "`title` to mac_click or mac_wait.", depth)
+            }
+        }
+
         walk(root, depth: 0)
         return out
     }
