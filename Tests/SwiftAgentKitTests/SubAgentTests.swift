@@ -45,6 +45,28 @@ actor GateCounter { private(set) var n = 0; func bump() { n += 1 } }
     #expect(await SubAgentSpawner(parent: plain).makeChild().config.model == "only")
 }
 
+@Test func testOutOfTurnsReturnsPartialWorkNotAFailure() {
+    // A child that runs out of turns has usually written something; handing the
+    // parent a bare error made it re-delegate the same task repeatedly.
+    let messages: [AgentMessage] = [
+        .user("Review widget consistency"),
+        AgentMessage(role: .assistant, content: "Reading the widgets…",
+                     toolCalls: [AgentToolCall(id: "1", name: "search_files")]),
+        AgentMessage(role: .assistant, content: "Wrote 3 findings to naseem/reviews/2026-09-08/04-consistency.md",
+                     toolCalls: [AgentToolCall(id: "2", name: "write_file")]),
+    ]
+    let report = DelegateTaskTool.report(messages: messages, turns: 15)
+    #expect(report.hasPrefix("PARTIAL RESULT"))
+    #expect(report.contains("all 15 of its turns"))
+    #expect(report.contains("search_files, write_file"))
+    #expect(report.contains("04-consistency.md"))
+    #expect(report.contains("narrow the scope"))
+
+    // Nothing said at all still explains itself.
+    let silent = DelegateTaskTool.report(messages: [.user("x")], turns: 15)
+    #expect(silent.contains("produced no text"))
+}
+
 @Test func testChildTurnCeilingIsConfigurable() async throws {
     // Default keeps the historical bound; a read-heavy child (reviewing a
     // codebase) needs more, so the app can raise it.

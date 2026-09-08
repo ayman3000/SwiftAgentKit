@@ -93,10 +93,61 @@ public final class DelegateTaskTool: AgentTool, @unchecked Sendable {
             }
             emit(.subAgentFinished(id: id, summary: String(trimmed.prefix(200))))
             return .success(toolCallId: "", toolName: name, result: trimmed)
+        } catch let error as AgentError {
+            // Out of turns is NOT a failed task: the child did real work and may
+            // have written its output already. Returning a bare error made the
+            // parent re-delegate the same task again and again (observed
+            // 2026-09-08: three children, seven minutes, nothing kept). Hand
+            // back what it managed, clearly marked as partial.
+            if case .maxTurnsReached(let turns) = error {
+                let partial = Self.partialReport(child: child, turns: turns)
+                emit(.subAgentFinished(id: id, summary: "partial (out of turns)"))
+                return .success(toolCallId: "", toolName: name, result: partial)
+            }
+            emit(.subAgentFinished(id: id, summary: "error: \(error.localizedDescription)"))
+            return .error(toolCallId: "", toolName: name,
+                          message: "Sub-agent failed: \(error.localizedDescription)")
         } catch {
             emit(.subAgentFinished(id: id, summary: "error: \(error.localizedDescription)"))
             return .error(toolCallId: "", toolName: name,
                           message: "Sub-agent failed: \(error.localizedDescription)")
         }
+    }
+}
+
+// MARK: - Partial results
+
+extension DelegateTaskTool {
+    /// What a child that ran out of turns has to show for itself: its last
+    /// words plus the tools it ran, so the parent can use the work (or read a
+    /// file the child wrote) instead of delegating the same task again.
+    static func partialReport(child: Agent, turns: Int) -> String {
+        report(messages: child.conversation.messages, turns: turns)
+    }
+
+    /// Pure, for tests.
+    static func report(messages: [AgentMessage], turns: Int) -> String {
+        let lastText = messages.reversed()
+            .first { $0.role == .assistant && !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }?
+            .content.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        var tools: [String] = []
+        for message in messages {
+            for call in message.toolCalls ?? [] where !tools.contains(call.name) {
+                tools.append(call.name)
+            }
+        }
+
+        var out = "PARTIAL RESULT — the sub-agent used all \(turns) of its turns before finishing. "
+        out += "This is not a failure to retry blindly: it did the work below, and may already have "
+        out += "written its output to a file. Check what exists before delegating this task again; "
+        out += "if you do re-delegate, narrow the scope.\n"
+        if !tools.isEmpty { out += "\nTools it ran: \(tools.joined(separator: ", ")).\n" }
+        if let lastText, !lastText.isEmpty {
+            out += "\nIts last words:\n\(lastText.prefix(2000))\n"
+        } else {
+            out += "\nIt produced no text before running out.\n"
+        }
+        return out
     }
 }
