@@ -68,7 +68,10 @@ public struct MacUITool: AgentTool {
         properties: [
             "bundle_id": ToolParameterProperty(
                 type: "string",
-                description: "Bundle id of the app to inspect (see mac_apps).")
+                description: "Bundle id of the app to inspect (see mac_apps)."),
+            "include_menus": ToolParameterProperty(
+                type: "boolean",
+                description: "Also list every menu item of the menu bar (default false; menus are collapsed to their titles)."),
         ],
         required: ["bundle_id"])
     public var requiresConfirmation: Bool { false }
@@ -90,7 +93,8 @@ public struct MacUITool: AgentTool {
         }
         do {
             let tree = try await client.snapshot(bundleId: bundleId)
-            return .success(toolCallId: "", toolName: name, result: tree.renderCompact())
+            let includeMenus = parameters["include_menus"] as? Bool ?? false
+            return .success(toolCallId: "", toolName: name, result: tree.renderCompact(includeMenus: includeMenus))
         } catch let e as MacDriverError {
             let treeText = e.tree.map { "\n\nCurrent UI:\n" + $0.renderCompact() } ?? ""
             return .error(toolCallId: "", toolName: name, message: e.localizedDescription + treeText)

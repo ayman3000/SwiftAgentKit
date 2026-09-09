@@ -92,13 +92,24 @@ public struct UITree: Codable, Sendable, Equatable {
     /// (a file manager, a mail list) to a few hundred lines instead of thousands:
     /// layout wrappers get no line, a plain table row becomes one line of its
     /// cell texts, and a container shows at most `maxRowsPerContainer` rows.
-    public func renderCompact() -> String {
+    /// - Parameter includeMenus: expand the menu bar's menus. Off by default: the
+    ///   menus are the same in every snapshot and cost hundreds of lines; a menu
+    ///   item can still be clicked by title without being listed.
+    public func renderCompact(includeMenus: Bool = false) -> String {
         var out = "UI of \(bundleId) — generation \(generation)\n"
         func emit(_ text: String, _ depth: Int) { out += String(repeating: "  ", count: depth) + text + "\n" }
 
         func walk(_ node: UINode, depth: Int) {
             let kept = node.children.filter(hasRenderableSubtree)
             guard node.isRenderable || !kept.isEmpty else { return }
+
+            // Menu bar: one line naming the menus, unless the caller asked for the items.
+            if node.role == "AXMenuBar" && !includeMenus {
+                let titles = node.children.compactMap(\.title).filter { !$0.isEmpty }
+                emit("\(node.ref) AXMenuBar: " + titles.joined(separator: " | ")
+                     + " (menu items not listed; click one by its title, or pass include_menus:true to mac_ui)", depth)
+                return
+            }
 
             // Layout-only wrapper: hoist the children, spend no line.
             if isWrapper(node) {

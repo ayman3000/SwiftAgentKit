@@ -104,6 +104,26 @@ final class MacUITreeTests: XCTestCase {
         XCTAssertTrue(text.contains("value=a.png"))
     }
 
+    func testMenuBarCollapsesToTitlesUnlessAsked() {
+        let item = UINode(ref: "e5", role: "AXMenuItem", title: "Save", identifier: nil, value: nil,
+                          frame: .init(x: 0, y: 0, width: 100, height: 20), isEnabled: true, actions: ["AXPress"], children: [])
+        let menu = UINode(ref: "e4", role: "AXMenu", title: nil, identifier: nil, value: nil,
+                          frame: .init(x: 0, y: 0, width: 100, height: 200), isEnabled: true, actions: [], children: [item])
+        let file = UINode(ref: "e3", role: "AXMenuBarItem", title: "File", identifier: nil, value: nil,
+                          frame: .init(x: 0, y: 0, width: 40, height: 20), isEnabled: true, actions: ["AXPress"], children: [menu])
+        let edit = UINode(ref: "e6", role: "AXMenuBarItem", title: "Edit", identifier: nil, value: nil,
+                          frame: .init(x: 40, y: 0, width: 40, height: 20), isEnabled: true, actions: ["AXPress"], children: [])
+        let bar = UINode(ref: "e2", role: "AXMenuBar", title: nil, identifier: nil, value: nil,
+                         frame: .init(x: 0, y: 0, width: 800, height: 20), isEnabled: true, actions: [], children: [file, edit])
+        let tree = UITree(generation: 1, bundleId: "app", root: wrap("e1", "AXGroup", [bar]))
+        let collapsed = tree.renderCompact()
+        XCTAssertTrue(collapsed.contains("e2 AXMenuBar: File | Edit"), collapsed)
+        XCTAssertFalse(collapsed.contains("Save"))
+        XCTAssertTrue(collapsed.contains("include_menus"))
+        let expanded = tree.renderCompact(includeMenus: true)
+        XCTAssertTrue(expanded.contains(#"e5 AXMenuItem "Save""#))
+    }
+
     func testAnonymousWrapperSpendsNoLineButKeepsChildren() {
         let tree = UITree(generation: 1, bundleId: "app",
                           root: wrap("e1", "AXGroup", [wrap("e2", "AXGroup", [text("e3", "Hello")])]))
