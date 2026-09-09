@@ -54,6 +54,18 @@ Task {
             try await Task.sleep(nanoseconds: 400_000_000)
         }
 
+        // 1b. mac_run: several steps in one call against TextEdit, verified per step, window read appended.
+        let run = MacRunTool(client: client, allowlistProvider: { ["com.apple.TextEdit"] })
+        let rr = try await run.execute(parameters: [
+            "bundle_id": "com.apple.TextEdit",
+            "steps": [["action": "key", "keys": "cmd+n"], ["action": "type", "text": "batch one\nbatch two"],
+                      ["action": "key", "keys": "cmd+a, cmd+c"], ["action": "wait", "title": "Untitled 2"]],
+            "filter": "batch",
+        ])
+        check("mac_run batch of four", !rr.isError && rr.result.contains("2. type") && rr.result.contains("typed, verified") && rr.result.contains("4. wait") && rr.result.contains("batch one"), rr.result.split(separator: "\n").prefix(5).joined(separator: " | "))
+        try await client.key(bundleId: "com.apple.TextEdit", keys: "cmd+w"); try await Task.sleep(nanoseconds: 600_000_000)
+        _ = try? await client.click(bundleId: "com.apple.TextEdit", target: MacTarget(title: "Delete"), options: MacClickOptions())
+
         // 2. Finder: double-click opens a folder (window title changes).
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("naseem-harness-\(Int(Date().timeIntervalSince1970))")
         try FileManager.default.createDirectory(at: tmp.appendingPathComponent("InnerFolder"), withIntermediateDirectories: true)

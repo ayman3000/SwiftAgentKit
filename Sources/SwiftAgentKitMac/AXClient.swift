@@ -877,7 +877,8 @@ public actor AXClient: AXDriving {
         }
         for (i, (keyCode, flags)) in parsed.enumerated() {
             postKeyPress(keyCode: keyCode, flags: flags)
-            if i < parsed.count - 1 { try await Task.sleep(nanoseconds: 80_000_000) }
+            // A copy needs time to reach the pasteboard before the next combo pastes it.
+            if i < parsed.count - 1 { try await Task.sleep(nanoseconds: 200_000_000) }
         }
     }
 
