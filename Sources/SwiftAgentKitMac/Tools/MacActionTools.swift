@@ -7,6 +7,7 @@ import SwiftAgentKit
 /// Clicks a UI element in a native macOS app.
 public struct MacClickTool: AgentTool {
     public let name = "mac_click"
+    // Rows/list items are selected through accessibility; buttons are pressed.
     public let description = """
     Click a UI element in a native macOS app identified by ref+generation, title, or \
     accessibility identifier. Use mac_ui first to get element refs. Refs from a previous \

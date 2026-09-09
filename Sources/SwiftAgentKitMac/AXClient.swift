@@ -507,10 +507,26 @@ public actor AXClient: AXDriving {
                 throw MacDriverError(code: "ax_error",
                                      message: "AXPress failed: \(result.rawValue)")
             }
-        } else {
-            let center = CGPoint(x: node.frame.midX, y: node.frame.midY)
-            postMouseClick(at: center)
+            return
         }
+        // Rows and other selectable items: select through accessibility. A
+        // synthetic mouse click on a System Settings search result does nothing,
+        // while setting AXSelected navigates (verified against the live app).
+        if Self.selectViaAccessibility(el) { return }
+        let center = CGPoint(x: node.frame.midX, y: node.frame.midY)
+        postMouseClick(at: center)
+    }
+
+    /// Sets AXSelected on an element that allows it and confirms the app took it.
+    static func selectViaAccessibility(_ el: AXUIElement) -> Bool {
+        var settable: DarwinBoolean = false
+        guard AXUIElementIsAttributeSettable(el, kAXSelectedAttribute as CFString, &settable) == .success,
+              settable.boolValue,
+              AXUIElementSetAttributeValue(el, kAXSelectedAttribute as CFString, true as CFBoolean) == .success
+        else { return false }
+        var v: CFTypeRef?
+        AXUIElementCopyAttributeValue(el, kAXSelectedAttribute as CFString, &v)
+        return (v as? Bool) ?? true
     }
 
     // -------------------------------------------------------------------------
