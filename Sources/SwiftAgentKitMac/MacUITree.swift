@@ -78,11 +78,20 @@ public struct UITree: Codable, Sendable, Equatable {
         return out
     }
 
+    /// Longest text shown for one value or cell. A note body or a row preview
+    /// can run to thousands of characters; the model needs the beginning.
+    public static let maxTextLength = 200
+
+    static func clip(_ s: String) -> String {
+        guard s.count > maxTextLength else { return s }
+        return String(s.prefix(maxTextLength)) + "… (+\(s.count - maxTextLength) chars)"
+    }
+
     private func describe(_ node: UINode) -> String {
         var line = "\(node.ref) \(node.role)"
-        if let t = node.title { line += " \"\(t)\"" }
+        if let t = node.title { line += " \"\(Self.clip(t))\"" }
         if let i = node.identifier { line += " id=\(i)" }
-        if let v = node.value { line += " value=\(v)" }
+        if let v = node.value { line += " value=\(Self.clip(v))" }
         if !node.isEnabled { line += " (disabled)" }
         if !node.actions.isEmpty { line += " [\(node.actions.joined(separator: ", "))]" }
         return line
@@ -118,7 +127,7 @@ public struct UITree: Codable, Sendable, Equatable {
             }
             // Plain data row: one line of its texts, the row's ref stays clickable.
             if node.role == "AXRow" && !containsInteractive(node) {
-                let texts = leafTexts(node)
+                let texts = leafTexts(node).map(Self.clip)
                 var line = "\(node.ref) AXRow"
                 if !texts.isEmpty { line += ": " + texts.joined(separator: " | ") }
                 if !node.isEnabled { line += " (disabled)" }

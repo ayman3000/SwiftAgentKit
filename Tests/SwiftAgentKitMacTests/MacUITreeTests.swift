@@ -124,6 +124,14 @@ final class MacUITreeTests: XCTestCase {
         XCTAssertTrue(expanded.contains(#"e5 AXMenuItem "Save""#))
     }
 
+    func testLongValuesAreClipped() {
+        let long = String(repeating: "x", count: 1000)
+        let tree = UITree(generation: 1, bundleId: "app", root: wrap("e1", "AXGroup", [text("e2", long)]))
+        let line = tree.renderCompact().split(separator: "\n").last!
+        XCTAssertTrue(line.contains("… (+800 chars)"), String(line))
+        XCTAssertLessThan(line.count, 260)
+    }
+
     func testAnonymousWrapperSpendsNoLineButKeepsChildren() {
         let tree = UITree(generation: 1, bundleId: "app",
                           root: wrap("e1", "AXGroup", [wrap("e2", "AXGroup", [text("e3", "Hello")])]))
