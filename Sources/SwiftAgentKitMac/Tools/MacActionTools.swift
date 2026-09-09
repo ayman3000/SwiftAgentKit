@@ -153,7 +153,7 @@ public struct MacKeyTool: AgentTool {
                 description: "Bundle id of the target app (see mac_apps)."),
             "keys": ToolParameterProperty(
                 type: "string",
-                description: "Key or shortcut string, e.g. \"return\", \"cmd+s\", \"cmd+shift+z\"."),
+                description: "Key or shortcut string, e.g. \"return\", \"backspace\", \"escape\", \"tab\", \"up\", \"cmd+s\", \"cmd+shift+z\"."),
         ],
         required: ["bundle_id", "keys"])
     public var requiresConfirmation: Bool { true }

@@ -90,6 +90,14 @@ final class MacToolsTests: XCTestCase {
         XCTAssertTrue(AXClient.contains("anything", allLinesOf: "\n"), "only control characters: nothing to check")
     }
 
+    func testKeyComboAcceptsCommonSpellings() {
+        XCTAssertEqual(parseKeyCombo("backspace")?.keyCode, parseKeyCombo("delete")?.keyCode)
+        XCTAssertEqual(parseKeyCombo("Cmd + A")?.flags, .maskCommand)
+        XCTAssertEqual(parseKeyCombo("arrowdown")?.keyCode, parseKeyCombo("down")?.keyCode)
+        XCTAssertNotNil(parseKeyCombo("cmd+shift+z"))
+        XCTAssertNil(parseKeyCombo("nosuchkey"))
+    }
+
     func testEditableRolesCoverTextInputs() {
         for r in ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField", "AXWebArea"] {
             XCTAssertTrue(AXClient.editableRoles.contains(r), r)

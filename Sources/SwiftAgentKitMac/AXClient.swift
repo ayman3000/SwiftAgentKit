@@ -44,7 +44,7 @@ private final class OneShotFlag: @unchecked Sendable {
 // ---------------------------------------------------------------------------
 
 private let keyNameToCode: [String: CGKeyCode] = [
-    "return": 36, "enter": 76, "tab": 48, "space": 49, "delete": 51,
+    "return": 36, "enter": 76, "tab": 48, "space": 49, "delete": 51, "fwddelete": 117,
     "esc": 53, "escape": 53, "left": 123, "right": 124, "down": 125,
     "up": 126, "home": 115, "end": 119, "pageup": 116, "pagedown": 121,
     "f1": 122, "f2": 120, "f3": 99, "f4": 118, "f5": 96, "f6": 97,
@@ -58,13 +58,25 @@ private let keyNameToCode: [String: CGKeyCode] = [
     "n": 45, "m": 46, ".": 47, "`": 50,
 ]
 
-private func parseKeyCombo(_ keys: String) -> (keyCode: CGKeyCode, flags: CGEventFlags)? {
-    let parts = keys.lowercased().split(separator: "+").map(String.init)
-    guard let keyName = parts.last, let keyCode = keyNameToCode[keyName] else { return nil }
+/// Spellings models use for keys the table names differently.
+let keyAliases: [String: String] = [
+    "backspace": "delete", "del": "delete", "forwarddelete": "fwddelete",
+    "arrowleft": "left", "arrowright": "right", "arrowup": "up", "arrowdown": "down",
+    "leftarrow": "left", "rightarrow": "right", "uparrow": "up", "downarrow": "down",
+    "spacebar": "space", "ret": "return", "newline": "return",
+    "pgup": "pageup", "pgdn": "pagedown", "pgdown": "pagedown",
+]
+
+func parseKeyCombo(_ keys: String) -> (keyCode: CGKeyCode, flags: CGEventFlags)? {
+    let parts = keys.lowercased().replacingOccurrences(of: " ", with: "")
+        .split(separator: "+").map(String.init)
+    guard let rawName = parts.last else { return nil }
+    let keyName = keyAliases[rawName] ?? rawName
+    guard let keyCode = keyNameToCode[keyName] else { return nil }
     var flags: CGEventFlags = []
     for mod in parts.dropLast() {
         switch mod {
-        case "cmd", "command":       flags.insert(.maskCommand)
+        case "cmd", "command", "meta", "super": flags.insert(.maskCommand)
         case "shift":                flags.insert(.maskShift)
         case "opt", "option", "alt": flags.insert(.maskAlternate)
         case "ctrl", "control":      flags.insert(.maskControl)
