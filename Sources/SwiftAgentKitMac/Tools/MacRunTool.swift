@@ -5,8 +5,9 @@ import SwiftAgentKit
 /// One step of a `mac_run` batch. Same vocabulary as the single mac_* tools.
 struct MacRunStep: Equatable {
     enum Action: String, CaseIterable {
-        case click, double_click, right_click, type, key, scroll, wait, launch
+        case click, double_click, right_click, choose, type, key, scroll, wait, launch
     }
+    var item: String?
     var action: Action
     var target: MacTarget?
     var text: String?
@@ -29,6 +30,7 @@ struct MacRunStep: Equatable {
         var s = MacRunStep(action: action)
         let t = MacTarget.from(p)
         s.target = (t.ref != nil || t.title != nil || t.identifier != nil) ? t : nil
+        s.item = p["item"] as? String
         s.text = p["text"] as? String
         s.keys = p["keys"] as? String
         s.replace = (p["replace"] as? Bool) ?? false
@@ -39,6 +41,8 @@ struct MacRunStep: Equatable {
         switch action {
         case .click, .double_click, .right_click:
             if s.target == nil { return .failure(ParseError(message: "step \(index + 1) (\(name)): needs ref+generation, title or identifier")) }
+        case .choose:
+            if s.target == nil || s.item == nil { return .failure(ParseError(message: "step \(index + 1) (choose): needs the pop-up's ref/title/identifier and `item`")) }
         case .type:
             if s.text == nil { return .failure(ParseError(message: "step \(index + 1) (type): needs text")) }
         case .key:
@@ -56,6 +60,7 @@ struct MacRunStep: Equatable {
     var summary: String {
         var parts = [action.rawValue]
         if let t = target { parts.append(t.ref ?? t.title ?? t.identifier ?? "") }
+        if let item { parts.append("→ \(item)") }
         if let text { parts.append("\"\(text.prefix(40))\(text.count > 40 ? "…" : "")\"") }
         if let keys { parts.append(keys) }
         if let direction { parts.append("\(direction) \(amount)") }
@@ -72,9 +77,11 @@ public struct MacRunTool: AgentTool {
     first one that fails. Use it whenever you already know the next few steps (open a \
     menu, click an item, type, press Return, wait for a result): one call instead of \
     one per step. Each step is an object with `action` = click | double_click | \
-    right_click | type | key | scroll | wait | launch, plus the same fields the single \
-    tools take (ref+generation, title, identifier, text, replace, keys, direction, \
-    amount, timeout_seconds, for_disappearance). Typing and clicks are verified exactly \
+    right_click | choose | type | key | scroll | wait | launch, plus the same fields the \
+    single tools take (ref+generation, title, identifier, item, text, replace, keys, \
+    direction, amount, timeout_seconds, for_disappearance). `choose` opens a pop-up or \
+    menu button and picks `item` by title in one step — use it for Save-sheet formats \
+    and settings instead of arrow keys. Typing and clicks are verified exactly \
     as in mac_type and mac_click. Refs from your last mac_ui are valid until a `wait` \
     step (which re-reads the window); after that target by title or identifier. The \
     result lists what each step did and ends with the window as it is now, so you do \
@@ -168,6 +175,8 @@ public struct MacRunTool: AgentTool {
             return try await client.click(bundleId: bundleId, target: step.target!, options: MacClickOptions(clicks: 2))
         case .right_click:
             return try await client.click(bundleId: bundleId, target: step.target!, options: MacClickOptions(rightButton: true))
+        case .choose:
+            return try await client.choose(bundleId: bundleId, target: step.target!, item: step.item!)
         case .type:
             let verified = try await client.type(bundleId: bundleId, text: step.text!, target: step.target, replace: step.replace)
             return verified ? "typed, verified" : "typed (field not readable)"

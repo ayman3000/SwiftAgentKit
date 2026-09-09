@@ -20,6 +20,9 @@ public protocol AXDriving: Sendable {
     func key(bundleId: String, keys: String) async throws
     /// Scroll wheel over `target` (or the app's front window). Direction up/down/left/right.
     func scroll(bundleId: String, target: MacTarget?, direction: String, amount: Int) async throws
+    /// Open the pop-up / menu button `target` and pick the item titled `item`.
+    /// Returns a note; throws with the items seen when none matches.
+    func choose(bundleId: String, target: MacTarget, item: String) async throws -> String
     func waitFor(bundleId: String, target: MacTarget, timeoutSeconds: Double, forDisappearance: Bool) async throws -> UITree
     func launch(bundleId: String) async throws
     func runningApps() -> [(name: String, bundleId: String)]

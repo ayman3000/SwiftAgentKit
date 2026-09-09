@@ -38,6 +38,9 @@ public struct MacClickTool: AgentTool {
             "button": ToolParameterProperty(
                 type: "string",
                 description: "\"left\" (default) or \"right\" for a context menu."),
+            "item": ToolParameterProperty(
+                type: "string",
+                description: "For a pop-up or menu button: open it and choose the item with this title in one go (e.g. the File Format pop-up in a Save sheet → \"Plain Text\"). Fails listing the items it saw."),
         ],
         required: ["bundle_id"])
     public var requiresConfirmation: Bool { true }
@@ -65,6 +68,10 @@ public struct MacClickTool: AgentTool {
         let clicks = (parameters["clicks"] as? Int) ?? Int((parameters["clicks"] as? Double) ?? 1)
         let right = ((parameters["button"] as? String) ?? "left").lowercased() == "right"
         do {
+            if let item = parameters["item"] as? String, !item.isEmpty {
+                let how = try await client.choose(bundleId: bundleId, target: target, item: item)
+                return .success(toolCallId: "", toolName: name, result: how)
+            }
             let how = try await client.click(bundleId: bundleId, target: target,
                                              options: MacClickOptions(clicks: clicks, rightButton: right))
             return .success(toolCallId: "", toolName: name, result: how)
