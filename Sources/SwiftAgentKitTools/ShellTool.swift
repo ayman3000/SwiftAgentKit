@@ -121,7 +121,10 @@ public struct ShellTool: AgentTool {
         try? pipe.fileHandleForWriting.close()
 
         let handle = pipe.fileHandleForReading
-        let readTask = Task.detached { handle.readDataToEndOfFile() }
+        // Read on a GCD thread, not a cooperative one: a blocking read parked on
+        // the Swift pool starves the timeout timer on small machines (CI runners
+        // have three cores), so a 1 s timeout fired only after the command ended.
+        let readTask = Task { await Self.readToEnd(handle) }
 
         let stop: StopReason = await withTaskCancellationHandler {
             await withTaskGroup(of: StopReason.self) { group in
@@ -247,9 +250,19 @@ public struct ShellTool: AgentTool {
     }
 
     /// SIGKILL the entire process group led by `pid`. Best-effort — a race where
-    /// the group has already exited just returns ESRCH.
+    /// the group has already exited just returns ESRCH. If the child did not end
+    /// up leading its own group, kill it directly rather than nothing.
     private func killGroup(_ pid: pid_t) {
-        kill(-pid, SIGKILL)
+        if kill(-pid, SIGKILL) != 0 { kill(pid, SIGKILL) }
+    }
+
+    /// Blocking read-to-EOF moved off the cooperative thread pool.
+    private static func readToEnd(_ handle: FileHandle) async -> Data {
+        await withCheckedContinuation { cont in
+            DispatchQueue.global(qos: .userInitiated).async {
+                cont.resume(returning: handle.readDataToEndOfFile())
+            }
+        }
     }
 
     private struct ExitStatus { let exitCode: Int32 }
