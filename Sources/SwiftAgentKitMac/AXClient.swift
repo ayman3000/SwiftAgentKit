@@ -142,14 +142,24 @@ private func stringifyAXValue(_ raw: CFTypeRef?) -> String? {
 // MARK: - CGEvent helpers (nonisolated free functions)
 // ---------------------------------------------------------------------------
 
-private func postMouseClick(at point: CGPoint) {
+private func postMouseClick(at point: CGPoint, clicks: Int = 1, right: Bool = false) {
     let src  = CGEventSource(stateID: .hidSystemState)
-    let down = CGEvent(mouseEventSource: src, mouseType: .leftMouseDown,
-                       mouseCursorPosition: point, mouseButton: .left)
-    let up   = CGEvent(mouseEventSource: src, mouseType: .leftMouseUp,
-                       mouseCursorPosition: point, mouseButton: .left)
-    down?.post(tap: .cghidEventTap)
-    up?.post(tap: .cghidEventTap)
+    let button: CGMouseButton = right ? .right : .left
+    let downType: CGEventType = right ? .rightMouseDown : .leftMouseDown
+    let upType: CGEventType   = right ? .rightMouseUp : .leftMouseUp
+    // Move first: many views only accept a click where the pointer already is.
+    CGEvent(mouseEventSource: src, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: button)?.post(tap: .cghidEventTap)
+    usleep(50_000)
+    for n in 1...max(1, clicks) {
+        let down = CGEvent(mouseEventSource: src, mouseType: downType, mouseCursorPosition: point, mouseButton: button)
+        let up   = CGEvent(mouseEventSource: src, mouseType: upType, mouseCursorPosition: point, mouseButton: button)
+        down?.setIntegerValueField(.mouseEventClickState, value: Int64(n))
+        up?.setIntegerValueField(.mouseEventClickState, value: Int64(n))
+        down?.post(tap: .cghidEventTap)
+        usleep(30_000)
+        up?.post(tap: .cghidEventTap)
+        if n < clicks { usleep(90_000) }
+    }
 }
 
 /// Types text. Newlines and tabs are sent as real Return/Tab key presses: a
@@ -192,14 +202,40 @@ private func postUnicodeRun(_ text: String) {
     }
 }
 
+/// Modifier keys, in the order a person presses them.
+private let modifierKeys: [(CGEventFlags, CGKeyCode)] = [
+    (.maskControl, 59), (.maskAlternate, 58), (.maskShift, 56), (.maskCommand, 55),
+]
+
+/// Presses a key with modifiers the way hardware does: modifier down (a
+/// flagsChanged event), key down/up carrying the flags, modifier up. Sending
+/// only the key events with flags set leaves the app believing the modifier is
+/// still held, and the next typed text is swallowed as a shortcut — verified
+/// against TextEdit: ⌘N then "alpha" typed nothing, with modifier events "beta".
 private func postKeyPress(keyCode: CGKeyCode, flags: CGEventFlags) {
     let src  = CGEventSource(stateID: .hidSystemState)
+    let held = modifierKeys.filter { flags.contains($0.0) }
+    var accumulated: CGEventFlags = []
+    for (flag, code) in held {
+        accumulated.insert(flag)
+        let e = CGEvent(keyboardEventSource: src, virtualKey: code, keyDown: true)
+        e?.type = .flagsChanged
+        e?.flags = accumulated
+        e?.post(tap: .cghidEventTap)
+    }
     let down = CGEvent(keyboardEventSource: src, virtualKey: keyCode, keyDown: true)
     let up   = CGEvent(keyboardEventSource: src, virtualKey: keyCode, keyDown: false)
     down?.flags = flags
     up?.flags   = flags
     down?.post(tap: .cghidEventTap)
     up?.post(tap: .cghidEventTap)
+    for (flag, code) in held.reversed() {
+        accumulated.remove(flag)
+        let e = CGEvent(keyboardEventSource: src, virtualKey: code, keyDown: false)
+        e?.type = .flagsChanged
+        e?.flags = accumulated
+        e?.post(tap: .cghidEventTap)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -495,38 +531,122 @@ public actor AXClient: AXDriving {
     // MARK: click
     // -------------------------------------------------------------------------
 
-    public func click(bundleId: String, target: MacTarget) async throws {
+    public func click(bundleId: String, target: MacTarget, options: MacClickOptions = MacClickOptions()) async throws -> String {
         try checkTrust()
         let pid = try resolvePid(bundleId: bundleId)
 
         let (el, node) = try await resolveElement(target: target, bundleId: bundleId)
 
+        // Double- and right-clicks are mouse gestures by definition.
+        if options.clicks > 1 || options.rightButton {
+            try await bringToFront(pid: pid)
+            let point = try visiblePoint(of: el, fallback: node.frame)
+            postMouseClick(at: point, clicks: max(1, min(options.clicks, 3)), right: options.rightButton)
+            return options.rightButton ? "Right-clicked." : "Double-clicked."
+        }
+
         if node.actions.contains(kAXPressAction as String) {
             let windowBefore = focusedWindow(pid: pid)
             let result = AXUIElementPerformAction(el, kAXPressAction as CFString)
-            if result == .success { return }
+            if result == .success { return "Pressed." }
             // Office apps return an error for presses that did take effect, and
             // a retry then repeats the action (three blank Word documents). If
             // the UI moved on — the focused window changed or the element is
             // gone — the press worked. Otherwise click with the mouse instead.
             try await Task.sleep(nanoseconds: 300_000_000)
-            if !isValid(el) { return }
-            if let before = windowBefore, let after = focusedWindow(pid: pid), !CFEqual(before, after) { return }
-            if windowBefore == nil, focusedWindow(pid: pid) != nil { return }
-            let center = CGPoint(x: node.frame.midX, y: node.frame.midY)
-            guard node.frame.width > 0, node.frame.height > 0 else {
-                throw MacDriverError(code: "ax_error",
-                                     message: "AXPress failed: \(result.rawValue), and the element has no on-screen frame to click.")
+            if !isValid(el) { return "Pressed (the element went away, so it took effect)." }
+            if let before = windowBefore, let after = focusedWindow(pid: pid), !CFEqual(before, after) {
+                return "Pressed (the front window changed, so it took effect)."
             }
-            postMouseClick(at: center)
-            return
+            if windowBefore == nil, focusedWindow(pid: pid) != nil { return "Pressed (a window appeared)." }
+            try await bringToFront(pid: pid)
+            let point = try visiblePoint(of: el, fallback: node.frame)
+            postMouseClick(at: point)
+            return "Clicked with the mouse (the app rejected the accessibility press)."
         }
         // Rows and other selectable items: select through accessibility. A
         // synthetic mouse click on a System Settings search result does nothing,
         // while setting AXSelected navigates (verified against the live app).
-        if Self.selectViaAccessibility(el) { return }
-        let center = CGPoint(x: node.frame.midX, y: node.frame.midY)
-        postMouseClick(at: center)
+        if Self.selectViaAccessibility(el) { return "Selected." }
+        try await bringToFront(pid: pid)
+        let point = try visiblePoint(of: el, fallback: node.frame)
+        postMouseClick(at: point)
+        return "Clicked with the mouse."
+    }
+
+    /// The element's on-screen centre, scrolling it into view first when the
+    /// app supports that. Throws instead of clicking a point that is off every
+    /// display, which would hit whatever happens to be there.
+    private func visiblePoint(of el: AXUIElement, fallback: CGRect) throws -> CGPoint {
+        var frame = fallback
+        if !Self.isOnScreen(CGPoint(x: frame.midX, y: frame.midY)) {
+            var names: CFArray?
+            AXUIElementCopyActionNames(el, &names)
+            if ((names as? [String]) ?? []).contains("AXScrollToVisible") {
+                AXUIElementPerformAction(el, "AXScrollToVisible" as CFString)
+                usleep(150_000)
+                frame = axElementFrame(el)
+            }
+        }
+        let point = CGPoint(x: frame.midX, y: frame.midY)
+        guard frame.width > 0, frame.height > 0, Self.isOnScreen(point) else {
+            throw MacDriverError(code: "off_screen",
+                                 message: "The element is not on screen (frame \(Int(frame.minX)),\(Int(frame.minY)) \(Int(frame.width))x\(Int(frame.height))). "
+                                 + "Scroll it into view with mac_scroll, or target it by title so the app can reveal it.")
+        }
+        return point
+    }
+
+    /// AX coordinates are top-left based; NSScreen frames are bottom-left based.
+    static func isOnScreen(_ p: CGPoint) -> Bool {
+        guard let main = NSScreen.screens.first else { return true }
+        let flippedY = main.frame.maxY - p.y
+        return NSScreen.screens.contains { $0.frame.contains(CGPoint(x: p.x, y: flippedY)) }
+    }
+
+    // -------------------------------------------------------------------------
+    // MARK: scroll
+    // -------------------------------------------------------------------------
+
+    public func scroll(bundleId: String, target: MacTarget?, direction: String, amount: Int) async throws {
+        try checkTrust()
+        let pid = try resolvePid(bundleId: bundleId)
+        try await bringToFront(pid: pid)
+        let frame: CGRect
+        if let target {
+            let (el, node) = try await resolveElement(target: target, bundleId: bundleId)
+            frame = node.frame.width > 0 ? node.frame : axElementFrame(el)
+        } else if let win = focusedWindow(pid: pid) {
+            frame = axElementFrame(win)
+        } else {
+            throw MacDriverError(code: "no_window", message: "\(bundleId) has no front window to scroll.")
+        }
+        let point = CGPoint(x: frame.midX, y: frame.midY)
+        guard Self.isOnScreen(point) else {
+            throw MacDriverError(code: "off_screen", message: "The scroll target is not on screen.")
+        }
+        let lines = Int32(max(1, min(amount, 100)))
+        var dy: Int32 = 0, dx: Int32 = 0
+        switch direction.lowercased() {
+        case "up":    dy = lines
+        case "down":  dy = -lines
+        case "left":  dx = lines
+        case "right": dx = -lines
+        default: throw MacDriverError(code: "bad_direction", message: "direction must be up, down, left or right")
+        }
+        let src = CGEventSource(stateID: .hidSystemState)
+        CGEvent(mouseEventSource: src, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
+        usleep(30_000)
+        // Several small wheel events scroll more reliably than one big one.
+        let steps = Int(lines)
+        for _ in 0..<steps {
+            if let ev = CGEvent(scrollWheelEvent2Source: src, units: .line, wheelCount: 2,
+                                wheel1: dy == 0 ? 0 : (dy > 0 ? 1 : -1), wheel2: dx == 0 ? 0 : (dx > 0 ? 1 : -1), wheel3: 0) {
+                ev.post(tap: .cghidEventTap)
+            }
+            usleep(8_000)
+        }
+        try await Task.sleep(nanoseconds: 150_000_000)
     }
 
     private func focusedWindow(pid: pid_t) -> AXUIElement? {
@@ -560,7 +680,7 @@ public actor AXClient: AXDriving {
     /// Returns true when the focused field was read back and contains the text;
     /// false when it was sent but the field's content cannot be read at all.
     /// Throws when the field could be read and the text is not there.
-    public func type(bundleId: String, text: String, target: MacTarget?) async throws -> Bool {
+    public func type(bundleId: String, text: String, target: MacTarget?, replace: Bool = false) async throws -> Bool {
         try checkTrust()
         let pid = try resolvePid(bundleId: bundleId)
 
@@ -576,7 +696,7 @@ public actor AXClient: AXDriving {
         }
 
         // Keystrokes go to the frontmost app, so make sure that is the target.
-        await bringToFront(pid: pid)
+        try await bringToFront(pid: pid)
 
         // A shortcut like ⌘N creates its editor asynchronously; typing before an
         // editable element owns keyboard focus is swallowed with a beep.
@@ -587,8 +707,12 @@ public actor AXClient: AXDriving {
                                  + "(focused: \(role)). Click into a text field first with mac_click, "
                                  + "or pass ref/title/identifier to mac_type.")
         }
-        let beforeText = axStringValue(focused)
-        let beforeCount = axCharCount(focused)
+        if replace {
+            postKeyPress(keyCode: 0, flags: .maskCommand)   // ⌘A
+            usleep(60_000)
+        }
+        let beforeText = replace ? "" : axStringValue(focused)
+        let beforeCount = replace ? 0 : axCharCount(focused)
         postUnicodeText(text)
 
         // Verify the text landed: by content when the field exposes it, else by
@@ -609,8 +733,26 @@ public actor AXClient: AXDriving {
         guard readable else { return false }
         throw MacDriverError(code: "type_unverified",
                              message: "The keystrokes were sent but the focused \(role(of: focused) ?? "element") "
-                             + "did not receive the text. Click into the intended text field with mac_click "
-                             + "(or pass its ref/title to mac_type) and try again.")
+                             + "did not receive the text. \(frontWindowSummary(pid: pid)) Click into the intended "
+                             + "text field with mac_click (or pass its ref/title to mac_type) and try again.")
+    }
+
+    /// "Front window: 'Untitled' (a sheet 'Save' is open)." — the usual reason
+    /// typing goes nowhere is a dialog the model has not noticed.
+    private func frontWindowSummary(pid: pid_t) -> String {
+        guard let win = focusedWindow(pid: pid) else { return "The app has no front window." }
+        var t: CFTypeRef?
+        AXUIElementCopyAttributeValue(win, kAXTitleAttribute as CFString, &t)
+        let title = (t as? String) ?? ""
+        var s: CFTypeRef?
+        AXUIElementCopyAttributeValue(win, "AXSheets" as CFString, &s)
+        if let sheets = s as? [AXUIElement], let sheet = sheets.first {
+            var st: CFTypeRef?
+            AXUIElementCopyAttributeValue(sheet, kAXTitleAttribute as CFString, &st)
+            let sheetTitle = (st as? String).map { " '\($0)'" } ?? ""
+            return "Front window: '\(title)' — a sheet\(sheetTitle) is open and must be answered first (read it with mac_ui)."
+        }
+        return "Front window: '\(title)'."
     }
 
     /// True when every non-blank line of `text` appears in `content`. Line by
@@ -620,7 +762,19 @@ public actor AXClient: AXDriving {
         let lines = text.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
         guard !lines.isEmpty else { return true }
-        return lines.allSatisfy { content.contains($0) }
+        // Apps rewrite what was typed: auto-capitalisation, smart quotes and
+        // dashes, non-breaking spaces. Compare with those folded away.
+        let folded = fold(content)
+        return lines.allSatisfy { folded.contains(fold($0)) }
+    }
+
+    static func fold(_ s: String) -> String {
+        var out = s.lowercased()
+        for (from, to) in [("\u{2018}", "'"), ("\u{2019}", "'"), ("\u{201C}", "\""), ("\u{201D}", "\""),
+                           ("\u{2013}", "-"), ("\u{2014}", "-"), ("\u{00A0}", " "), ("\u{2026}", "...")] {
+            out = out.replacingOccurrences(of: from, with: to)
+        }
+        return out
     }
 
     /// Roles whose focused element accepts typed text.
@@ -628,11 +782,30 @@ public actor AXClient: AXDriving {
         "AXTextField", "AXTextArea", "AXComboBox", "AXSearchField", "AXWebArea", "AXSecureTextField",
     ]
 
-    private func bringToFront(pid: pid_t) async {
-        guard let app = NSRunningApplication(processIdentifier: pid), !app.isActive else { return }
+    /// Make the target app active. Keystrokes and mouse events go to whatever is
+    /// in front, so this throws rather than let a call land in another app.
+    private func bringToFront(pid: pid_t) async throws {
+        guard let app = NSRunningApplication(processIdentifier: pid) else { return }
+        // `isActive` lags in a process without a live AppKit run loop; the
+        // workspace's frontmost app is authoritative. Re-activating an app that
+        // is already in front reorders its windows, so never do it needlessly.
+        if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid || app.isActive { return }
         app.activate(options: [])
-        for _ in 0..<20 where !app.isActive {          // up to 1 s
-            try? await Task.sleep(nanoseconds: 50_000_000)
+        for _ in 0..<20 where !app.isActive { try? await Task.sleep(nanoseconds: 50_000_000) }   // 1 s
+        if app.isActive { return }
+        // Cooperative activation can refuse a background caller; opening the app
+        // through NSWorkspace with `activates` is honoured regardless.
+        if let url = app.bundleURL {
+            let cfg = NSWorkspace.OpenConfiguration()
+            cfg.activates = true
+            _ = try? await NSWorkspace.shared.openApplication(at: url, configuration: cfg)
+            for _ in 0..<30 where !app.isActive { try? await Task.sleep(nanoseconds: 50_000_000) }   // 1.5 s
+        }
+        guard app.isActive || NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
+            let front = NSWorkspace.shared.frontmostApplication?.localizedName ?? "another app"
+            throw MacDriverError(code: "not_frontmost",
+                                 message: "Could not bring \(app.localizedName ?? "the app") to the front (\(front) stayed in front), "
+                                 + "so no keys were sent. Retry, or ask the user to switch to it.")
         }
     }
 
@@ -689,13 +862,22 @@ public actor AXClient: AXDriving {
     public func key(bundleId: String, keys: String) async throws {
         try checkTrust()
         let pid = try resolvePid(bundleId: bundleId)
-        await bringToFront(pid: pid)   // a shortcut must never land in another app
+        try await bringToFront(pid: pid)   // a shortcut must never land in another app
 
-        guard let (keyCode, flags) = parseKeyCombo(keys) else {
-            throw MacDriverError(code: "bad_key",
-                                 message: "Cannot parse key combo: \(keys)")
+        let combos = keys.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        guard !combos.isEmpty else { throw MacDriverError(code: "bad_key", message: "No key given.") }
+        var parsed: [(CGKeyCode, CGEventFlags)] = []
+        for combo in combos {
+            guard let p = parseKeyCombo(combo) else {
+                throw MacDriverError(code: "bad_key",
+                                     message: "Cannot parse key combo: \(combo). Use names like return, backspace, escape, tab, up, or combos like cmd+s; separate a sequence with commas.")
+            }
+            parsed.append(p)
         }
-        postKeyPress(keyCode: keyCode, flags: flags)
+        for (i, (keyCode, flags)) in parsed.enumerated() {
+            postKeyPress(keyCode: keyCode, flags: flags)
+            if i < parsed.count - 1 { try await Task.sleep(nanoseconds: 80_000_000) }
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -826,6 +1008,16 @@ public actor AXClient: AXDriving {
 
     public func launch(bundleId: String) async throws {
         try await AppResolver.launch(bundleId: bundleId)
+        // A freshly launched app has no window for a moment; a read taken then
+        // is empty and the model concludes the app failed to open.
+        guard let pid = AppResolver.pid(forBundleId: bundleId) else { return }
+        let appEl = AXUIElementCreateApplication(pid)
+        for _ in 0..<40 {                                   // up to ~4 s
+            var v: CFTypeRef?
+            if AXUIElementCopyAttributeValue(appEl, kAXWindowsAttribute as CFString, &v) == .success,
+               let wins = v as? [AXUIElement], !wins.isEmpty { return }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
     }
 
     public nonisolated func runningApps() -> [(name: String, bundleId: String)] {
@@ -901,20 +1093,38 @@ public actor AXClient: AXDriving {
     }
 
     /// Depth-first search returning (AXUIElement, UINode) when target matches.
+    /// Staged search: exact title/value/identifier first, then case-insensitive,
+    /// then a substring of the visible text. Models paraphrase ("sound" for
+    /// "Sound", "Save" for "Save…"); exact-only matching sent them in circles.
     private func findInSnapshot(
         _ node: UINode,
         target: MacTarget
     ) -> (AXUIElement, UINode)? {
+        for stage in 0..<3 {
+            if let found = find(node, target: target, stage: stage) { return found }
+        }
+        return nil
+    }
+
+    private func find(_ node: UINode, target: MacTarget, stage: Int) -> (AXUIElement, UINode)? {
+        func textMatch(_ candidate: String?, _ wanted: String) -> Bool {
+            guard let c = candidate else { return false }
+            switch stage {
+            case 0:  return c == wanted
+            case 1:  return c.caseInsensitiveCompare(wanted) == .orderedSame
+            default: return c.range(of: wanted, options: .caseInsensitive) != nil
+            }
+        }
         // `title` also matches a node's visible value: table cells expose their
         // text as value, and rows beyond the render cap are only known by text.
-        let titleMatch = target.title.map      { node.title == $0 || node.value == $0 } ?? true
-        let idMatch    = target.identifier.map { node.identifier == $0 } ?? true
-        let refMatch   = target.ref.map        { node.ref        == $0 } ?? true
+        let titleMatch = target.title.map      { textMatch(node.title, $0) || textMatch(node.value, $0) } ?? true
+        let idMatch    = target.identifier.map { textMatch(node.identifier, $0) } ?? true
+        let refMatch   = target.ref.map        { node.ref == $0 } ?? true
         if titleMatch && idMatch && refMatch, let box = refCache[node.ref] {
             return (box.element, node)
         }
         for child in node.children {
-            if let found = findInSnapshot(child, target: target) { return found }
+            if let found = find(child, target: target, stage: stage) { return found }
         }
         return nil
     }

@@ -73,6 +73,9 @@ public struct MacUITool: AgentTool {
             "include_menus": ToolParameterProperty(
                 type: "boolean",
                 description: "Also list every menu item of the menu bar (default false; menus are collapsed to their titles)."),
+            "filter": ToolParameterProperty(
+                type: "string",
+                description: "Return only elements whose title, text or identifier contains this (case-insensitive), each with the window it is in. Cheap way to find one control in a big window."),
         ],
         required: ["bundle_id"])
     public var requiresConfirmation: Bool { false }
@@ -95,6 +98,9 @@ public struct MacUITool: AgentTool {
         do {
             let tree = try await client.snapshot(bundleId: bundleId)
             let includeMenus = parameters["include_menus"] as? Bool ?? false
+            if let filter = (parameters["filter"] as? String)?.trimmingCharacters(in: .whitespaces), !filter.isEmpty {
+                return .success(toolCallId: "", toolName: name, result: tree.renderMatches(filter))
+            }
             return .success(toolCallId: "", toolName: name, result: tree.renderCompact(includeMenus: includeMenus))
         } catch let e as MacDriverError {
             let treeText = e.tree.map { "\n\nCurrent UI:\n" + $0.renderCompact() } ?? ""

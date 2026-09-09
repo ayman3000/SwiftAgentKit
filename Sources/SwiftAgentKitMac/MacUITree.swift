@@ -97,6 +97,37 @@ public struct UITree: Codable, Sendable, Equatable {
         return line
     }
 
+    /// Only the elements whose title, value or identifier contains `query`
+    /// (case-insensitive), each prefixed by the window it lives in. Rows are
+    /// rendered as one line like `renderCompact`, so their refs are clickable.
+    public func renderMatches(_ query: String) -> String {
+        var out = "UI of \(bundleId) — generation \(generation) — elements matching \"\(query)\"\n"
+        var count = 0
+        func matches(_ n: UINode) -> Bool {
+            [n.title, n.value, n.identifier].contains { $0?.range(of: query, options: .caseInsensitive) != nil }
+        }
+        func walk(_ node: UINode, window: String?) {
+            let win = node.role == "AXWindow" ? (node.title ?? window) : window
+            if node.role == "AXRow" && !containsInteractive(node) {
+                if matches(node) || leafTexts(node).contains(where: { $0.range(of: query, options: .caseInsensitive) != nil }) {
+                    count += 1
+                    let texts = leafTexts(node).map(Self.clip)
+                    out += (win.map { "[\($0)] " } ?? "") + "\(node.ref) AXRow: " + texts.joined(separator: " | ")
+                        + (node.actions.isEmpty ? "" : " [\(node.actions.joined(separator: ", "))]") + "\n"
+                }
+                return
+            }
+            if matches(node) && node.role != "AXMenuBar" {
+                count += 1
+                out += (win.map { "[\($0)] " } ?? "") + describe(node) + "\n"
+            }
+            node.children.forEach { walk($0, window: win) }
+        }
+        walk(root, window: nil)
+        if count == 0 { out += "(nothing matches; read the window without a filter, or scroll)\n" }
+        return out
+    }
+
     /// Compact text for the model. Three reductions keep a data-heavy window
     /// (a file manager, a mail list) to a few hundred lines instead of thousands:
     /// layout wrappers get no line, a plain table row becomes one line of its

@@ -7,11 +7,13 @@ import SwiftAgentKit
 /// Clicks a UI element in a native macOS app.
 public struct MacClickTool: AgentTool {
     public let name = "mac_click"
-    // Rows/list items are selected through accessibility; buttons are pressed.
     public let description = """
     Click a UI element in a native macOS app identified by ref+generation, title, or \
     accessibility identifier. Use mac_ui first to get element refs. Refs from a previous \
-    snapshot may be stale — check the generation number.
+    snapshot may be stale — check the generation number. Buttons are pressed, rows and \
+    list items are selected; to OPEN a row (a folder, a file, a mail) use clicks:2. The \
+    element is scrolled into view when the app allows it. `title` also matches an \
+    element's visible text, case-insensitively, then as a substring.
     """
     public let parameters = ToolParameters(
         properties: [
@@ -30,6 +32,12 @@ public struct MacClickTool: AgentTool {
             "identifier": ToolParameterProperty(
                 type: "string",
                 description: "Fallback: match by accessibility identifier."),
+            "clicks": ToolParameterProperty(
+                type: "integer",
+                description: "1 (default) or 2 for a double-click (opens rows, files, folders)."),
+            "button": ToolParameterProperty(
+                type: "string",
+                description: "\"left\" (default) or \"right\" for a context menu."),
         ],
         required: ["bundle_id"])
     public var requiresConfirmation: Bool { true }
@@ -54,9 +62,12 @@ public struct MacClickTool: AgentTool {
             return .error(toolCallId: "", toolName: name,
                           message: "mac_click needs a ref (from mac_ui), title, or identifier to click.")
         }
+        let clicks = (parameters["clicks"] as? Int) ?? Int((parameters["clicks"] as? Double) ?? 1)
+        let right = ((parameters["button"] as? String) ?? "left").lowercased() == "right"
         do {
-            try await client.click(bundleId: bundleId, target: target)
-            return .success(toolCallId: "", toolName: name, result: "Clicked.")
+            let how = try await client.click(bundleId: bundleId, target: target,
+                                             options: MacClickOptions(clicks: clicks, rightButton: right))
+            return .success(toolCallId: "", toolName: name, result: how)
         } catch let e as MacDriverError {
             let treeText = e.tree.map { "\n\nCurrent UI:\n" + $0.renderCompact() } ?? ""
             return .error(toolCallId: "", toolName: name, message: e.localizedDescription + treeText)
@@ -96,6 +107,9 @@ public struct MacTypeTool: AgentTool {
             "identifier": ToolParameterProperty(
                 type: "string",
                 description: "Fallback: focus element by accessibility identifier before typing."),
+            "replace": ToolParameterProperty(
+                type: "boolean",
+                description: "Select the field's existing content first so the text replaces it (default false = append at the cursor)."),
         ],
         required: ["bundle_id", "text"])
     public var requiresConfirmation: Bool { true }
@@ -124,7 +138,8 @@ public struct MacTypeTool: AgentTool {
             return (t.ref != nil || t.title != nil || t.identifier != nil) ? t : nil
         }()
         do {
-            let verified = try await client.type(bundleId: bundleId, text: text, target: target)
+            let replace = (parameters["replace"] as? Bool) ?? false
+            let verified = try await client.type(bundleId: bundleId, text: text, target: target, replace: replace)
             return .success(toolCallId: "", toolName: name, result: verified
                 ? "Typed; the focused field now contains the text. No need to re-check or retype."
                 : "Typed; sent to the focused field, whose content cannot be read back. Confirm with mac_ui only if it matters.")
@@ -143,9 +158,10 @@ public struct MacTypeTool: AgentTool {
 public struct MacKeyTool: AgentTool {
     public let name = "mac_key"
     public let description = """
-    Send a keyboard shortcut or key sequence to a native macOS app. Use key names like \
-    "return", "escape", "tab", or modifier combos like "cmd+s", "cmd+shift+z". \
-    The app must be frontmost for key events to land correctly.
+    Send a keyboard shortcut or a sequence of them to a native macOS app. Key names: \
+    return, escape, tab, space, backspace, up/down/left/right, home, end, pageup, \
+    pagedown, f1-f12, letters and digits; modifiers cmd, shift, opt, ctrl. A sequence is \
+    comma-separated: "cmd+a, cmd+c". The app is brought to the front first.
     """
     public let parameters = ToolParameters(
         properties: [
@@ -233,6 +249,69 @@ public struct MacLaunchTool: AgentTool {
             return .error(toolCallId: "", toolName: name, message: e.localizedDescription + treeText)
         } catch {
             return .error(toolCallId: "", toolName: name, message: "mac_launch failed: \(error.localizedDescription)")
+        }
+    }
+}
+
+
+// MARK: - MacScrollTool
+
+/// Scrolls a view in a native macOS app.
+public struct MacScrollTool: AgentTool {
+    public let name = "mac_scroll"
+    public let description = """
+    Scroll in a native macOS app: the front window, or the element named by \
+    ref+generation / title / identifier (a list, a table, a web view). Use it when the \
+    thing you need is below the visible rows or mac_click reports the element is off \
+    screen. Then read again with mac_ui.
+    """
+    public let parameters = ToolParameters(
+        properties: [
+            "bundle_id": ToolParameterProperty(
+                type: "string",
+                description: "Bundle id of the target app (see mac_apps)."),
+            "direction": ToolParameterProperty(
+                type: "string",
+                description: "up, down, left or right."),
+            "amount": ToolParameterProperty(
+                type: "integer",
+                description: "How many lines to scroll (default 10, max 100)."),
+            "ref": ToolParameterProperty(type: "string", description: "Optional element ref to scroll within."),
+            "generation": ToolParameterProperty(type: "integer", description: "Tree generation the ref came from."),
+            "title": ToolParameterProperty(type: "string", description: "Optional: element title/text to scroll within."),
+            "identifier": ToolParameterProperty(type: "string", description: "Optional: accessibility identifier to scroll within."),
+        ],
+        required: ["bundle_id", "direction"])
+    public var requiresConfirmation: Bool { false }
+
+    let client: any AXDriving
+    let allowlistProvider: @Sendable () -> Set<String>
+
+    public init(client: any AXDriving, allowlistProvider: @escaping @Sendable () -> Set<String>) {
+        self.client = client
+        self.allowlistProvider = allowlistProvider
+    }
+
+    public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
+        if let err = accessibilityError(toolName: name, client: client) { return err }
+        let bundleId: String
+        switch AllowlistGuard.resolve(parameters, allowlist: allowlistProvider(), toolName: name) {
+        case .failure(let e): return e
+        case .success(let b): bundleId = b
+        }
+        guard let direction = parameters["direction"] as? String else {
+            return .error(toolCallId: "", toolName: name, message: "mac_scroll requires `direction`.")
+        }
+        let amount = (parameters["amount"] as? Int) ?? Int((parameters["amount"] as? Double) ?? 10)
+        let t = MacTarget.from(parameters)
+        let target: MacTarget? = (t.ref != nil || t.title != nil || t.identifier != nil) ? t : nil
+        do {
+            try await client.scroll(bundleId: bundleId, target: target, direction: direction, amount: amount)
+            return .success(toolCallId: "", toolName: name, result: "Scrolled \(direction.lowercased()) \(amount) lines. Read again with mac_ui to see what is visible now.")
+        } catch let e as MacDriverError {
+            return .error(toolCallId: "", toolName: name, message: e.localizedDescription)
+        } catch {
+            return .error(toolCallId: "", toolName: name, message: "mac_scroll failed: \(error.localizedDescription)")
         }
     }
 }

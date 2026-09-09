@@ -13,9 +13,10 @@ final class MockAX: AXDriving, @unchecked Sendable {
     var errorToThrow: Error?
     func isTrusted() -> Bool { trusted }
     func snapshot(bundleId: String) async throws -> UITree { lastCall = "snapshot:\(bundleId)"; if let e = errorToThrow { throw e }; return tree }
-    func click(bundleId: String, target: MacTarget) async throws { lastCall = "click:\(target.ref ?? target.title ?? "?")"; if let e = errorToThrow { throw e } }
-    func type(bundleId: String, text: String, target: MacTarget?) async throws -> Bool { lastCall = "type:\(text)"; if let e = errorToThrow { throw e }; return true }
+    func click(bundleId: String, target: MacTarget, options: MacClickOptions) async throws -> String { lastCall = "click:\(target.ref ?? target.title ?? "?"):\(options.clicks)\(options.rightButton ? "R" : "")"; if let e = errorToThrow { throw e }; return "Pressed." }
+    func type(bundleId: String, text: String, target: MacTarget?, replace: Bool) async throws -> Bool { lastCall = "type:\(text)\(replace ? ":replace" : "")"; if let e = errorToThrow { throw e }; return true }
     func key(bundleId: String, keys: String) async throws { lastCall = "key:\(keys)"; if let e = errorToThrow { throw e } }
+    func scroll(bundleId: String, target: MacTarget?, direction: String, amount: Int) async throws { lastCall = "scroll:\(direction):\(amount)"; if let e = errorToThrow { throw e } }
     func waitFor(bundleId: String, target: MacTarget, timeoutSeconds: Double, forDisappearance: Bool) async throws -> UITree { lastCall = "wait"; if let e = errorToThrow { throw e }; return tree }
     func launch(bundleId: String) async throws { lastCall = "launch:\(bundleId)"; if let e = errorToThrow { throw e } }
     func runningApps() -> [(name: String, bundleId: String)] { [("TextEdit","com.apple.TextEdit"), ("Mail","com.apple.mail")] }
@@ -55,7 +56,7 @@ final class MacToolsTests: XCTestCase {
         let mock = MockAX()
         _ = try await MacClickTool(client: mock, allowlistProvider: allow)
             .execute(parameters: ["bundle_id": "com.apple.TextEdit", "ref": "e2", "generation": 1])
-        XCTAssertEqual(mock.lastCall, "click:e2")
+        XCTAssertEqual(mock.lastCall, "click:e2:1")
     }
 
     func testMacClickRequiresConfirmation() {
@@ -88,6 +89,32 @@ final class MacToolsTests: XCTestCase {
         XCTAssertTrue(AXClient.contains("Hi Naseem\u{2029}Bye", allLinesOf: "Hi Naseem\nBye"))
         XCTAssertFalse(AXClient.contains("Hi Naseem\n", allLinesOf: "\nBye"), "a bare newline is not the text")
         XCTAssertTrue(AXClient.contains("anything", allLinesOf: "\n"), "only control characters: nothing to check")
+        // Apps auto-capitalise and substitute smart punctuation.
+        XCTAssertTrue(AXClient.contains("First line\nSecond line", allLinesOf: "first line\nsecond line"))
+        XCTAssertTrue(AXClient.contains("Don\u{2019}t \u{201C}quote\u{201D} me \u{2014} ok", allLinesOf: "don't \"quote\" me - ok"))
+    }
+
+    func testClickPassesDoubleAndRightClickThrough() async throws {
+        let mock = MockAX()
+        let r = try await MacClickTool(client: mock, allowlistProvider: allow)
+            .execute(parameters: ["bundle_id": "com.apple.TextEdit", "title": "Docs", "clicks": 2])
+        XCTAssertEqual(mock.lastCall, "click:Docs:2")
+        XCTAssertFalse(r.isError)
+        _ = try await MacClickTool(client: mock, allowlistProvider: allow)
+            .execute(parameters: ["bundle_id": "com.apple.TextEdit", "title": "Docs", "button": "right"])
+        XCTAssertEqual(mock.lastCall, "click:Docs:1R")
+    }
+
+    func testTypeReplaceAndScrollReachTheDriver() async throws {
+        let mock = MockAX()
+        _ = try await MacTypeTool(client: mock, allowlistProvider: allow)
+            .execute(parameters: ["bundle_id": "com.apple.TextEdit", "text": "x", "replace": true])
+        XCTAssertEqual(mock.lastCall, "type:x:replace")
+        let r = try await MacScrollTool(client: mock, allowlistProvider: allow)
+            .execute(parameters: ["bundle_id": "com.apple.TextEdit", "direction": "down", "amount": 5])
+        XCTAssertEqual(mock.lastCall, "scroll:down:5")
+        XCTAssertTrue(r.result.contains("mac_ui"))
+        XCTAssertEqual(makeMacTools(allowlistProvider: allow, client: mock).count, 8)
     }
 
     func testKeyComboAcceptsCommonSpellings() {
@@ -130,11 +157,11 @@ final class MacToolsTests: XCTestCase {
         XCTAssertTrue(r.result.contains("generation 1"))
     }
 
-    func testMakeMacToolsReturnsSeven() {
+    func testMakeMacToolsReturnsAllEight() {
         let tools = makeMacTools(allowlistProvider: allow, client: MockAX())
-        XCTAssertEqual(tools.count, 7)
+        XCTAssertEqual(tools.count, 8)
         XCTAssertEqual(Set(tools.map(\.name)),
-            ["mac_apps","mac_ui","mac_click","mac_type","mac_key","mac_wait","mac_launch"])
+            ["mac_apps","mac_ui","mac_click","mac_type","mac_key","mac_wait","mac_launch","mac_scroll"])
     }
 
     /// mac_click with no ref/title/identifier must return an error mentioning "ref"

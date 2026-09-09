@@ -132,6 +132,20 @@ final class MacUITreeTests: XCTestCase {
         XCTAssertLessThan(line.count, 260)
     }
 
+    func testRenderMatchesFindsRowsAndControlsWithWindow() {
+        let button = UINode(ref: "e9", role: "AXButton", title: "Sound Effects", identifier: nil, value: nil,
+                            frame: .init(x: 0, y: 0, width: 80, height: 24), isEnabled: true, actions: ["AXPress"], children: [])
+        var t = table(rows: 3)
+        let win = UINode(ref: "e0", role: "AXWindow", title: "Settings", identifier: nil, value: nil,
+                         frame: .init(x: 0, y: 0, width: 800, height: 600), isEnabled: true, actions: [], children: [t.root, button])
+        t.root = win
+        let text = t.renderMatches("file2")
+        XCTAssertTrue(text.contains("[Settings] e40 AXRow: file2.png"), text)
+        XCTAssertFalse(text.contains("file1.png"))
+        XCTAssertTrue(t.renderMatches("sound").contains("e9 AXButton \"Sound Effects\""))
+        XCTAssertTrue(t.renderMatches("zzz").contains("nothing matches"))
+    }
+
     func testAnonymousWrapperSpendsNoLineButKeepsChildren() {
         let tree = UITree(generation: 1, bundleId: "app",
                           root: wrap("e1", "AXGroup", [wrap("e2", "AXGroup", [text("e3", "Hello")])]))

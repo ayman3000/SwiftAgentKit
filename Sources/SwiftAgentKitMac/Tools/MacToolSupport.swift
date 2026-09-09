@@ -56,7 +56,7 @@ enum AllowlistGuard {
 
 // MARK: - makeMacTools
 
-/// Returns all 7 mac_* AgentTools wired to the given AX client and allowlist provider.
+/// Returns all mac_* AgentTools wired to the given AX client and allowlist provider.
 public func makeMacTools(
     allowlistProvider: @escaping @Sendable () -> Set<String>,
     client: any AXDriving
@@ -69,6 +69,7 @@ public func makeMacTools(
         MacKeyTool(client: client, allowlistProvider: allowlistProvider),
         MacWaitTool(client: client, allowlistProvider: allowlistProvider),
         MacLaunchTool(client: client, allowlistProvider: allowlistProvider),
+        MacScrollTool(client: client, allowlistProvider: allowlistProvider),
     ]
 }
 
