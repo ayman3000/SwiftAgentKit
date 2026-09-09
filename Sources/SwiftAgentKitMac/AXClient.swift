@@ -3,6 +3,7 @@ import Foundation
 @preconcurrency import ApplicationServices
 import AppKit
 import CoreGraphics
+import ScreenCaptureKit
 
 // ---------------------------------------------------------------------------
 // MARK: - AXUIElement wrapper for Sendable boundary crossing
@@ -1022,6 +1023,45 @@ public actor AXClient: AXDriving {
 
     public nonisolated func runningApps() -> [(name: String, bundleId: String)] {
         AppResolver.runningApps()
+    }
+
+    // -------------------------------------------------------------------------
+    // MARK: screenshot (opt-in; the tree is the primary way to see)
+    // -------------------------------------------------------------------------
+
+    /// PNG of the app's front window, longest side capped at 1600 px so a
+    /// screenshot costs a bounded number of vision tokens.
+    public func screenshot(bundleId: String) async throws -> Data {
+        let pid = try resolvePid(bundleId: bundleId)
+        let content: SCShareableContent
+        do {
+            content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        } catch {
+            throw MacDriverError(code: "screen_recording",
+                                 message: "Cannot capture the screen: Screen Recording permission is not granted "
+                                 + "(System Settings → Privacy & Security → Screen & System Audio Recording). "
+                                 + "Read the window with mac_ui instead. (\(error.localizedDescription))")
+        }
+        guard let win = content.windows.first(where: {
+            $0.owningApplication?.processID == pid && $0.windowLayer == 0 && $0.frame.width > 50 && $0.frame.height > 50
+        }) else {
+            throw MacDriverError(code: "no_window", message: "\(bundleId) has no visible window to capture.")
+        }
+        let cfg = SCStreamConfiguration()
+        let longest = max(win.frame.width, win.frame.height)
+        let factor = min(2.0, 1600.0 / longest)            // retina up to the cap
+        cfg.width = Int(win.frame.width * factor)
+        cfg.height = Int(win.frame.height * factor)
+        cfg.showsCursor = false
+        guard #available(macOS 14.0, *) else {
+            throw MacDriverError(code: "unsupported", message: "Screenshots need macOS 14 or newer; read the window with mac_ui instead.")
+        }
+        let image = try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(desktopIndependentWindow: win),
+                                                               configuration: cfg)
+        guard let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else {
+            throw MacDriverError(code: "encode_failed", message: "Could not encode the screenshot.")
+        }
+        return png
     }
 
     // -------------------------------------------------------------------------

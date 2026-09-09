@@ -23,6 +23,8 @@ public protocol AXDriving: Sendable {
     func waitFor(bundleId: String, target: MacTarget, timeoutSeconds: Double, forDisappearance: Bool) async throws -> UITree
     func launch(bundleId: String) async throws
     func runningApps() -> [(name: String, bundleId: String)]
+    /// PNG of the app's front window. Needs Screen Recording permission.
+    func screenshot(bundleId: String) async throws -> Data
 }
 
 public enum AXPermission {

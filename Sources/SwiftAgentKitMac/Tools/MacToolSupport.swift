@@ -57,11 +57,14 @@ enum AllowlistGuard {
 // MARK: - makeMacTools
 
 /// Returns all mac_* AgentTools wired to the given AX client and allowlist provider.
+/// - Parameter includeScreenshot: also register `mac_screenshot` (opt-in: it needs
+///   Screen Recording and a vision model; the tree stays the primary sense).
 public func makeMacTools(
     allowlistProvider: @escaping @Sendable () -> Set<String>,
-    client: any AXDriving
+    client: any AXDriving,
+    includeScreenshot: Bool = false
 ) -> [any AgentTool] {
-    [
+    var tools: [any AgentTool] = [
         MacAppsTool(client: client, allowlistProvider: allowlistProvider),
         MacUITool(client: client, allowlistProvider: allowlistProvider),
         MacClickTool(client: client, allowlistProvider: allowlistProvider),
@@ -71,6 +74,8 @@ public func makeMacTools(
         MacLaunchTool(client: client, allowlistProvider: allowlistProvider),
         MacScrollTool(client: client, allowlistProvider: allowlistProvider),
     ]
+    if includeScreenshot { tools.append(MacScreenshotTool(client: client, allowlistProvider: allowlistProvider)) }
+    return tools
 }
 
 // MARK: - Shared trust check helper

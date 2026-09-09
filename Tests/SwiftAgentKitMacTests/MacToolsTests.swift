@@ -20,6 +20,7 @@ final class MockAX: AXDriving, @unchecked Sendable {
     func waitFor(bundleId: String, target: MacTarget, timeoutSeconds: Double, forDisappearance: Bool) async throws -> UITree { lastCall = "wait"; if let e = errorToThrow { throw e }; return tree }
     func launch(bundleId: String) async throws { lastCall = "launch:\(bundleId)"; if let e = errorToThrow { throw e } }
     func runningApps() -> [(name: String, bundleId: String)] { [("TextEdit","com.apple.TextEdit"), ("Mail","com.apple.mail")] }
+    func screenshot(bundleId: String) async throws -> Data { lastCall = "screenshot:\(bundleId)"; if let e = errorToThrow { throw e }; return Data([0x89, 0x50, 0x4E, 0x47]) }
 }
 
 final class MacToolsTests: XCTestCase {
@@ -155,6 +156,17 @@ final class MacToolsTests: XCTestCase {
             .execute(parameters: ["bundle_id": "com.apple.TextEdit", "title": "Done", "timeout_seconds": 1.0])
         XCTAssertTrue(r.isError)
         XCTAssertTrue(r.result.contains("generation 1"))
+    }
+
+    func testScreenshotToolIsOptInAndReturnsAnImage() async throws {
+        let mock = MockAX()
+        XCTAssertFalse(makeMacTools(allowlistProvider: allow, client: mock).contains { $0.name == "mac_screenshot" })
+        let tools = makeMacTools(allowlistProvider: allow, client: mock, includeScreenshot: true)
+        XCTAssertEqual(tools.count, 9)
+        let r = try await MacScreenshotTool(client: mock, allowlistProvider: allow).execute(parameters: ["bundle_id": "com.apple.TextEdit"])
+        XCTAssertFalse(r.isError); XCTAssertEqual(r.images.count, 1)
+        let denied = try await MacScreenshotTool(client: mock, allowlistProvider: allow).execute(parameters: ["bundle_id": "com.apple.mail"])
+        XCTAssertTrue(denied.isError)
     }
 
     func testMakeMacToolsReturnsAllEight() {

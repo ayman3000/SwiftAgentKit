@@ -1,6 +1,7 @@
 #if os(macOS)
 import Foundation
 import SwiftAgentKit
+import LLMProviderKit
 
 // MARK: - MacAppsTool
 
@@ -172,6 +173,54 @@ public struct MacWaitTool: AgentTool {
             return .error(toolCallId: "", toolName: name, message: e.localizedDescription + treeText)
         } catch {
             return .error(toolCallId: "", toolName: name, message: "mac_wait failed: \(error.localizedDescription)")
+        }
+    }
+}
+
+
+// MARK: - MacScreenshotTool (opt-in)
+
+/// Screenshot of a Mac app's front window. Registered only when the host opts in.
+public struct MacScreenshotTool: AgentTool {
+    public let name = "mac_screenshot"
+    public let description = """
+    Screenshot a native macOS app's front window as an image. The accessibility tree \
+    from mac_ui is the normal way to see and act; use this only when mac_ui returns \
+    nothing useful for the app, or when appearance and layout are the question (a \
+    chart, a colour, overlapping views). Needs a vision-capable model and Screen \
+    Recording permission. One screenshot per distinct screen — do not re-shoot.
+    """
+    public let parameters = ToolParameters(
+        properties: [
+            "bundle_id": ToolParameterProperty(
+                type: "string",
+                description: "Bundle id of the app whose front window to capture (see mac_apps)."),
+        ],
+        required: ["bundle_id"])
+    public var requiresConfirmation: Bool { false }
+
+    let client: any AXDriving
+    let allowlistProvider: @Sendable () -> Set<String>
+
+    public init(client: any AXDriving, allowlistProvider: @escaping @Sendable () -> Set<String>) {
+        self.client = client
+        self.allowlistProvider = allowlistProvider
+    }
+
+    public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
+        let bundleId: String
+        switch AllowlistGuard.resolve(parameters, allowlist: allowlistProvider(), toolName: name) {
+        case .failure(let e): return e
+        case .success(let b): bundleId = b
+        }
+        do {
+            let png = try await client.screenshot(bundleId: bundleId)
+            return .success(toolCallId: "", toolName: name, result: "Screenshot of \(bundleId)'s front window captured.",
+                            images: [LLMImage(data: png, mimeType: "image/png")])
+        } catch let e as MacDriverError {
+            return .error(toolCallId: "", toolName: name, message: e.localizedDescription)
+        } catch {
+            return .error(toolCallId: "", toolName: name, message: "mac_screenshot failed: \(error.localizedDescription)")
         }
     }
 }
