@@ -73,6 +73,7 @@ public func makeMacTools(
         MacWaitTool(client: client, allowlistProvider: allowlistProvider),
         MacLaunchTool(client: client, allowlistProvider: allowlistProvider),
         MacScrollTool(client: client, allowlistProvider: allowlistProvider),
+        MacRunTool(client: client, allowlistProvider: allowlistProvider),
     ]
     if includeScreenshot { tools.append(MacScreenshotTool(client: client, allowlistProvider: allowlistProvider)) }
     return tools

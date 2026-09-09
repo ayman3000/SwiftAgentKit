@@ -115,7 +115,7 @@ final class MacToolsTests: XCTestCase {
             .execute(parameters: ["bundle_id": "com.apple.TextEdit", "direction": "down", "amount": 5])
         XCTAssertEqual(mock.lastCall, "scroll:down:5")
         XCTAssertTrue(r.result.contains("mac_ui"))
-        XCTAssertEqual(makeMacTools(allowlistProvider: allow, client: mock).count, 8)
+        XCTAssertEqual(makeMacTools(allowlistProvider: allow, client: mock).count, 9)
     }
 
     func testKeyComboAcceptsCommonSpellings() {
@@ -162,18 +162,72 @@ final class MacToolsTests: XCTestCase {
         let mock = MockAX()
         XCTAssertFalse(makeMacTools(allowlistProvider: allow, client: mock).contains { $0.name == "mac_screenshot" })
         let tools = makeMacTools(allowlistProvider: allow, client: mock, includeScreenshot: true)
-        XCTAssertEqual(tools.count, 9)
+        XCTAssertEqual(tools.count, 10)
         let r = try await MacScreenshotTool(client: mock, allowlistProvider: allow).execute(parameters: ["bundle_id": "com.apple.TextEdit"])
         XCTAssertFalse(r.isError); XCTAssertEqual(r.images.count, 1)
         let denied = try await MacScreenshotTool(client: mock, allowlistProvider: allow).execute(parameters: ["bundle_id": "com.apple.mail"])
         XCTAssertTrue(denied.isError)
     }
 
-    func testMakeMacToolsReturnsAllEight() {
+    func testMakeMacToolsReturnsAllNine() {
         let tools = makeMacTools(allowlistProvider: allow, client: MockAX())
-        XCTAssertEqual(tools.count, 8)
+        XCTAssertEqual(tools.count, 9)
         XCTAssertEqual(Set(tools.map(\.name)),
-            ["mac_apps","mac_ui","mac_click","mac_type","mac_key","mac_wait","mac_launch","mac_scroll"])
+            ["mac_apps","mac_ui","mac_click","mac_type","mac_key","mac_wait","mac_launch","mac_scroll","mac_run"])
+    }
+
+    // MARK: - mac_run
+
+    func testRunExecutesStepsInOrderAndReadsAfter() async throws {
+        let mock = MockAX()
+        let r = try await MacRunTool(client: mock, allowlistProvider: allow).execute(parameters: [
+            "bundle_id": "com.apple.TextEdit",
+            "steps": [["action": "key", "keys": "cmd+n"], ["action": "type", "text": "Hello"],
+                      ["action": "click", "title": "Save"]],
+        ])
+        XCTAssertFalse(r.isError, r.result)
+        XCTAssertTrue(r.result.contains("1. key cmd+n → sent"))
+        XCTAssertTrue(r.result.contains("2. type \"Hello\" → typed, verified"))
+        XCTAssertTrue(r.result.contains("3. click Save → Pressed."))
+        XCTAssertTrue(r.result.contains("UI of com.apple.TextEdit"), "window read appended")
+        XCTAssertEqual(mock.lastCall, "snapshot:com.apple.TextEdit", "read_after took the final snapshot")
+        let quiet = try await MacRunTool(client: mock, allowlistProvider: allow).execute(parameters: [
+            "bundle_id": "com.apple.TextEdit", "read_after": false,
+            "steps": [["action": "double_click", "title": "Docs"]],
+        ])
+        XCTAssertEqual(mock.lastCall, "click:Docs:2")
+        XCTAssertFalse(quiet.result.contains("UI of"))
+    }
+
+    func testRunStopsAtFirstFailureAndSaysWhatWasSkipped() async throws {
+        let mock = MockAX()
+        mock.errorToThrow = MacDriverError(code: "no_text_focus", message: "nothing editable")
+        let r = try await MacRunTool(client: mock, allowlistProvider: allow).execute(parameters: [
+            "bundle_id": "com.apple.TextEdit",
+            "steps": [["action": "type", "text": "x"], ["action": "key", "keys": "return"], ["action": "key", "keys": "cmd+s"]],
+        ])
+        XCTAssertTrue(r.isError)
+        XCTAssertTrue(r.result.contains("1. type \"x\" → FAILED:") && r.result.contains("nothing editable"), r.result)
+        XCTAssertTrue(r.result.contains("2 steps not run"))
+    }
+
+    func testRunValidatesStepsBeforeActing() async throws {
+        let mock = MockAX()
+        let r = try await MacRunTool(client: mock, allowlistProvider: allow).execute(parameters: [
+            "bundle_id": "com.apple.TextEdit",
+            "steps": [["action": "key", "keys": "cmd+n"], ["action": "fly"]],
+        ])
+        XCTAssertTrue(r.isError)
+        XCTAssertTrue(r.result.contains("step 2: unknown action 'fly'"))
+        XCTAssertEqual(mock.lastCall, "", "nothing ran")
+        let tooMany = try await MacRunTool(client: mock, allowlistProvider: allow).execute(parameters: [
+            "bundle_id": "com.apple.TextEdit", "steps": Array(repeating: ["action": "key", "keys": "down"], count: 13),
+        ])
+        XCTAssertTrue(tooMany.isError)
+        let denied = try await MacRunTool(client: mock, allowlistProvider: allow).execute(parameters: [
+            "bundle_id": "com.apple.mail", "steps": [["action": "key", "keys": "cmd+n"]],
+        ])
+        XCTAssertTrue(denied.isError)
     }
 
     /// mac_click with no ref/title/identifier must return an error mentioning "ref"
