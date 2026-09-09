@@ -82,9 +82,12 @@ public struct UITree: Codable, Sendable, Equatable {
     /// can run to thousands of characters; the model needs the beginning.
     public static let maxTextLength = 200
 
+    /// One line per value: a text view's content shows as `line ⏎ line`, so a
+    /// field with several paragraphs never breaks the tree's line structure.
     static func clip(_ s: String) -> String {
-        guard s.count > maxTextLength else { return s }
-        return String(s.prefix(maxTextLength)) + "… (+\(s.count - maxTextLength) chars)"
+        let flat = s.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\n", with: " ⏎ ")
+        guard flat.count > maxTextLength else { return flat }
+        return String(flat.prefix(maxTextLength)) + "… (+\(flat.count - maxTextLength) chars)"
     }
 
     private func describe(_ node: UINode) -> String {

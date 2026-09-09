@@ -124,6 +124,12 @@ final class MacUITreeTests: XCTestCase {
         XCTAssertTrue(expanded.contains(#"e5 AXMenuItem "Save""#))
     }
 
+    func testMultilineValuesRenderOnOneLine() {
+        let tree = UITree(generation: 1, bundleId: "app", root: wrap("e1", "AXGroup", [text("e2", "Board test\n\nNaseem batched this")]))
+        let line = tree.renderCompact().split(separator: "\n").last!
+        XCTAssertTrue(line.contains("value=Board test ⏎  ⏎ Naseem batched this"), String(line))
+    }
+
     func testLongValuesAreClipped() {
         let long = String(repeating: "x", count: 1000)
         let tree = UITree(generation: 1, bundleId: "app", root: wrap("e1", "AXGroup", [text("e2", long)]))

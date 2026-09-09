@@ -435,6 +435,19 @@ public actor AXClient: AXDriving {
                 AXUIElementCopyAttributeValue(el, kAXDescriptionAttribute as CFString, &descVal)
                 title = descVal as? String
             }
+            // A control labelled by a separate static text (AppKit's title
+            // element, e.g. "File Format:" next to a pop-up) takes that label as
+            // its title, so "File Format" resolves to the control, not the label.
+            if title == nil || title!.isEmpty {
+                var labelEl: CFTypeRef?
+                if AXUIElementCopyAttributeValue(el, kAXTitleUIElementAttribute as CFString, &labelEl) == .success, let labelEl {
+                    var lv: CFTypeRef?
+                    AXUIElementCopyAttributeValue(labelEl as! AXUIElement, kAXValueAttribute as CFString, &lv)
+                    if let s = lv as? String, !s.isEmpty {
+                        title = s.hasSuffix(":") ? String(s.dropLast()) : s
+                    }
+                }
+            }
             if let t = title, t.isEmpty { title = nil }
 
             // identifier
@@ -606,6 +619,55 @@ public actor AXClient: AXDriving {
     }
 
     // -------------------------------------------------------------------------
+    // MARK: choose (pop-up buttons, menu buttons)
+    // -------------------------------------------------------------------------
+
+    public func choose(bundleId: String, target: MacTarget, item: String) async throws -> String {
+        try checkTrust()
+        let pid = try resolvePid(bundleId: bundleId)
+        try await bringToFront(pid: pid)
+        let (el, node) = try await resolveElement(target: target, bundleId: bundleId)
+        // Open it: AXPress for pop-ups, else a mouse click (menu buttons in toolbars).
+        if node.actions.contains(kAXPressAction as String) {
+            AXUIElementPerformAction(el, kAXPressAction as CFString)
+        } else {
+            let p = try visiblePoint(of: el, fallback: node.frame)
+            postMouseClick(at: p)
+        }
+        try await Task.sleep(nanoseconds: 350_000_000)
+        // The open menu is a child of the element (pop-ups) or of the app (menu buttons).
+        var seen: [(String, AXUIElement)] = []
+        func collect(_ e: AXUIElement, _ depth: Int) {
+            guard depth < 8 else { return }
+            var r: CFTypeRef?; AXUIElementCopyAttributeValue(e, kAXRoleAttribute as CFString, &r)
+            if (r as? String) == "AXMenuBar" { return }          // the app's menus are not the open pop-up
+            if (r as? String) == "AXMenuItem" {
+                var t: CFTypeRef?; AXUIElementCopyAttributeValue(e, kAXTitleAttribute as CFString, &t)
+                if let title = t as? String, !title.isEmpty { seen.append((title, e)) }
+            }
+            var c: CFTypeRef?; AXUIElementCopyAttributeValue(e, kAXChildrenAttribute as CFString, &c)
+            for child in (c as? [AXUIElement]) ?? [] { collect(child, depth + 1) }
+        }
+        collect(el, 0)
+        if seen.isEmpty { collect(AXUIElementCreateApplication(pid), 0) }
+        let match = seen.first { $0.0 == item }
+            ?? seen.first { $0.0.caseInsensitiveCompare(item) == .orderedSame }
+            ?? seen.first { $0.0.range(of: item, options: .caseInsensitive) != nil }
+        guard let match else {
+            postKeyPress(keyCode: 53, flags: [])   // Escape: leave no menu hanging open
+            let list = seen.map(\.0).prefix(30).joined(separator: " | ")
+            throw MacDriverError(code: "no_such_item",
+                                 message: "No item '\(item)' in that menu. Items: \(list.isEmpty ? "(none visible)" : list)")
+        }
+        let r = AXUIElementPerformAction(match.1, kAXPressAction as CFString)
+        guard r == .success else {
+            postKeyPress(keyCode: 53, flags: [])
+            throw MacDriverError(code: "ax_error", message: "Could not choose '\(match.0)' (\(r.rawValue)).")
+        }
+        return "Chose '\(match.0)'."
+    }
+
+    // -------------------------------------------------------------------------
     // MARK: scroll
     // -------------------------------------------------------------------------
 
@@ -723,15 +785,15 @@ public actor AXClient: AXDriving {
             try await Task.sleep(nanoseconds: 50_000_000)
             if let after = axStringValue(focused) {
                 readable = true
-                if Self.contains(after, allLinesOf: text) { return true }
+                if Self.contains(after, allLinesOf: text) { commitPendingTextInput(focused); return true }
             }
             if let count = axCharCount(focused) {
                 readable = true
-                if count >= (beforeCount ?? 0) + text.count { return true }
+                if count >= (beforeCount ?? 0) + text.count { commitPendingTextInput(focused); return true }
             }
         }
         // Secure fields and some web views expose nothing to read back.
-        guard readable else { return false }
+        guard readable else { commitPendingTextInput(focused); return false }
         throw MacDriverError(code: "type_unverified",
                              message: "The keystrokes were sent but the focused \(role(of: focused) ?? "element") "
                              + "did not receive the text. \(frontWindowSummary(pid: pid)) Click into the intended "
@@ -776,6 +838,26 @@ public actor AXClient: AXDriving {
             out = out.replacingOccurrences(of: from, with: to)
         }
         return out
+    }
+
+    /// Text views hold auto-capitalisation / autocorrect of the last word until
+    /// the NEXT key event, and that commit collapses whatever selection the next
+    /// command just made (⌘A right after typing selected nothing — verified in
+    /// TextEdit). A caret move commits it harmlessly: Right at the end of the
+    /// text is a no-op; elsewhere Right then Left leaves the caret where it was.
+    private func commitPendingTextInput(_ el: AXUIElement) {
+        var atEnd = true
+        var rangeVal: CFTypeRef?
+        if AXUIElementCopyAttributeValue(el, kAXSelectedTextRangeAttribute as CFString, &rangeVal) == .success,
+           let rangeVal, CFGetTypeID(rangeVal) == AXValueGetTypeID() {
+            var r = CFRange()
+            if AXValueGetValue(rangeVal as! AXValue, .cfRange, &r), let count = axCharCount(el) {
+                atEnd = r.location + r.length >= count
+            }
+        }
+        postKeyPress(keyCode: 124, flags: [])            // →
+        if !atEnd { usleep(20_000); postKeyPress(keyCode: 123, flags: []) }   // ← back to where we were
+        usleep(60_000)
     }
 
     /// Roles whose focused element accepts typed text.
@@ -875,6 +957,7 @@ public actor AXClient: AXDriving {
             }
             parsed.append(p)
         }
+        try await Task.sleep(nanoseconds: 250_000_000)   // let a preceding edit settle (autocorrect, focus)
         for (i, (keyCode, flags)) in parsed.enumerated() {
             postKeyPress(keyCode: keyCode, flags: flags)
             // A copy needs time to reach the pasteboard before the next combo pastes it.
@@ -1141,13 +1224,24 @@ public actor AXClient: AXDriving {
         _ node: UINode,
         target: MacTarget
     ) -> (AXUIElement, UINode)? {
+        // Controls first at every stage: "File Format" must resolve to the
+        // pop-up button, not the static label that precedes it in the tree.
         for stage in 0..<3 {
-            if let found = find(node, target: target, stage: stage) { return found }
+            if let found = find(node, target: target, stage: stage, controlsOnly: true) { return found }
+        }
+        for stage in 0..<3 {
+            if let found = find(node, target: target, stage: stage, controlsOnly: false) { return found }
         }
         return nil
     }
 
-    private func find(_ node: UINode, target: MacTarget, stage: Int) -> (AXUIElement, UINode)? {
+    private static func isControl(_ node: UINode) -> Bool {
+        UITree.interactiveRoles.contains(node.role) || node.role == "AXRow" || node.role == "AXCell"
+            || node.role == "AXMenuItem" || node.role == "AXMenuBarItem" || node.role == "AXTab"
+            || node.actions.contains(kAXPressAction as String)
+    }
+
+    private func find(_ node: UINode, target: MacTarget, stage: Int, controlsOnly: Bool) -> (AXUIElement, UINode)? {
         func textMatch(_ candidate: String?, _ wanted: String) -> Bool {
             guard let c = candidate else { return false }
             switch stage {
@@ -1161,11 +1255,11 @@ public actor AXClient: AXDriving {
         let titleMatch = target.title.map      { textMatch(node.title, $0) || textMatch(node.value, $0) } ?? true
         let idMatch    = target.identifier.map { textMatch(node.identifier, $0) } ?? true
         let refMatch   = target.ref.map        { node.ref == $0 } ?? true
-        if titleMatch && idMatch && refMatch, let box = refCache[node.ref] {
+        if titleMatch && idMatch && refMatch, !controlsOnly || Self.isControl(node), let box = refCache[node.ref] {
             return (box.element, node)
         }
         for child in node.children {
-            if let found = find(child, target: target, stage: stage) { return found }
+            if let found = find(child, target: target, stage: stage, controlsOnly: controlsOnly) { return found }
         }
         return nil
     }

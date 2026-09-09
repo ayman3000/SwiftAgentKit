@@ -29,12 +29,14 @@ Task {
         tree = try await client.snapshot(bundleId: "com.apple.TextEdit")
         let body = tree.renderCompact()
         check("replace wipes previous text", v2 && body.contains("replaced") && !body.contains("first line"), String(body.split(separator: "\n").first(where: { $0.contains("AXTextArea") }) ?? ""))
-        // Key sequence: select all + copy, then paste doubles the text.
-        try await client.key(bundleId: "com.apple.TextEdit", keys: "cmd+a, cmd+c, right, cmd+v")
-        try await Task.sleep(nanoseconds: 1_000_000_000)
+        // Key sequence with a visible effect and no clipboard use: select all, delete, then type.
+        try await client.key(bundleId: "com.apple.TextEdit", keys: "cmd+a, delete")
+        let v3 = try await client.type(bundleId: "com.apple.TextEdit", text: "sequence ok", target: nil, replace: false)
         tree = try await client.snapshot(bundleId: "com.apple.TextEdit")
-        let seqLine = tree.renderCompact().split(separator: "\n").first(where: { $0.contains("AXTextArea") && $0.contains("value=") }).map(String.init) ?? "<no text area with value>"
-        check("key sequence (select, copy, paste)", tree.renderCompact().contains("replacedreplaced"), seqLine)
+        let seqLine = tree.renderCompact().split(separator: "\n").first(where: { $0.contains("AXTextArea") && $0.contains("value=") }).map(String.init) ?? "<no text area>"
+        check("key sequence (select all, delete, then type)", v3 && seqLine.contains("value=Sequence ok") || seqLine.contains("value=sequence ok"), seqLine)
+        try await client.type(bundleId: "com.apple.TextEdit", text: "replaced", target: nil, replace: true)
+        tree = try await client.snapshot(bundleId: "com.apple.TextEdit")
         // Filtered read finds the text area only.
         let m = tree.renderMatches("replaced")
         check("mac_ui filter", m.contains("AXTextArea") && m.split(separator: "\n").count <= 4, m.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -63,6 +65,14 @@ Task {
             "filter": "batch",
         ])
         check("mac_run batch of four", !rr.isError && rr.result.contains("2. type") && rr.result.contains("typed, verified") && rr.result.contains("4. wait") && rr.result.contains("batch one"), rr.result.split(separator: "\n").prefix(5).joined(separator: " | "))
+        // 1c. choose: open the Save sheet's File Format pop-up and pick an item by title, then cancel.
+        try await client.key(bundleId: "com.apple.TextEdit", keys: "cmd+s"); try await Task.sleep(nanoseconds: 900_000_000)
+        var chose = ""
+        do { chose = try await client.choose(bundleId: "com.apple.TextEdit", target: MacTarget(title: "File Format"), item: "Web Page") } catch { chose = "ERROR \(error)" }
+        try await Task.sleep(nanoseconds: 400_000_000)
+        let sheet = try await client.snapshot(bundleId: "com.apple.TextEdit").renderMatches("Web Page")
+        check("choose picks a pop-up item by title", chose.hasPrefix("Chose") && sheet.contains("AXPopUpButton"), chose + " | " + sheet.split(separator: "\n").dropFirst().prefix(1).joined())
+        try await client.key(bundleId: "com.apple.TextEdit", keys: "escape"); try await Task.sleep(nanoseconds: 500_000_000)
         try await client.key(bundleId: "com.apple.TextEdit", keys: "cmd+w"); try await Task.sleep(nanoseconds: 600_000_000)
         _ = try? await client.click(bundleId: "com.apple.TextEdit", target: MacTarget(title: "Delete"), options: MacClickOptions())
 

@@ -17,6 +17,7 @@ final class MockAX: AXDriving, @unchecked Sendable {
     func type(bundleId: String, text: String, target: MacTarget?, replace: Bool) async throws -> Bool { lastCall = "type:\(text)\(replace ? ":replace" : "")"; if let e = errorToThrow { throw e }; return true }
     func key(bundleId: String, keys: String) async throws { lastCall = "key:\(keys)"; if let e = errorToThrow { throw e } }
     func scroll(bundleId: String, target: MacTarget?, direction: String, amount: Int) async throws { lastCall = "scroll:\(direction):\(amount)"; if let e = errorToThrow { throw e } }
+    func choose(bundleId: String, target: MacTarget, item: String) async throws -> String { lastCall = "choose:\(target.title ?? target.ref ?? "?"):\(item)"; if let e = errorToThrow { throw e }; return "Chose '\(item)'." }
     func waitFor(bundleId: String, target: MacTarget, timeoutSeconds: Double, forDisappearance: Bool) async throws -> UITree { lastCall = "wait"; if let e = errorToThrow { throw e }; return tree }
     func launch(bundleId: String) async throws { lastCall = "launch:\(bundleId)"; if let e = errorToThrow { throw e } }
     func runningApps() -> [(name: String, bundleId: String)] { [("TextEdit","com.apple.TextEdit"), ("Mail","com.apple.mail")] }
@@ -209,6 +210,22 @@ final class MacToolsTests: XCTestCase {
         XCTAssertTrue(r.isError)
         XCTAssertTrue(r.result.contains("1. type \"x\" → FAILED:") && r.result.contains("nothing editable"), r.result)
         XCTAssertTrue(r.result.contains("2 steps not run"))
+    }
+
+    func testChooseReachesTheDriverFromClickAndRun() async throws {
+        let mock = MockAX()
+        let r = try await MacClickTool(client: mock, allowlistProvider: allow)
+            .execute(parameters: ["bundle_id": "com.apple.TextEdit", "title": "File Format", "item": "Plain Text"])
+        XCTAssertEqual(mock.lastCall, "choose:File Format:Plain Text"); XCTAssertTrue(r.result.contains("Chose"))
+        let run = try await MacRunTool(client: mock, allowlistProvider: allow).execute(parameters: [
+            "bundle_id": "com.apple.TextEdit", "read_after": false,
+            "steps": [["action": "choose", "title": "File Format", "item": "Plain Text"]],
+        ])
+        XCTAssertTrue(run.result.contains("1. choose File Format → Plain Text → Chose 'Plain Text'."), run.result)
+        let bad = try await MacRunTool(client: mock, allowlistProvider: allow).execute(parameters: [
+            "bundle_id": "com.apple.TextEdit", "steps": [["action": "choose", "title": "File Format"]],
+        ])
+        XCTAssertTrue(bad.isError && bad.result.contains("needs the pop-up"))
     }
 
     func testRunValidatesStepsBeforeActing() async throws {
