@@ -83,6 +83,13 @@ final class MacToolsTests: XCTestCase {
         XCTAssertTrue(r.result.contains("autonomous mode"))
     }
 
+    func testTypedTextVerificationIsLineBased() {
+        XCTAssertTrue(AXClient.contains("Hi Naseem\nBye", allLinesOf: "\nBye"))
+        XCTAssertTrue(AXClient.contains("Hi Naseem\u{2029}Bye", allLinesOf: "Hi Naseem\nBye"))
+        XCTAssertFalse(AXClient.contains("Hi Naseem\n", allLinesOf: "\nBye"), "a bare newline is not the text")
+        XCTAssertTrue(AXClient.contains("anything", allLinesOf: "\n"), "only control characters: nothing to check")
+    }
+
     func testEditableRolesCoverTextInputs() {
         for r in ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField", "AXWebArea"] {
             XCTAssertTrue(AXClient.editableRoles.contains(r), r)

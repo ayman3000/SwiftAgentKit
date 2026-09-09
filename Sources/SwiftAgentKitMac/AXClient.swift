@@ -140,7 +140,23 @@ private func postMouseClick(at point: CGPoint) {
     up?.post(tap: .cghidEventTap)
 }
 
+/// Types text. Newlines and tabs are sent as real Return/Tab key presses: a
+/// control character inside a unicode key event is handled as the key and the
+/// characters after it in the same event are dropped ("\nBye" typed only "\n").
 private func postUnicodeText(_ text: String) {
+    var run = ""
+    func flush() { if !run.isEmpty { postUnicodeRun(run); run = "" } }
+    for ch in text {
+        switch ch {
+        case "\n", "\r", "\r\n": flush(); postKeyPress(keyCode: 36, flags: []); usleep(20_000)
+        case "\t":                flush(); postKeyPress(keyCode: 48, flags: []); usleep(20_000)
+        default:                  run.append(ch)
+        }
+    }
+    flush()
+}
+
+private func postUnicodeRun(_ text: String) {
     let src    = CGEventSource(stateID: .hidSystemState)
     // Build batches from UTF-16 code units (UniChar == UInt16).
     // Using unicodeScalars and masking with 0xFFFF truncates supplementary-plane
@@ -530,7 +546,7 @@ public actor AXClient: AXDriving {
             try await Task.sleep(nanoseconds: 50_000_000)
             if let after = axStringValue(focused) {
                 readable = true
-                if after.contains(text) || (beforeText != nil && after != beforeText) { return true }
+                if Self.contains(after, allLinesOf: text) { return true }
             }
             if let count = axCharCount(focused) {
                 readable = true
@@ -543,6 +559,16 @@ public actor AXClient: AXDriving {
                              message: "The keystrokes were sent but the focused \(role(of: focused) ?? "element") "
                              + "did not receive the text. Click into the intended text field with mac_click "
                              + "(or pass its ref/title to mac_type) and try again.")
+    }
+
+    /// True when every non-blank line of `text` appears in `content`. Line by
+    /// line, because the field may turn a typed newline into a paragraph break
+    /// or styled heading and the exact string never matches.
+    static func contains(_ content: String, allLinesOf text: String) -> Bool {
+        let lines = text.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard !lines.isEmpty else { return true }
+        return lines.allSatisfy { content.contains($0) }
     }
 
     /// Roles whose focused element accepts typed text.
