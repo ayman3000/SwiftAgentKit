@@ -124,7 +124,7 @@ public struct MacTypeTool: AgentTool {
         }()
         do {
             try await client.type(bundleId: bundleId, text: text, target: target)
-            return .success(toolCallId: "", toolName: name, result: "Typed.")
+            return .success(toolCallId: "", toolName: name, result: "Typed; the focused field received the text.")
         } catch let e as MacDriverError {
             let treeText = e.tree.map { "\n\nCurrent UI:\n" + $0.renderCompact() } ?? ""
             return .error(toolCallId: "", toolName: name, message: e.localizedDescription + treeText)

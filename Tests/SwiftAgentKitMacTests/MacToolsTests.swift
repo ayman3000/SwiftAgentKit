@@ -83,6 +83,14 @@ final class MacToolsTests: XCTestCase {
         XCTAssertTrue(r.result.contains("autonomous mode"))
     }
 
+    func testEditableRolesCoverTextInputs() {
+        for r in ["AXTextField", "AXTextArea", "AXComboBox", "AXSearchField", "AXWebArea"] {
+            XCTAssertTrue(AXClient.editableRoles.contains(r), r)
+        }
+        XCTAssertFalse(AXClient.editableRoles.contains("AXButton"))
+        XCTAssertFalse(AXClient.editableRoles.contains("AXStaticText"))
+    }
+
     func testMacAppsWithNothingAllowedStillPointsAtRequesting() async throws {
         let mock = MockAX()
         let r = try await MacAppsTool(client: mock, allowlistProvider: { [] }).execute(parameters: [:])

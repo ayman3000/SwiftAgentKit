@@ -489,7 +489,7 @@ public actor AXClient: AXDriving {
 
     public func type(bundleId: String, text: String, target: MacTarget?) async throws {
         try checkTrust()
-        try resolvePid(bundleId: bundleId)
+        let pid = try resolvePid(bundleId: bundleId)
 
         if let target {
             let (el, node) = try await resolveElement(target: target, bundleId: bundleId)
@@ -502,7 +502,86 @@ public actor AXClient: AXDriving {
             try await Task.sleep(nanoseconds: 50_000_000) // 50 ms for focus to settle
         }
 
+        // Keystrokes go to the frontmost app, so make sure that is the target.
+        await bringToFront(pid: pid)
+
+        // A shortcut like ⌘N creates its editor asynchronously; typing before an
+        // editable element owns keyboard focus is swallowed with a beep.
+        guard let focused = await waitForEditableFocus(pid: pid, timeoutSeconds: 2.0) else {
+            let role = focusedRole(pid: pid) ?? "nothing"
+            throw MacDriverError(code: "no_text_focus",
+                                 message: "No editable element has keyboard focus in \(bundleId) "
+                                 + "(focused: \(role)). Click into a text field first with mac_click, "
+                                 + "or pass ref/title/identifier to mac_type.")
+        }
+        let before = axStringValue(focused)
         postUnicodeText(text)
+
+        // Verify the text landed. Some fields hide their value (secure fields,
+        // some web areas); when it cannot be read at all we accept the send.
+        guard before != nil || axStringValue(focused) != nil else { return }
+        for _ in 0..<20 {
+            try await Task.sleep(nanoseconds: 50_000_000)
+            let after = axStringValue(focused) ?? ""
+            if after.contains(text) || (before != nil && after != before) { return }
+        }
+        throw MacDriverError(code: "type_unverified",
+                             message: "The keystrokes were sent but the focused \(role(of: focused) ?? "element") "
+                             + "did not receive the text. Click into the intended text field with mac_click "
+                             + "(or pass its ref/title to mac_type) and try again.")
+    }
+
+    /// Roles whose focused element accepts typed text.
+    static let editableRoles: Set<String> = [
+        "AXTextField", "AXTextArea", "AXComboBox", "AXSearchField", "AXWebArea", "AXSecureTextField",
+    ]
+
+    private func bringToFront(pid: pid_t) async {
+        guard let app = NSRunningApplication(processIdentifier: pid), !app.isActive else { return }
+        app.activate(options: [])
+        for _ in 0..<20 where !app.isActive {          // up to 1 s
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+    }
+
+    private func focusedElement(pid: pid_t) -> AXUIElement? {
+        var ref: CFTypeRef?
+        let appEl = AXUIElementCreateApplication(pid)
+        guard AXUIElementCopyAttributeValue(appEl, kAXFocusedUIElementAttribute as CFString, &ref) == .success,
+              let ref else { return nil }
+        return (ref as! AXUIElement)
+    }
+
+    private func role(of el: AXUIElement) -> String? {
+        var v: CFTypeRef?
+        AXUIElementCopyAttributeValue(el, kAXRoleAttribute as CFString, &v)
+        return v as? String
+    }
+
+    private func focusedRole(pid: pid_t) -> String? {
+        focusedElement(pid: pid).flatMap { role(of: $0) }
+    }
+
+    private func axStringValue(_ el: AXUIElement) -> String? {
+        var v: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(el, kAXValueAttribute as CFString, &v) == .success else { return nil }
+        return v as? String
+    }
+
+    /// The focused element once it is editable: a known text role, or any
+    /// element whose value can be set. Polls for up to `timeoutSeconds`.
+    private func waitForEditableFocus(pid: pid_t, timeoutSeconds: Double) async -> AXUIElement? {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        repeat {
+            if let el = focusedElement(pid: pid) {
+                if let r = role(of: el), Self.editableRoles.contains(r) { return el }
+                var settable: DarwinBoolean = false
+                if AXUIElementIsAttributeSettable(el, kAXValueAttribute as CFString, &settable) == .success,
+                   settable.boolValue { return el }
+            }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        } while Date() < deadline
+        return nil
     }
 
     // -------------------------------------------------------------------------
@@ -511,7 +590,8 @@ public actor AXClient: AXDriving {
 
     public func key(bundleId: String, keys: String) async throws {
         try checkTrust()
-        try resolvePid(bundleId: bundleId)
+        let pid = try resolvePid(bundleId: bundleId)
+        await bringToFront(pid: pid)   // a shortcut must never land in another app
 
         guard let (keyCode, flags) = parseKeyCombo(keys) else {
             throw MacDriverError(code: "bad_key",
