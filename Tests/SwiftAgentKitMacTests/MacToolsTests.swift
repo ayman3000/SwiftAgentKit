@@ -14,7 +14,7 @@ final class MockAX: AXDriving, @unchecked Sendable {
     func isTrusted() -> Bool { trusted }
     func snapshot(bundleId: String) async throws -> UITree { lastCall = "snapshot:\(bundleId)"; if let e = errorToThrow { throw e }; return tree }
     func click(bundleId: String, target: MacTarget) async throws { lastCall = "click:\(target.ref ?? target.title ?? "?")"; if let e = errorToThrow { throw e } }
-    func type(bundleId: String, text: String, target: MacTarget?) async throws { lastCall = "type:\(text)"; if let e = errorToThrow { throw e } }
+    func type(bundleId: String, text: String, target: MacTarget?) async throws -> Bool { lastCall = "type:\(text)"; if let e = errorToThrow { throw e }; return true }
     func key(bundleId: String, keys: String) async throws { lastCall = "key:\(keys)"; if let e = errorToThrow { throw e } }
     func waitFor(bundleId: String, target: MacTarget, timeoutSeconds: Double, forDisappearance: Bool) async throws -> UITree { lastCall = "wait"; if let e = errorToThrow { throw e }; return tree }
     func launch(bundleId: String) async throws { lastCall = "launch:\(bundleId)"; if let e = errorToThrow { throw e } }

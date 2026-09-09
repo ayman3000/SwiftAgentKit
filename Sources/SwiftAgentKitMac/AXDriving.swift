@@ -5,7 +5,8 @@ public protocol AXDriving: Sendable {
     func isTrusted() -> Bool
     func snapshot(bundleId: String) async throws -> UITree
     func click(bundleId: String, target: MacTarget) async throws
-    func type(bundleId: String, text: String, target: MacTarget?) async throws
+    /// Returns true when the text was read back from the focused field.
+    func type(bundleId: String, text: String, target: MacTarget?) async throws -> Bool
     func key(bundleId: String, keys: String) async throws
     func waitFor(bundleId: String, target: MacTarget, timeoutSeconds: Double, forDisappearance: Bool) async throws -> UITree
     func launch(bundleId: String) async throws

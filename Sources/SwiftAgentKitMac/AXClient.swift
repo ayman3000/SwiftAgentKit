@@ -103,6 +103,8 @@ private func axElementFrame(_ el: AXUIElement) -> CGRect {
 private func stringifyAXValue(_ raw: CFTypeRef?) -> String? {
     guard let raw else { return nil }
     if let s = raw as? String { return s.isEmpty ? nil : s }
+    // Rich text views (Notes, TextEdit) hand back attributed strings.
+    if let a = raw as? NSAttributedString { return a.string.isEmpty ? nil : a.string }
     if let n = raw as? NSNumber { return n.stringValue }
     // Try AXValue sub-types: CGPoint / CGSize / CGRect
     if CFGetTypeID(raw) == AXValueGetTypeID() {
@@ -487,7 +489,10 @@ public actor AXClient: AXDriving {
     // MARK: type
     // -------------------------------------------------------------------------
 
-    public func type(bundleId: String, text: String, target: MacTarget?) async throws {
+    /// Returns true when the focused field was read back and contains the text;
+    /// false when it was sent but the field's content cannot be read at all.
+    /// Throws when the field could be read and the text is not there.
+    public func type(bundleId: String, text: String, target: MacTarget?) async throws -> Bool {
         try checkTrust()
         let pid = try resolvePid(bundleId: bundleId)
 
@@ -514,17 +519,26 @@ public actor AXClient: AXDriving {
                                  + "(focused: \(role)). Click into a text field first with mac_click, "
                                  + "or pass ref/title/identifier to mac_type.")
         }
-        let before = axStringValue(focused)
+        let beforeText = axStringValue(focused)
+        let beforeCount = axCharCount(focused)
         postUnicodeText(text)
 
-        // Verify the text landed. Some fields hide their value (secure fields,
-        // some web areas); when it cannot be read at all we accept the send.
-        guard before != nil || axStringValue(focused) != nil else { return }
+        // Verify the text landed: by content when the field exposes it, else by
+        // its character count (NSTextView always reports that).
+        var readable = beforeText != nil || beforeCount != nil
         for _ in 0..<20 {
             try await Task.sleep(nanoseconds: 50_000_000)
-            let after = axStringValue(focused) ?? ""
-            if after.contains(text) || (before != nil && after != before) { return }
+            if let after = axStringValue(focused) {
+                readable = true
+                if after.contains(text) || (beforeText != nil && after != beforeText) { return true }
+            }
+            if let count = axCharCount(focused) {
+                readable = true
+                if count >= (beforeCount ?? 0) + text.count { return true }
+            }
         }
+        // Secure fields and some web views expose nothing to read back.
+        guard readable else { return false }
         throw MacDriverError(code: "type_unverified",
                              message: "The keystrokes were sent but the focused \(role(of: focused) ?? "element") "
                              + "did not receive the text. Click into the intended text field with mac_click "
@@ -565,7 +579,13 @@ public actor AXClient: AXDriving {
     private func axStringValue(_ el: AXUIElement) -> String? {
         var v: CFTypeRef?
         guard AXUIElementCopyAttributeValue(el, kAXValueAttribute as CFString, &v) == .success else { return nil }
-        return v as? String
+        return stringifyAXValue(v)
+    }
+
+    private func axCharCount(_ el: AXUIElement) -> Int? {
+        var v: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(el, kAXNumberOfCharactersAttribute as CFString, &v) == .success else { return nil }
+        return (v as? NSNumber)?.intValue
     }
 
     /// The focused element once it is editable: a known text role, or any

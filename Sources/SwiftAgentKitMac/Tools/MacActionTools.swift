@@ -123,8 +123,10 @@ public struct MacTypeTool: AgentTool {
             return (t.ref != nil || t.title != nil || t.identifier != nil) ? t : nil
         }()
         do {
-            try await client.type(bundleId: bundleId, text: text, target: target)
-            return .success(toolCallId: "", toolName: name, result: "Typed; the focused field received the text.")
+            let verified = try await client.type(bundleId: bundleId, text: text, target: target)
+            return .success(toolCallId: "", toolName: name, result: verified
+                ? "Typed; the focused field now contains the text. No need to re-check or retype."
+                : "Typed; sent to the focused field, whose content cannot be read back. Confirm with mac_ui only if it matters.")
         } catch let e as MacDriverError {
             let treeText = e.tree.map { "\n\nCurrent UI:\n" + $0.renderCompact() } ?? ""
             return .error(toolCallId: "", toolName: name, message: e.localizedDescription + treeText)
