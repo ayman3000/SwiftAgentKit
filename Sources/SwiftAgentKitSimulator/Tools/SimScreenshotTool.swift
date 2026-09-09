@@ -8,8 +8,9 @@ import LLMProviderKit
 public struct SimScreenshotTool: AgentTool {
     public let name = "sim_screenshot"
     public let description = """
-    Screenshot the simulator screen as an image. Slower than sim_ui and needs a \
-    vision-capable model — use only when layout/appearance matters or sim_ui is ambiguous.
+    Screenshot the iOS SIMULATOR screen as an image. Simulator only — it cannot see \
+    Mac apps; for a Mac app read the window with mac_ui instead. Slower than sim_ui and \
+    needs a vision-capable model — use only when layout/appearance matters or sim_ui is ambiguous.
     """
     public let parameters = ToolParameters(properties: [:], required: [])
     let client: any SimDriving

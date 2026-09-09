@@ -60,9 +60,10 @@ public struct MacUITool: AgentTool {
     Read the accessibility tree of a native macOS app (element refs, roles, titles, \
     values, available actions). Use this to see and navigate GUI-only apps that have \
     no CLI/API. Prefer this over guessing coordinates. Refs are valid only until the \
-    next snapshot (each tree shows its generation). An app not yet allowed for this \
-    conversation is requested on first use (automatic in autonomous mode, otherwise \
-    the user is asked once).
+    next snapshot (each tree shows its generation). This is how you see a Mac app: \
+    there is no Mac screenshot tool, and sim_* tools only see the iOS Simulator. An app \
+    not yet allowed for this conversation is requested on first use (automatic in \
+    autonomous mode, otherwise the user is asked once).
     """
     public let parameters = ToolParameters(
         properties: [

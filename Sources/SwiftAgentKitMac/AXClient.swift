@@ -497,16 +497,28 @@ public actor AXClient: AXDriving {
 
     public func click(bundleId: String, target: MacTarget) async throws {
         try checkTrust()
-        try resolvePid(bundleId: bundleId)
+        let pid = try resolvePid(bundleId: bundleId)
 
         let (el, node) = try await resolveElement(target: target, bundleId: bundleId)
 
         if node.actions.contains(kAXPressAction as String) {
+            let windowBefore = focusedWindow(pid: pid)
             let result = AXUIElementPerformAction(el, kAXPressAction as CFString)
-            if result != .success {
+            if result == .success { return }
+            // Office apps return an error for presses that did take effect, and
+            // a retry then repeats the action (three blank Word documents). If
+            // the UI moved on — the focused window changed or the element is
+            // gone — the press worked. Otherwise click with the mouse instead.
+            try await Task.sleep(nanoseconds: 300_000_000)
+            if !isValid(el) { return }
+            if let before = windowBefore, let after = focusedWindow(pid: pid), !CFEqual(before, after) { return }
+            if windowBefore == nil, focusedWindow(pid: pid) != nil { return }
+            let center = CGPoint(x: node.frame.midX, y: node.frame.midY)
+            guard node.frame.width > 0, node.frame.height > 0 else {
                 throw MacDriverError(code: "ax_error",
-                                     message: "AXPress failed: \(result.rawValue)")
+                                     message: "AXPress failed: \(result.rawValue), and the element has no on-screen frame to click.")
             }
+            postMouseClick(at: center)
             return
         }
         // Rows and other selectable items: select through accessibility. A
@@ -515,6 +527,18 @@ public actor AXClient: AXDriving {
         if Self.selectViaAccessibility(el) { return }
         let center = CGPoint(x: node.frame.midX, y: node.frame.midY)
         postMouseClick(at: center)
+    }
+
+    private func focusedWindow(pid: pid_t) -> AXUIElement? {
+        var v: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid), kAXFocusedWindowAttribute as CFString, &v) == .success,
+              let v else { return nil }
+        return (v as! AXUIElement)
+    }
+
+    private func isValid(_ el: AXUIElement) -> Bool {
+        var v: CFTypeRef?
+        return AXUIElementCopyAttributeValue(el, kAXRoleAttribute as CFString, &v) != .invalidUIElement
     }
 
     /// Sets AXSelected on an element that allows it and confirms the app took it.
