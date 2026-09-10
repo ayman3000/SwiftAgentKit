@@ -50,7 +50,7 @@ struct MacRunStep: Equatable {
         case .scroll:
             if s.direction == nil { return .failure(ParseError(message: "step \(index + 1) (scroll): needs direction")) }
         case .wait:
-            if s.target == nil { return .failure(ParseError(message: "step \(index + 1) (wait): needs title or identifier")) }
+            break   // no target = a short pause for the UI to settle (see run)
         case .launch:
             break
         }
@@ -85,7 +85,8 @@ public struct MacRunTool: AgentTool {
     as in mac_type and mac_click. Refs from your last mac_ui are valid until a `wait` \
     step (which re-reads the window); after that target by title or identifier. The \
     result lists what each step did and ends with the window as it is now, so you do \
-    not need a separate mac_ui afterwards.
+    not need a separate mac_ui afterwards. A `wait` without a title/identifier is a \
+    short pause (timeout_seconds, max 5) for the UI to settle.
     """
     public let parameters = ToolParameters(
         properties: [
@@ -187,7 +188,15 @@ public struct MacRunTool: AgentTool {
             try await client.scroll(bundleId: bundleId, target: step.target, direction: step.direction!, amount: step.amount)
             return "scrolled"
         case .wait:
-            lastTree = try await client.waitFor(bundleId: bundleId, target: step.target!,
+            guard let target = step.target else {
+                // Models often write a bare wait after an action; treat it as a
+                // bounded pause rather than an error, then re-read the window.
+                let seconds = min(max(step.timeoutSeconds, 0.2), 5.0)
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                lastTree = try await client.snapshot(bundleId: bundleId)
+                return "paused \(String(format: "%.1f", seconds)) s"
+            }
+            lastTree = try await client.waitFor(bundleId: bundleId, target: target,
                                                 timeoutSeconds: step.timeoutSeconds, forDisappearance: step.forDisappearance)
             return step.forDisappearance ? "gone" : "appeared"
         case .launch:
