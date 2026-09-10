@@ -144,6 +144,9 @@ final class MacToolsTests: XCTestCase {
         XCTAssertTrue(none.result.contains("No installed app"))
         let hits = AppResolver.installedApps(matching: "TextEdit")
         XCTAssertEqual(hits.first?.bundleId, "com.apple.TextEdit")
+        XCTAssertTrue(AppResolver.isScriptable(appAt: hits.first!.path), "TextEdit has a scripting dictionary")
+        XCTAssertTrue(r.result.contains("scriptable"))
+        XCTAssertFalse(AppResolver.isScriptable(appAt: "/nonexistent.app"))
     }
 
     func testMacAppsWithNothingAllowedStillPointsAtRequesting() async throws {

@@ -13,9 +13,11 @@ public struct MacAppsTool: AgentTool {
     public let description = """
     List the native macOS apps running on this Mac: the ones already allowed for this \
     conversation, and the ones you can still request. Pass `name` to look up an INSTALLED \
-    app by name whether or not it is running (e.g. name: "Kommanda" → its bundle id and \
-    path) — this is how you get a bundle id you do not know; never search the disk for \
-    it. Use the bundle IDs here with the other mac_* tools. To use an app that is not yet \
+    app by name whether or not it is running (e.g. name: "Kommanda" → its bundle id, \
+    path, and whether it is SCRIPTABLE) — this is how you get a bundle id you do not \
+    know; never search the disk for it. Scriptable = it answers AppleScript, so a data \
+    job can be one osascript call; not scriptable = drive it with the mac_* tools. Use \
+    the bundle IDs here with the other mac_* tools. To use an app that is not yet \
     allowed, just call the mac_* tool you need (mac_launch, mac_ui, ...) with its bundle \
     id: access is granted automatically in autonomous mode, otherwise the user is asked \
     once.
@@ -44,7 +46,10 @@ public struct MacAppsTool: AgentTool {
                 return .success(toolCallId: "", toolName: self.name,
                                 result: "No installed app named like \"\(name)\" in the Applications folders. Check the spelling, or ask the user where it is.")
             }
-            let lines = hits.prefix(6).map { "\($0.name) — \($0.bundleId) (\($0.path))" }
+            let lines = hits.prefix(6).map {
+                "\($0.name) — \($0.bundleId) (\($0.path)) — "
+                + (AppResolver.isScriptable(appAt: $0.path) ? "scriptable: AppleScript works for data jobs" : "not scriptable: use the mac_* tools")
+            }
             return .success(toolCallId: "", toolName: self.name,
                             result: "Installed apps matching \"\(name)\":\n" + lines.joined(separator: "\n")
                             + "\nLaunch with mac_launch and the bundle id.")

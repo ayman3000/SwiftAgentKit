@@ -25,6 +25,22 @@ public enum AppResolver {
         NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first?.processIdentifier
     }
 
+    /// Whether the app at `path` answers AppleScript: it declares scripting in
+    /// its Info.plist (NSAppleScriptEnabled / OSAScriptingDefinition) or ships
+    /// a scripting definition file. Apple's own apps mostly do; most third-party
+    /// apps do not, and those must be driven through the mac_* tools.
+    public static func isScriptable(appAt path: String) -> Bool {
+        guard let bundle = Bundle(path: path) else { return false }
+        let info = bundle.infoDictionary ?? [:]
+        if let flag = info["NSAppleScriptEnabled"] as? Bool, flag { return true }
+        if let flag = info["NSAppleScriptEnabled"] as? String, flag.lowercased() == "yes" { return true }
+        if info["OSAScriptingDefinition"] != nil { return true }
+        let resources = path + "/Contents/Resources"
+        if let items = try? FileManager.default.contentsOfDirectory(atPath: resources),
+           items.contains(where: { $0.hasSuffix(".sdef") }) { return true }
+        return false
+    }
+
     /// Installed apps whose name contains `name` (case-insensitive), running or
     /// not: the standard app folders plus whatever is running. Best match first.
     public static func installedApps(matching name: String) -> [(name: String, bundleId: String, path: String)] {
