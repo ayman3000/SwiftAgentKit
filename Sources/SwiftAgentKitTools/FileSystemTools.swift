@@ -27,6 +27,15 @@ public struct FileReadTool: AgentTool {
         required: ["path"]
     )
 
+    public var inputExamples: [String] { [
+        #"""
+        {"path": "~/proj/app/Package.swift"}
+        """#,
+        #"""
+        {"path": "~/proj/app/logs/build.log", "offset": 200000, "limit": 20000}
+        """#
+    ] }
+
     let policy: FileToolPolicy?
 
     public init(policy: FileToolPolicy? = nil) { self.policy = policy }
@@ -73,6 +82,15 @@ public struct FileWriteTool: AgentTool {
         ],
         required: ["path", "content"]
     )
+
+    public var inputExamples: [String] { [
+        #"""
+        {"path": "~/proj/app/naseem/report.md", "content": "# Findings\n\n- The retry loop never resets its counter.\n"}
+        """#,
+        #"""
+        {"path": "~/proj/app/naseem/log.txt", "content": "run finished\n", "append": true}
+        """#
+    ] }
 
     public var requiresConfirmation: Bool { true }
 
@@ -162,6 +180,12 @@ public struct PatchFileTool: AgentTool {
         ],
         required: ["path", "patch"]
     )
+
+    public var inputExamples: [String] { [
+        #"""
+        {"path": "~/proj/app/Sources/Login.swift", "patch": "--- a/Sources/Login.swift\n+++ b/Sources/Login.swift\n@@ -12,7 +12,7 @@ struct Login {\n     func submit() {\n-        guard !email.isEmpty else { return }\n+        guard !email.isEmpty, email.contains(\"@\") else { return }\n         send()\n     }"}
+        """#
+    ] }
 
     public var requiresConfirmation: Bool { true }
 
@@ -299,6 +323,15 @@ public struct SearchFilesTool: AgentTool {
         ],
         required: ["directory"]
     )
+
+    public var inputExamples: [String] { [
+        #"""
+        {"directory": "~/proj/app", "name": ".swift", "contains": "URLSession", "max_results": 40}
+        """#,
+        #"""
+        {"directory": "~/proj/app/Sources", "name": "ViewModel"}
+        """#
+    ] }
 
     private let fileScanCap = 20_000
 

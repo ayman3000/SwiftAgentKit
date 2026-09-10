@@ -57,6 +57,14 @@ public protocol AgentTool: Sendable {
     /// Default is `false`. Override for dangerous tools (delete, shell, etc.).
     var requiresConfirmation: Bool { get }
 
+    /// One or two REAL calls, as JSON objects of the arguments only. A schema
+    /// says a field is a string; an example shows the date format, how an id is
+    /// written, and which optional fields belong together — the things a model
+    /// otherwise guesses. They are appended to the description that reaches the
+    /// model, so they work on every provider, not just the ones with a native
+    /// examples field. Keep them short and genuinely representative.
+    var inputExamples: [String] { get }
+
     /// Whether this tool only observes (reads a file, searches, inspects a
     /// window) and never changes anything. Default `false`. A batch of calls the
     /// model issues in one turn runs concurrently only when EVERY call is
@@ -91,6 +99,15 @@ public extension AgentTool {
 public extension AgentTool {
     var requiresConfirmation: Bool { false }
     var isReadOnly: Bool { false }
+    var inputExamples: [String] { [] }
+
+    /// The description the model actually receives: the prose, plus any
+    /// examples rendered underneath it.
+    var describedForModel: String {
+        guard !inputExamples.isEmpty else { return description }
+        let header = inputExamples.count == 1 ? "Example call:" : "Example calls:"
+        return description + "\n\n" + header + "\n" + inputExamples.joined(separator: "\n")
+    }
 }
 
 // MARK: - Tool Schema Types

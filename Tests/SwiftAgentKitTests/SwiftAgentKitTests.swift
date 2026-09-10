@@ -2837,3 +2837,31 @@ private struct SlowTool: AgentTool {
     #expect(results.map(\.result) == ["write_b", "read_a"], "model order preserved")
     #expect(elapsed >= 0.55, "a write in the batch forces sequential execution, took \(elapsed)")
 }
+
+// MARK: - Tool use examples
+
+private struct ExampleTool: AgentTool {
+    let name = "example_tool"
+    let description = "Does a thing."
+    let parameters = ToolParameters.empty
+    var inputExamples: [String] { [#"{"a": 1}"#, #"{"a": 2, "b": "x"}"#] }
+    func execute(parameters: [String: Any]) async throws -> AgentToolResult { .success(toolCallId: "", toolName: name, result: "") }
+}
+
+private struct PlainTool: AgentTool {
+    let name = "plain_tool"
+    let description = "Does a thing."
+    let parameters = ToolParameters.empty
+    func execute(parameters: [String: Any]) async throws -> AgentToolResult { .success(toolCallId: "", toolName: name, result: "") }
+}
+
+@Test func testExamplesAreAppendedToTheDescriptionTheModelSees() {
+    let described = ExampleTool().describedForModel
+    #expect(described.hasPrefix("Does a thing."))
+    #expect(described.contains("Example calls:"))
+    #expect(described.contains(#"{"a": 1}"#))
+    #expect(described.contains(#"{"a": 2, "b": "x"}"#))
+    // A tool without examples is untouched — no empty header.
+    #expect(PlainTool().describedForModel == "Does a thing.")
+}
+

@@ -124,6 +124,15 @@ public struct SimTapTool: AgentTool {
                 description: "Return the resulting slim UI tree (default true). Set false when batching taps."),
         ],
         required: [])
+
+    public var inputExamples: [String] { [
+        #"""
+        {"ref": "e42", "generation": 7}
+        """#,
+        #"""
+        {"label": "Sign In"}
+        """#
+    ] }
     let client: any SimDriving
     let session: SimSession
     public init(client: any SimDriving, session: SimSession) { self.client = client; self.session = session }
