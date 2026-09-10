@@ -378,6 +378,47 @@ public actor AXClient: AXDriving {
         self.callTimeout = callTimeout
     }
 
+    /// Everything a UINode needs, fetched together.
+    static let nodeAttributes: [String] = [
+        kAXRoleAttribute as String, kAXTitleAttribute as String, kAXDescriptionAttribute as String,
+        kAXIdentifierAttribute as String, kAXValueAttribute as String, kAXPositionAttribute as String,
+        kAXSizeAttribute as String, kAXEnabledAttribute as String,
+    ]
+
+    /// One IPC round trip for many attributes. Unsupported ones come back as an
+    /// AXValue wrapping an AXError; those are dropped so callers see only real
+    /// values. Falls back to per-attribute reads if the bulk call is refused.
+    private func copyAttributes(_ el: AXUIElement, _ names: [String]) -> [String: Any] {
+        var out: [String: Any] = [:]
+        var values: CFArray?
+        let err = AXUIElementCopyMultipleAttributeValues(el, names as CFArray, AXCopyMultipleAttributeOptions(), &values)
+        if err == .success, let values = values as? [CFTypeRef], values.count == names.count {
+            for (name, raw) in zip(names, values) {
+                if CFGetTypeID(raw) == AXValueGetTypeID(),
+                   AXValueGetType(raw as! AXValue) == .axError { continue }   // attribute unsupported here
+                out[name] = raw
+            }
+            return out
+        }
+        for name in names {
+            var v: CFTypeRef?
+            if AXUIElementCopyAttributeValue(el, name as CFString, &v) == .success, let v { out[name] = v }
+        }
+        return out
+    }
+
+    /// CGRect from position/size AXValues already fetched in the bulk call.
+    private func frameFrom(position: Any?, size: Any?) -> CGRect {
+        var origin = CGPoint.zero, extent = CGSize.zero
+        if let position, CFGetTypeID(position as CFTypeRef) == AXValueGetTypeID() {
+            AXValueGetValue(position as! AXValue, .cgPoint, &origin)
+        }
+        if let size, CFGetTypeID(size as CFTypeRef) == AXValueGetTypeID() {
+            AXValueGetValue(size as! AXValue, .cgSize, &extent)
+        }
+        return CGRect(origin: origin, size: extent)
+    }
+
     // -------------------------------------------------------------------------
     // MARK: isTrusted (nonisolated — no actor state needed)
     // -------------------------------------------------------------------------
@@ -421,19 +462,16 @@ public actor AXClient: AXDriving {
             let refStr = "e\(counter)"
             refCache[refStr] = AXElementBox(el)
 
-            // role
-            var roleVal: CFTypeRef?
-            AXUIElementCopyAttributeValue(el, kAXRoleAttribute as CFString, &roleVal)
-            let role = (roleVal as? String) ?? "unknown"
+            // ONE round trip for the eight attributes every node needs. Read
+            // one at a time this cost ~11 IPC calls per node; a 2000-node
+            // window (a file browser, an Open panel) took over ten seconds.
+            let attrs = copyAttributes(el, Self.nodeAttributes)
+            let role = (attrs[kAXRoleAttribute as String] as? String) ?? "unknown"
 
             // title (fallback to kAXDescriptionAttribute)
-            var titleVal: CFTypeRef?
-            AXUIElementCopyAttributeValue(el, kAXTitleAttribute as CFString, &titleVal)
-            var title = titleVal as? String
+            var title = attrs[kAXTitleAttribute as String] as? String
             if title == nil || title!.isEmpty {
-                var descVal: CFTypeRef?
-                AXUIElementCopyAttributeValue(el, kAXDescriptionAttribute as CFString, &descVal)
-                title = descVal as? String
+                title = attrs[kAXDescriptionAttribute as String] as? String
             }
             // A control labelled by a separate static text (AppKit's title
             // element, e.g. "File Format:" next to a pop-up) takes that label as
@@ -450,23 +488,12 @@ public actor AXClient: AXDriving {
             }
             if let t = title, t.isEmpty { title = nil }
 
-            // identifier
-            var idVal: CFTypeRef?
-            AXUIElementCopyAttributeValue(el, kAXIdentifierAttribute as CFString, &idVal)
-            let identifier = idVal as? String
-
-            // value (stringify)
-            var valueAttr: CFTypeRef?
-            AXUIElementCopyAttributeValue(el, kAXValueAttribute as CFString, &valueAttr)
-            let value: String? = stringifyAXValue(valueAttr)
-
+            let identifier = attrs[kAXIdentifierAttribute as String] as? String
+            let value: String? = stringifyAXValue(attrs[kAXValueAttribute as String] as CFTypeRef?)
             // frame (position + size — kAXFrameAttribute does not exist)
-            let frame = axElementFrame(el)
-
-            // isEnabled
-            var enabledVal: CFTypeRef?
-            AXUIElementCopyAttributeValue(el, kAXEnabledAttribute as CFString, &enabledVal)
-            let isEnabled = (enabledVal as? Bool) ?? true
+            let frame = frameFrom(position: attrs[kAXPositionAttribute as String],
+                                  size: attrs[kAXSizeAttribute as String])
+            let isEnabled = (attrs[kAXEnabledAttribute as String] as? Bool) ?? true
 
             // actions
             var actionsVal: CFArray?
@@ -947,6 +974,7 @@ public actor AXClient: AXDriving {
         let pid = try resolvePid(bundleId: bundleId)
         try await bringToFront(pid: pid)   // a shortcut must never land in another app
 
+        try await Task.sleep(nanoseconds: 250_000_000)   // let a preceding edit settle (autocorrect, focus)
         let combos = keys.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         guard !combos.isEmpty else { throw MacDriverError(code: "bad_key", message: "No key given.") }
         var parsed: [(CGKeyCode, CGEventFlags)] = []
@@ -957,7 +985,6 @@ public actor AXClient: AXDriving {
             }
             parsed.append(p)
         }
-        try await Task.sleep(nanoseconds: 250_000_000)   // let a preceding edit settle (autocorrect, focus)
         for (i, (keyCode, flags)) in parsed.enumerated() {
             postKeyPress(keyCode: keyCode, flags: flags)
             // A copy needs time to reach the pasteboard before the next combo pastes it.
