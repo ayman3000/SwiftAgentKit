@@ -955,6 +955,7 @@ actor OverlapRecorder {
 }
 
 struct DelayTool: AgentTool {
+    var isReadOnly: Bool { true }   // a pure delay: the parallel test needs a read-only batch
     let name: String
     var recorder: OverlapRecorder? = nil
     let description = "Echoes with a small delay."
@@ -2793,4 +2794,46 @@ private func completedShellExchange(id i: Int, size: Int) -> [AgentMessage] {
     #expect(ledgerLines >= 5)
     // Inline tool results that remain: at most one exchange.
     #expect(out.filter { $0.role == .tool }.count <= 1)
+}
+
+// MARK: - Parallel dispatch is limited to read-only batches
+
+private struct SlowTool: AgentTool {
+    let name: String
+    let readOnly: Bool
+    var description: String { "sleeps" }
+    var parameters: ToolParameters { .empty }
+    var isReadOnly: Bool { readOnly }
+    func execute(parameters: [String: Any]) async throws -> AgentToolResult {
+        try await Task.sleep(nanoseconds: 300_000_000)
+        return .success(toolCallId: "", toolName: name, result: name)
+    }
+}
+
+@Test func testReadOnlyBatchRunsConcurrently() async {
+    let registry = ToolRegistry()
+    await registry.register(SlowTool(name: "read_a", readOnly: true))
+    await registry.register(SlowTool(name: "read_b", readOnly: true))
+    let dispatcher = ToolDispatcher(registry: registry)
+    let start = Date()
+    let results = await dispatcher.dispatch(
+        calls: [AgentToolCall(name: "read_a", parameters: [:]), AgentToolCall(name: "read_b", parameters: [:])],
+        state: AgentState(), parallel: true, observer: nil)
+    let elapsed = Date().timeIntervalSince(start)
+    #expect(results.map(\.result) == ["read_a", "read_b"])
+    #expect(elapsed < 0.55, "two 300 ms reads should overlap, took \(elapsed)")
+}
+
+@Test func testBatchWithAnyWriteRunsInOrder() async {
+    let registry = ToolRegistry()
+    await registry.register(SlowTool(name: "read_a", readOnly: true))
+    await registry.register(SlowTool(name: "write_b", readOnly: false))
+    let dispatcher = ToolDispatcher(registry: registry)
+    let start = Date()
+    let results = await dispatcher.dispatch(
+        calls: [AgentToolCall(name: "write_b", parameters: [:]), AgentToolCall(name: "read_a", parameters: [:])],
+        state: AgentState(), parallel: true, observer: nil)
+    let elapsed = Date().timeIntervalSince(start)
+    #expect(results.map(\.result) == ["write_b", "read_a"], "model order preserved")
+    #expect(elapsed >= 0.55, "a write in the batch forces sequential execution, took \(elapsed)")
 }

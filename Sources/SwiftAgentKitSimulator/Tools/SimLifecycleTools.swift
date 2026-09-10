@@ -7,6 +7,7 @@ import SwiftAgentKit
 /// Lists available iOS simulators (no confirmation needed — read-only).
 public struct SimListTool: AgentTool {
     public let name = "sim_list"
+    public var isReadOnly: Bool { true }
     public let description = """
     List all available iOS simulators with their UDID, name, runtime, and boot state. \
     Use this to find a device to boot before launching an app.

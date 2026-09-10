@@ -13,6 +13,7 @@ import SwiftAgentKit
 /// Read a UTF-8 text file. Unconfirmed (read-only). Pages large files.
 public struct FileReadTool: AgentTool {
     public let name = "read_file"
+    public var isReadOnly: Bool { true }
     public let description = """
     Read a UTF-8 text file and return its contents. Use `offset` and `limit` to \
     page through large files.
@@ -236,6 +237,7 @@ public struct PatchFileTool: AgentTool {
 /// List a directory's entries. Unconfirmed (read-only).
 public struct ListDirTool: AgentTool {
     public let name = "list_dir"
+    public var isReadOnly: Bool { true }
     public let description = "List a directory's entries. Directories are marked with a trailing slash."
     public let parameters = ToolParameters(
         properties: [
@@ -283,6 +285,7 @@ public struct ListDirTool: AgentTool {
 /// Unconfirmed (read-only). Bounded to avoid runaway traversals.
 public struct SearchFilesTool: AgentTool {
     public let name = "search_files"
+    public var isReadOnly: Bool { true }
     public let description = """
     Find files under a directory. Filter by `name` (substring of the filename) \
     and/or `contains` (substring within file text). Returns matching paths.

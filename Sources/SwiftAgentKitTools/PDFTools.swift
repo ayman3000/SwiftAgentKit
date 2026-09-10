@@ -15,6 +15,7 @@ import SwiftAgentKit
 /// Report a PDF's page count and basic metadata. Unconfirmed (read-only).
 public struct PDFInfoTool: AgentTool {
     public let name = "pdf_info"
+    public var isReadOnly: Bool { true }
     public let description = "Return a PDF's page count and metadata (title, author, encryption)."
     public let parameters = ToolParameters(
         properties: ["path": ToolParameterProperty(type: "string", description: "Path to the PDF (a leading ~ is expanded).")],
@@ -46,6 +47,7 @@ public struct PDFInfoTool: AgentTool {
 /// Extract text from a PDF (optionally a 1-based page range). Unconfirmed.
 public struct PDFExtractTextTool: AgentTool {
     public let name = "pdf_extract_text"
+    public var isReadOnly: Bool { true }
     public let description = """
     Extract text from a PDF. Optionally limit to a 1-based page range with \
     `first_page` / `last_page`. Output is bounded; narrow the range for big PDFs.

@@ -10,6 +10,7 @@ import LLMProviderKit
 /// by the host (automatically in autonomous mode, otherwise by asking the user).
 public struct MacAppsTool: AgentTool {
     public let name = "mac_apps"
+    public var isReadOnly: Bool { true }
     public let description = """
     List the native macOS apps running on this Mac: the ones already allowed for this \
     conversation, and the ones you can still request. Pass `name` to look up an INSTALLED \
@@ -81,6 +82,7 @@ public struct MacAppsTool: AgentTool {
 /// Reads the live accessibility tree of a native macOS app.
 public struct MacUITool: AgentTool {
     public let name = "mac_ui"
+    public var isReadOnly: Bool { true }
     public let description = """
     Read the accessibility tree of a native macOS app (element refs, roles, titles, \
     values, available actions). Use this to see and navigate GUI-only apps that have \
@@ -207,6 +209,7 @@ public struct MacWaitTool: AgentTool {
 /// Screenshot of a Mac app's front window. Registered only when the host opts in.
 public struct MacScreenshotTool: AgentTool {
     public let name = "mac_screenshot"
+    public var isReadOnly: Bool { true }
     public let description = """
     Screenshot a native macOS app's front window as an image. The accessibility tree \
     from mac_ui is the normal way to see and act; use this only when mac_ui returns \

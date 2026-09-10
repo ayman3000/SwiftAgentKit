@@ -58,6 +58,7 @@ func resolveBundleId(_ p: [String: Any], _ session: SimSession, toolName: String
 
 public struct SimUITool: AgentTool {
     public let name = "sim_ui"
+    public var isReadOnly: Bool { true }
     public let description = """
     Read the current UI of the iOS simulator app as an accessibility tree — element \
     refs (e1, e2…), types, labels, values. Slimmed by default (interactive + labeled \
@@ -439,6 +440,7 @@ public struct SimAlertTool: AgentTool {
 
 public struct SimFindTool: AgentTool {
     public let name = "sim_find"
+    public var isReadOnly: Bool { true }
     public let description = """
     Find elements without dumping the whole screen. `query` matches (case-insensitive \
     substring) against label, identifier, or value; optional `type` (e.g. button, textfield, \

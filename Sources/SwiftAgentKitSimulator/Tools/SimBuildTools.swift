@@ -184,6 +184,7 @@ enum SimLogsRegistry {
 /// A second call with `stop: true` + `pid` kills a previous stream.
 public struct SimLogsTool: AgentTool {
     public let name = "sim_logs"
+    public var isReadOnly: Bool { true }
     public let description = """
     Stream simulator app logs to a temp file (non-blocking). Returns the pid and log \
     path immediately. Call again with `stop: true` and the `pid` from the first call \
