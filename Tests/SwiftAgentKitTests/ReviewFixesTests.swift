@@ -41,6 +41,8 @@ private final class ConcurrencyProbeRecorder: @unchecked Sendable {
 
 /// Sleeps briefly so overlapping executions are observable, and records concurrency.
 private struct ConcurrencyProbeTool: AgentTool {
+    var readOnly = true
+    var isReadOnly: Bool { readOnly }   // concurrency is only offered to read-only batches
     let name = "probe"
     let description = "Test probe"
     let parameters = ToolParameters(
@@ -132,6 +134,22 @@ private struct ScriptedToolProvider: LLMProvider {
 
     #expect(recorder.executions.count == 2)
     #expect(recorder.maxConcurrent == 2)
+}
+
+@Test func testParallelToolCallsStaySequentialForNonReadOnlyTools() async throws {
+    let recorder = ConcurrencyProbeRecorder()
+    let provider = ScriptedToolProvider(toolCalls: [
+        LLMToolCall(name: "probe", arguments: "{\"n\":\"1\"}"),
+        LLMToolCall(name: "probe", arguments: "{\"n\":\"2\"}"),
+    ])
+    var config = AgentConfig(provider: provider, tools: [ConcurrencyProbeTool(readOnly: false, recorder: recorder)])
+    config.parallelToolCalls = true
+    let agent = Agent(config: config)
+
+    _ = try await agent.run("go")
+
+    #expect(recorder.executions.count == 2)
+    #expect(recorder.maxConcurrent == 1, "a tool that changes things never runs alongside another")
 }
 
 // MARK: - RepairRetryPolicy.isRepairable wiring
