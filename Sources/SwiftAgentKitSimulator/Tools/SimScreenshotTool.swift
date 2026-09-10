@@ -7,6 +7,7 @@ import LLMProviderKit
 
 public struct SimScreenshotTool: AgentTool {
     public let name = "sim_screenshot"
+    public var isReadOnly: Bool { true }
     public let description = """
     Screenshot the iOS SIMULATOR screen as an image. Simulator only — it cannot see \
     Mac apps; for a Mac app read the window with mac_ui instead. Slower than sim_ui and \

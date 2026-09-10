@@ -11,6 +11,7 @@ import Foundation
 /// Read the full stored output of a previous tool call, by artifact id.
 public struct ArtifactReadTool: AgentTool {
     public let name = "artifact_read"
+    public var isReadOnly: Bool { true }
     public let description = """
     Read the full stored output of a previous tool call by its artifact id \
     (shown in brackets in the tool ledger, e.g. artifact-abc123). Use `offset` \
@@ -54,6 +55,7 @@ public struct ArtifactReadTool: AgentTool {
 /// substrings, with surrounding context lines.
 public struct ArtifactSearchTool: AgentTool {
     public let name = "artifact_search"
+    public var isReadOnly: Bool { true }
     public let description = """
     Search a previous tool call's full output for lines containing substrings. \
     Pass ALL the terms you want to check in ONE call via `queries` (e.g. \
@@ -142,6 +144,7 @@ public struct ArtifactSearchTool: AgentTool {
 /// file-backed) so the model can discover retrievable history on demand.
 public struct ArtifactListTool: AgentTool {
     public let name = "artifact_list"
+    public var isReadOnly: Bool { true }
     public let description = """
     List stored outputs of previous tool calls in this conversation — \
     including ones from earlier sessions. Returns id, tool, description, age \

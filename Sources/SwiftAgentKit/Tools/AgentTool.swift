@@ -57,6 +57,13 @@ public protocol AgentTool: Sendable {
     /// Default is `false`. Override for dangerous tools (delete, shell, etc.).
     var requiresConfirmation: Bool { get }
 
+    /// Whether this tool only observes (reads a file, searches, inspects a
+    /// window) and never changes anything. Default `false`. A batch of calls the
+    /// model issues in one turn runs concurrently only when EVERY call is
+    /// read-only; any other batch runs in the model's order, because models
+    /// routinely emit order-dependent steps (write then read, click then type).
+    var isReadOnly: Bool { get }
+
     /// Execute the tool with the given parameters.
     ///
     /// - Parameters:
@@ -83,6 +90,7 @@ public extension AgentTool {
 
 public extension AgentTool {
     var requiresConfirmation: Bool { false }
+    var isReadOnly: Bool { false }
 }
 
 // MARK: - Tool Schema Types

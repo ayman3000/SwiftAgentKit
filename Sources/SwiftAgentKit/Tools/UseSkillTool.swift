@@ -16,6 +16,8 @@ public final class UseSkillTool: AgentTool, @unchecked Sendable {
 
     public let name = "use_skill"
 
+    public var isReadOnly: Bool { true }
+
     public let description = """
     Load a skill's full instructions by name. The skills index in your \
     system prompt lists every available skill with a one-line description — \
