@@ -228,6 +228,16 @@ final class MacToolsTests: XCTestCase {
         XCTAssertTrue(bad.isError && bad.result.contains("needs the pop-up"))
     }
 
+    func testRunBareWaitIsAPause() async throws {
+        let mock = MockAX()
+        let r = try await MacRunTool(client: mock, allowlistProvider: allow).execute(parameters: [
+            "bundle_id": "com.apple.TextEdit", "read_after": false,
+            "steps": [["action": "key", "keys": "cmd+s"], ["action": "wait", "timeout_seconds": 0.2]],
+        ])
+        XCTAssertFalse(r.isError, r.result)
+        XCTAssertTrue(r.result.contains("2. wait → paused 0.2 s"), r.result)
+    }
+
     func testRunValidatesStepsBeforeActing() async throws {
         let mock = MockAX()
         let r = try await MacRunTool(client: mock, allowlistProvider: allow).execute(parameters: [
