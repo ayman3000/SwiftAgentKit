@@ -25,9 +25,52 @@ public enum AppResolver {
         NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first?.processIdentifier
     }
 
+    /// Installed apps whose name contains `name` (case-insensitive), running or
+    /// not: the standard app folders plus whatever is running. Best match first.
+    public static func installedApps(matching name: String) -> [(name: String, bundleId: String, path: String)] {
+        let needle = name.lowercased().replacingOccurrences(of: ".app", with: "")
+        guard !needle.isEmpty else { return [] }
+        var out: [(String, String, String)] = []
+        var seen: Set<String> = []
+        let fm = FileManager.default
+        let dirs = ["/Applications", "/Applications/Utilities", "/System/Applications", "/System/Applications/Utilities",
+                    fm.homeDirectoryForCurrentUser.appendingPathComponent("Applications").path]
+        for dir in dirs {
+            for entry in (try? fm.contentsOfDirectory(atPath: dir)) ?? [] where entry.hasSuffix(".app") {
+                let appName = String(entry.dropLast(4))
+                guard appName.lowercased().contains(needle) else { continue }
+                let path = dir + "/" + entry
+                guard let bundle = Bundle(path: path), let id = bundle.bundleIdentifier, !seen.contains(id) else { continue }
+                seen.insert(id)
+                out.append((appName, id, path))
+            }
+        }
+        for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular {
+            guard let id = app.bundleIdentifier, !seen.contains(id),
+                  (app.localizedName ?? "").lowercased().contains(needle) else { continue }
+            seen.insert(id)
+            out.append((app.localizedName ?? id, id, app.bundleURL?.path ?? ""))
+        }
+        // Exact name first, then shortest name (closest match).
+        return out.sorted { a, b in
+            let ae = a.0.lowercased() == needle, be = b.0.lowercased() == needle
+            if ae != be { return ae }
+            return a.0.count < b.0.count
+        }
+    }
+
     public static func launch(bundleId: String) async throws {
         guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) else {
-            throw MacDriverError(code: "not_found", message: "no installed app with bundle id \(bundleId)")
+            // A name or a guessed id: point at the real id instead of a dead end.
+            let guess = installedApps(matching: bundleId.split(separator: ".").last.map(String.init) ?? bundleId)
+                + installedApps(matching: bundleId)
+            if let hit = guess.first {
+                throw MacDriverError(code: "not_found",
+                                     message: "No installed app with bundle id '\(bundleId)'. Did you mean \(hit.name) — \(hit.bundleId)? "
+                                     + "Call mac_launch with that bundle id.")
+            }
+            throw MacDriverError(code: "not_found",
+                                 message: "No installed app with bundle id '\(bundleId)'. Look the app up by name with mac_apps (name: \"…\").")
         }
         let cfg = NSWorkspace.OpenConfiguration()
         cfg.activates = true

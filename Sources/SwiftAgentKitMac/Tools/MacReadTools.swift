@@ -12,13 +12,21 @@ public struct MacAppsTool: AgentTool {
     public let name = "mac_apps"
     public let description = """
     List the native macOS apps running on this Mac: the ones already allowed for this \
-    conversation, and the ones you can still request. Use the bundle IDs here with the \
-    other mac_* tools. To use an app that is not yet allowed, just call the mac_* tool \
-    you need (mac_launch, mac_ui, ...) with its bundle id: access is granted \
-    automatically in autonomous mode, otherwise the user is asked once. Never drive a \
-    GUI app through the shell or AppleScript instead of these tools.
+    conversation, and the ones you can still request. Pass `name` to look up an INSTALLED \
+    app by name whether or not it is running (e.g. name: "Kommanda" → its bundle id and \
+    path) — this is how you get a bundle id you do not know; never search the disk for \
+    it. Use the bundle IDs here with the other mac_* tools. To use an app that is not yet \
+    allowed, just call the mac_* tool you need (mac_launch, mac_ui, ...) with its bundle \
+    id: access is granted automatically in autonomous mode, otherwise the user is asked \
+    once.
     """
-    public let parameters = ToolParameters.empty
+    public let parameters = ToolParameters(
+        properties: [
+            "name": ToolParameterProperty(
+                type: "string",
+                description: "Optional: an app name (or part of it) to look up among installed apps, running or not."),
+        ],
+        required: [])
     public var requiresConfirmation: Bool { false }
 
     let client: any AXDriving
@@ -30,6 +38,17 @@ public struct MacAppsTool: AgentTool {
     }
 
     public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
+        if let name = (parameters["name"] as? String)?.trimmingCharacters(in: .whitespaces), !name.isEmpty {
+            let hits = AppResolver.installedApps(matching: name)
+            guard !hits.isEmpty else {
+                return .success(toolCallId: "", toolName: self.name,
+                                result: "No installed app named like \"\(name)\" in the Applications folders. Check the spelling, or ask the user where it is.")
+            }
+            let lines = hits.prefix(6).map { "\($0.name) — \($0.bundleId) (\($0.path))" }
+            return .success(toolCallId: "", toolName: self.name,
+                            result: "Installed apps matching \"\(name)\":\n" + lines.joined(separator: "\n")
+                            + "\nLaunch with mac_launch and the bundle id.")
+        }
         let running = client.runningApps()
         let allowlist = allowlistProvider()
         let allowed = AppResolver.filterAllowed(running, allowlist: allowlist)

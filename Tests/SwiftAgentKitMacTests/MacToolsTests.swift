@@ -135,6 +135,17 @@ final class MacToolsTests: XCTestCase {
         XCTAssertFalse(AXClient.editableRoles.contains("AXStaticText"))
     }
 
+    func testMacAppsLooksUpInstalledAppsByName() async throws {
+        // Finder and TextEdit exist on every Mac.
+        let r = try await MacAppsTool(client: MockAX(), allowlistProvider: { [] }).execute(parameters: ["name": "textedit"])
+        XCTAssertTrue(r.result.contains("com.apple.TextEdit"), r.result)
+        XCTAssertTrue(r.result.contains("mac_launch"))
+        let none = try await MacAppsTool(client: MockAX(), allowlistProvider: { [] }).execute(parameters: ["name": "zzz-no-such-app"])
+        XCTAssertTrue(none.result.contains("No installed app"))
+        let hits = AppResolver.installedApps(matching: "TextEdit")
+        XCTAssertEqual(hits.first?.bundleId, "com.apple.TextEdit")
+    }
+
     func testMacAppsWithNothingAllowedStillPointsAtRequesting() async throws {
         let mock = MockAX()
         let r = try await MacAppsTool(client: mock, allowlistProvider: { [] }).execute(parameters: [:])
