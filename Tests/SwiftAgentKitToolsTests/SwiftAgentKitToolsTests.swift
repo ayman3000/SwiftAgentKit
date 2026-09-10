@@ -506,3 +506,18 @@ func pythonToolRunsInIsolatedVenv() async throws {
     #expect(venvHas.contains("in_venv"))
 }
 #endif
+
+// MARK: - Shipped tool examples
+
+@Test func testShippedExamplesAreValidJSONObjects() throws {
+    // An example the model pattern-matches must itself be well-formed.
+    let tools: [any AgentTool] = [ShellTool(), FileReadTool(), FileWriteTool(), SearchFilesTool(), PatchFileTool()]
+    for tool in tools {
+        #expect(!tool.inputExamples.isEmpty, "\(tool.name) should carry an example")
+        for example in tool.inputExamples {
+            let data = try #require(example.data(using: .utf8), "\(tool.name)")
+            let object = try JSONSerialization.jsonObject(with: data)
+            #expect(object is [String: Any], "\(tool.name): an example must be an arguments object")
+        }
+    }
+}

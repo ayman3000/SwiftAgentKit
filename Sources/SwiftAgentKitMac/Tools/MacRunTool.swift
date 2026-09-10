@@ -104,6 +104,15 @@ public struct MacRunTool: AgentTool {
                 description: "With read_after: only elements whose text contains this, to keep the result small."),
         ],
         required: ["bundle_id", "steps"])
+
+    public var inputExamples: [String] { [
+        #"""
+        {"bundle_id": "com.apple.TextEdit", "steps": [{"action": "key", "keys": "cmd+n"}, {"action": "type", "text": "Board test\n\nNaseem batched this"}, {"action": "key", "keys": "cmd+s"}, {"action": "wait", "title": "Save"}]}
+        """#,
+        #"""
+        {"bundle_id": "com.apple.TextEdit", "steps": [{"action": "choose", "title": "File Format", "item": "Plain Text"}, {"action": "type", "text": "Notes.txt"}, {"action": "click", "title": "Save"}], "filter": "Notes"}
+        """#
+    ] }
     public var requiresConfirmation: Bool { true }
 
     let client: any AXDriving

@@ -1425,7 +1425,9 @@ public actor Agent {
         registeredTools.map { tool -> LLMToolDefinition in
             let paramsData = try? JSONEncoder().encode(tool.parameters)
             let paramsDict = paramsData.flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any] ?? [:]
-            return LLMToolDefinition(name: tool.name, description: tool.description, parameters: paramsDict)
+            // describedForModel appends the tool's example calls — a schema cannot
+            // express formats, id shapes or which optional fields go together.
+            return LLMToolDefinition(name: tool.name, description: tool.describedForModel, parameters: paramsDict)
         }
     }
 

@@ -43,6 +43,15 @@ public struct ShellTool: AgentTool {
         required: ["command"]
     )
 
+    public var inputExamples: [String] { [
+        #"""
+        {"command": "swift test 2>&1 | tail -40", "working_directory": "~/proj/kit", "timeout_seconds": 600}
+        """#,
+        #"""
+        {"command": "npm run dev", "working_directory": "~/proj/site", "background": true}
+        """#
+    ] }
+
     public var requiresConfirmation: Bool { true }
 
     /// Directory used when the model doesn't specify `working_directory`. Apps can

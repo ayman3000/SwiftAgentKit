@@ -39,6 +39,12 @@ public final class DelegateTaskTool: AgentTool, @unchecked Sendable {
         required: ["description", "prompt"]
     )
 
+    public var inputExamples: [String] { [
+        #"""
+        {"description": "Review data layer", "prompt": "Read every file under lib/services in /Users/me/proj and list correctness bugs. For each: file:line, what is wrong, why it matters, and how to confirm it. Report findings only; change nothing."}
+        """#
+    ] }
+
     private let spawner: SubAgentSpawner
     private let emit: @Sendable (AgentEvent) -> Void
 
