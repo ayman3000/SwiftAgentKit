@@ -149,7 +149,8 @@ public struct MacTypeTool: AgentTool {
             let verified = try await client.type(bundleId: bundleId, text: text, target: target, replace: replace)
             return .success(toolCallId: "", toolName: name, result: verified
                 ? "Typed; the focused field now contains the text. No need to re-check or retype."
-                : "Typed; sent to the focused field, whose content cannot be read back. Confirm with mac_ui only if it matters.")
+                : "Typed; the focused element does not expose its text (Word's document body, a secure field, some web views), "
+                + "so it could not be read back. Do NOT retype — check with mac_ui only if it matters.")
         } catch let e as MacDriverError {
             let treeText = e.tree.map { "\n\nCurrent UI:\n" + $0.renderCompact() } ?? ""
             return .error(toolCallId: "", toolName: name, message: e.localizedDescription + treeText)
