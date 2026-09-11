@@ -61,7 +61,7 @@ Task {
         let rr = try await run.execute(parameters: [
             "bundle_id": "com.apple.TextEdit",
             "steps": [["action": "key", "keys": "cmd+n"], ["action": "type", "text": "batch one\nbatch two"],
-                      ["action": "key", "keys": "cmd+a, cmd+c"], ["action": "wait", "title": "Untitled 2"]],
+                      ["action": "key", "keys": "cmd+a, cmd+c"], ["action": "wait", "identifier": "First Text View"]],
             "filter": "batch",
         ])
         check("mac_run batch of four", !rr.isError && rr.result.contains("2. type") && rr.result.contains("typed, verified") && rr.result.contains("4. wait") && rr.result.contains("batch one"), rr.result.split(separator: "\n").prefix(5).joined(separator: " | "))
