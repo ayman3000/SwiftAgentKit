@@ -974,7 +974,6 @@ public actor AXClient: AXDriving {
         let pid = try resolvePid(bundleId: bundleId)
         try await bringToFront(pid: pid)   // a shortcut must never land in another app
 
-        try await Task.sleep(nanoseconds: 250_000_000)   // let a preceding edit settle (autocorrect, focus)
         let combos = keys.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         guard !combos.isEmpty else { throw MacDriverError(code: "bad_key", message: "No key given.") }
         var parsed: [(CGKeyCode, CGEventFlags)] = []
@@ -988,7 +987,7 @@ public actor AXClient: AXDriving {
         for (i, (keyCode, flags)) in parsed.enumerated() {
             postKeyPress(keyCode: keyCode, flags: flags)
             // A copy needs time to reach the pasteboard before the next combo pastes it.
-            if i < parsed.count - 1 { try await Task.sleep(nanoseconds: 200_000_000) }
+            if i < parsed.count - 1 { try await Task.sleep(nanoseconds: 120_000_000) }
         }
     }
 
