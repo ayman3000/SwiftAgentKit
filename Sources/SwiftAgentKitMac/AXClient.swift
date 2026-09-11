@@ -790,7 +790,7 @@ public actor AXClient: AXDriving {
 
         // A shortcut like ⌘N creates its editor asynchronously; typing before an
         // editable element owns keyboard focus is swallowed with a beep.
-        guard let focused = await waitForEditableFocus(pid: pid, timeoutSeconds: 2.0) else {
+        guard let (focused, isTextRole) = await waitForEditableFocus(pid: pid, timeoutSeconds: 2.0) else {
             let role = focusedRole(pid: pid) ?? "nothing"
             throw MacDriverError(code: "no_text_focus",
                                  message: "No editable element has keyboard focus in \(bundleId) "
@@ -819,8 +819,12 @@ public actor AXClient: AXDriving {
                 if count >= (beforeCount ?? 0) + text.count { commitPendingTextInput(focused); return true }
             }
         }
-        // Secure fields and some web views expose nothing to read back.
-        guard readable else { commitPendingTextInput(focused); return false }
+        // Secure fields and some web views expose nothing to read back. Neither
+        // does a container that merely *accepts* a value: Word's document body
+        // focuses as an AXScrollArea, which took the text (the word count rose)
+        // while exposing none of it — reporting that as a failure was a lie that
+        // sent the model round again.
+        guard readable, isTextRole else { commitPendingTextInput(focused); return false }
         throw MacDriverError(code: "type_unverified",
                              message: "The keystrokes were sent but the focused \(role(of: focused) ?? "element") "
                              + "did not receive the text. \(frontWindowSummary(pid: pid)) Click into the intended "
@@ -949,16 +953,18 @@ public actor AXClient: AXDriving {
         return (v as? NSNumber)?.intValue
     }
 
-    /// The focused element once it is editable: a known text role, or any
-    /// element whose value can be set. Polls for up to `timeoutSeconds`.
-    private func waitForEditableFocus(pid: pid_t, timeoutSeconds: Double) async -> AXUIElement? {
+    /// The focused element once it is editable, and whether it is a real text
+    /// control. A known text role can be verified by reading it back; anything
+    /// accepted only because its value is settable cannot, so a missed read
+    /// there means "not visible", not "did not arrive".
+    private func waitForEditableFocus(pid: pid_t, timeoutSeconds: Double) async -> (element: AXUIElement, isTextRole: Bool)? {
         let deadline = Date().addingTimeInterval(timeoutSeconds)
         repeat {
             if let el = focusedElement(pid: pid) {
-                if let r = role(of: el), Self.editableRoles.contains(r) { return el }
+                if let r = role(of: el), Self.editableRoles.contains(r) { return (el, true) }
                 var settable: DarwinBoolean = false
                 if AXUIElementIsAttributeSettable(el, kAXValueAttribute as CFString, &settable) == .success,
-                   settable.boolValue { return el }
+                   settable.boolValue { return (el, false) }
             }
             try? await Task.sleep(nanoseconds: 100_000_000)
         } while Date() < deadline
