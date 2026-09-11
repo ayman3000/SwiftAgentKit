@@ -1486,8 +1486,13 @@ public actor Agent {
     /// so the approval gate, per-conversation permissions, observers and cost
     /// accounting all apply. Routines use this so that approving a routine is
     /// never a blank cheque for the tools inside it.
-    public func runToolCall(_ call: AgentToolCall) async -> AgentToolResult {
-        let results = await dispatchToolCalls([call], turn: 0, query: "", actions: ToolActions())
+    /// - Parameter silent: omit the display events for this call. The routine's
+    ///   own result already lists every step and its outcome, so emitting them
+    ///   again shows one routine as six tool lines and reads like duplicated
+    ///   work. The APPROVAL GATE is unaffected: it runs on `callbacks`, not on
+    ///   the observer, so a routine is still never a blank cheque.
+    public func runToolCall(_ call: AgentToolCall, silent: Bool = false) async -> AgentToolResult {
+        let results = await dispatchToolCalls([call], turn: 0, query: "", actions: ToolActions(), silent: silent)
         return results.first ?? .error(toolCallId: call.id, toolName: call.name,
                                        message: "\(call.name) produced no result.")
     }
@@ -1496,9 +1501,11 @@ public actor Agent {
         _ toolCalls: [AgentToolCall],
         turn: Int,
         query: String,
-        actions: ToolActions
+        actions: ToolActions,
+        silent: Bool = false
     ) async -> [AgentToolResult] {
         let dispatcherObserver = BlockObserver { [weak self] event in
+            guard !silent else { return }
             self?.emit(event)
         }
         return await dispatcher.dispatch(
