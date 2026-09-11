@@ -1482,6 +1482,16 @@ public actor Agent {
         try? await goalStore.save(goal)
     }
 
+    /// Run one tool call exactly as if the model had made it: same dispatcher,
+    /// so the approval gate, per-conversation permissions, observers and cost
+    /// accounting all apply. Routines use this so that approving a routine is
+    /// never a blank cheque for the tools inside it.
+    public func runToolCall(_ call: AgentToolCall) async -> AgentToolResult {
+        let results = await dispatchToolCalls([call], turn: 0, query: "", actions: ToolActions())
+        return results.first ?? .error(toolCallId: call.id, toolName: call.name,
+                                       message: "\(call.name) produced no result.")
+    }
+
     private func dispatchToolCalls(
         _ toolCalls: [AgentToolCall],
         turn: Int,
