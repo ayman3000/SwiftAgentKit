@@ -1,4 +1,5 @@
 import Testing
+import LLMProviderKit
 import Foundation
 @testable import SwiftAgentKit
 
@@ -161,4 +162,51 @@ struct RoutineTests {
 private actor Recorder {
     var calls: [AgentToolCall] = []
     func record(_ call: AgentToolCall) { calls.append(call) }
+}
+
+// MARK: - A routine reads as one action, not six
+
+private struct EchoTool2: AgentTool {
+    let name = "echo2"
+    let description = "echo"
+    let parameters = ToolParameters.empty
+    func execute(parameters: [String: Any]) async throws -> AgentToolResult {
+        .success(toolCallId: "", toolName: name, result: "ok")
+    }
+}
+
+@Test func aSilentCallDoesNotEmitDisplayEvents() async throws {
+    let agent = Agent(config: AgentConfig(provider: SilentProvider(), tools: [EchoTool2()]))
+    let seen = EventBox()
+    await agent.addObserver(BlockObserver { event in Task { await seen.record(event) } })
+
+    _ = await agent.runToolCall(AgentToolCall(name: "echo2"), silent: true)
+    try await Task.sleep(nanoseconds: 120_000_000)
+    #expect(await seen.toolEvents == 0, "a routine's inner steps must not read as the model's own calls")
+
+    _ = await agent.runToolCall(AgentToolCall(name: "echo2"))
+    try await Task.sleep(nanoseconds: 120_000_000)
+    #expect(await seen.toolEvents > 0, "an ordinary call still shows")
+}
+
+private actor EventBox {
+    var toolEvents = 0
+    func record(_ event: AgentEvent) {
+        if case .toolExecutionFinished = event { toolEvents += 1 }
+        if case .toolCallsReceived = event { toolEvents += 1 }
+    }
+}
+
+/// Never asked for a completion here; the tool call is invoked directly.
+private struct SilentProvider: LLMProvider {
+    static let name = "silent"
+    let configuration = LLMProviderConfiguration(
+        name: name, baseURL: URL(string: "inprocess://silent")!, defaultModel: "mock")
+
+    func complete(_ request: LLMRequest) async throws -> LLMResponse {
+        LLMResponse(text: "", finishReason: .stop, request: request, providerName: Self.name)
+    }
+    func stream(_ request: LLMRequest) -> AsyncThrowingStream<LLMStreamChunk, Error> {
+        AsyncThrowingStream { $0.finish() }
+    }
 }
