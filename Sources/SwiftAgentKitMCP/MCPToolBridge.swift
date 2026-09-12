@@ -114,11 +114,22 @@ public struct MCPToolBridge: AgentTool {
     }
 
     /// Convert `Any` to MCP's `Value`.
-    private static func convertAnyToValue(_ value: Any) -> Value {
+    static func convertAnyToValue(_ value: Any) -> Value {
         if let s = value as? String { return .string(s) }
-        // Check Bool before Int/Double: a JSON boolean bridged through
-        // NSNumber (e.g. via JSONSerialization) also satisfies `as? Int`,
-        // which would silently send 1/0 instead of true/false.
+        // Once JSON has been through JSONSerialization, `true`, `1` and `0` are
+        // all NSNumber, and EVERY one of them satisfies both `as? Bool` and
+        // `as? Int`. So neither order of those two casts is correct: testing Int
+        // first sends 1/0 for a boolean, and testing Bool first sends true/false
+        // for the integers 0 and 1 — which is how `pageId: 1` reached a server
+        // as `pageId: true` and was rejected (2026-09-12). Only the
+        // CoreFoundation type id distinguishes them.
+        #if canImport(Darwin)
+        if let n = value as? NSNumber {
+            if CFGetTypeID(n) == CFBooleanGetTypeID() { return .bool(n.boolValue) }
+            if CFNumberIsFloatType(n) { return .double(n.doubleValue) }
+            return .int(n.intValue)
+        }
+        #endif
         if let b = value as? Bool { return .bool(b) }
         if let i = value as? Int { return .int(i) }
         if let d = value as? Double { return .double(d) }
