@@ -27,6 +27,15 @@ public enum AgentError: Error, Sendable, Equatable, LocalizedError {
     /// The LLM provider returned an error.
     case providerError(String)
 
+    /// The provider refused the request, with its own explanation preserved.
+    ///
+    /// Distinct from `providerError` because that case flattens everything to
+    /// one string: an app receiving it cannot tell the vendor's sentence from
+    /// the JSON envelope around it, and ends up showing a customer
+    /// `{"error":{"code":404,…}}`. This keeps the two apart, and stays Sendable
+    /// by carrying the extracted text rather than the original error.
+    case providerRefused(summary: String, details: String?)
+
     /// No LLM provider is configured or available.
     case noProviderConfigured
 
@@ -62,6 +71,10 @@ public enum AgentError: Error, Sendable, Equatable, LocalizedError {
             return "Tool '\(name)' execution was cancelled."
         case .providerError(let message):
             return "LLM provider error: \(message)"
+        case .providerRefused(let summary, _):
+            // The summary alone: an app that wants the body reads `details`,
+            // and one that only prints the description gets the readable half.
+            return summary
         case .noProviderConfigured:
             return "No LLM provider is configured. Add a provider to the agent before running."
         case .planningFailed(let detail):

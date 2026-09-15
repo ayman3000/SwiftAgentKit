@@ -965,7 +965,7 @@ public actor Agent {
                                 return fallback.text
                             }
                         }
-                        throw AgentError.providerError(error.localizedDescription)
+                        throw Self.providerFailure(error)
                     }
                 }
 
@@ -1218,7 +1218,7 @@ public actor Agent {
                         return fallback.text
                     }
                 }
-                throw AgentError.providerError(error.localizedDescription)
+                throw Self.providerFailure(error)
             }
 
             // afterModel callback
@@ -1443,6 +1443,15 @@ public actor Agent {
             // express formats, id shapes or which optional fields go together.
             return LLMToolDefinition(name: tool.name, description: tool.describedForModel, parameters: paramsDict)
         }
+    }
+
+    /// Wrap a provider failure so the vendor's own sentence survives the trip
+    /// to the app. `localizedDescription` alone flattens the envelope into the
+    /// message and there is no way to separate them again.
+    static func providerFailure(_ error: any Error) -> AgentError {
+        if error is CancellationError { return .cancelled }
+        let reported = error.llmUserMessage
+        return .providerRefused(summary: reported.summary, details: reported.details)
     }
 
     private func makeLLMRequest(
