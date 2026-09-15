@@ -36,6 +36,18 @@ public struct AgentConfig: Sendable {
     /// Top-P sampling parameter.
     public var topP: Double?
 
+    /// How much work the model should spend on each response. `nil` sends
+    /// nothing, which is what every run did before this existed. Effort shapes
+    /// every output token, not only thinking, so a lower level also makes the
+    /// agent's tool calls fewer and terser.
+    ///
+    /// Only set this for a model whose catalog entry carries
+    /// `LLMModelCapability.reasoningEffort`: at least one provider answers an
+    /// unsupported level with HTTP 400. Hold one level for the life of a
+    /// conversation — providers render it into the prompt, so changing it
+    /// mid-run invalidates prompt caching.
+    public var reasoningEffort: LLMReasoningEffort?
+
     /// System prompt prefix (prepended to every conversation).
     public var systemPrompt: String?
 
@@ -129,6 +141,7 @@ public struct AgentConfig: Sendable {
         temperature: Double? = nil,
         maxTokens: Int? = nil,
         topP: Double? = nil,
+        reasoningEffort: LLMReasoningEffort? = nil,
         systemPrompt: String? = nil,
         maxTurns: Int = 20,
         contextWindow: Int = 8192,
@@ -154,6 +167,7 @@ public struct AgentConfig: Sendable {
         self.temperature = temperature
         self.maxTokens = maxTokens
         self.topP = topP
+        self.reasoningEffort = reasoningEffort
         self.systemPrompt = systemPrompt
         self.maxTurns = maxTurns
         self.contextWindow = contextWindow
@@ -1462,7 +1476,8 @@ public actor Agent {
             temperature: config.temperature,
             maxTokens: config.maxTokens,
             topP: config.topP,
-            tools: tools
+            tools: tools,
+            reasoningEffort: config.reasoningEffort
         )
     }
 
