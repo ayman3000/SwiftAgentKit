@@ -10,6 +10,10 @@
 #if canImport(PDFKit)
 import Foundation
 import PDFKit
+import CoreGraphics
+#if canImport(Vision)
+import Vision
+#endif
 import SwiftAgentKit
 
 /// Report a PDF's page count and basic metadata. Unconfirmed (read-only).
@@ -45,23 +49,43 @@ public struct PDFInfoTool: AgentTool {
 }
 
 /// Extract text from a PDF (optionally a 1-based page range). Unconfirmed.
+///
+/// Two things beyond a raw `page.string`:
+///
+/// 1. **Page markers.** Output is labelled `[page N]` so the model can cite a
+///    page and narrow a follow-up range instead of re-reading the whole file.
+/// 2. **OCR fallback.** A scanned PDF has no text layer and `page.string`
+///    returns nothing. Those pages are rendered and run through Vision, which
+///    recognises 30 languages including Arabic. Pages that DO have a text layer
+///    are never OCR'd — the embedded text is both faster and more accurate.
+///
+/// Deliberately NOT done: un-wrapping lines. PDF text runs break mid-sentence
+/// ("…a dual-pane mac\nOS file manager…"), and every rule that rejoins them
+/// also destroys lists, tables and code. Models read the wrapped form fine, so
+/// the text is passed through faithfully; only end-of-line hyphenation, which
+/// is unambiguous, is repaired.
 public struct PDFExtractTextTool: AgentTool {
     public let name = "pdf_extract_text"
     public var isReadOnly: Bool { true }
     public let description = """
-    Extract text from a PDF. Optionally limit to a 1-based page range with \
-    `first_page` / `last_page`. Output is bounded; narrow the range for big PDFs.
+    Extract text from a PDF, labelled by page. Optionally limit to a 1-based \
+    page range with `first_page` / `last_page`. Scanned pages with no text \
+    layer are read with OCR. Output is bounded; narrow the range for big PDFs.
     """
     public let parameters = ToolParameters(
         properties: [
             "path": ToolParameterProperty(type: "string", description: "Path to the PDF (a leading ~ is expanded)."),
             "first_page": ToolParameterProperty(type: "integer", description: "First page, 1-based (default 1)."),
             "last_page": ToolParameterProperty(type: "integer", description: "Last page, 1-based (default: last)."),
+            "ocr": ToolParameterProperty(type: "string", description: "OCR policy for pages with no text layer: `auto` (default), `off`, or `force` to OCR every page."),
         ],
         required: ["path"]
     )
 
     private let maxChars = 40_000
+    /// OCR is seconds-per-page. Bound it so a 400-page scan can't stall a turn —
+    /// the model can always ask for the next range.
+    private let maxOCRPages = 20
 
     public init() {}
 
@@ -80,16 +104,109 @@ public struct PDFExtractTextTool: AgentTool {
         guard first <= last else {
             return .error(toolCallId: "", toolName: name, message: "Invalid page range \(first)–\(last).")
         }
+        let policy = OCRPolicy(parameters["ocr"] as? String)
 
         var out = ""
+        var truncated = false
+        var ocrUsed = 0
+        var ocrBudgetHit = false
+
         for i in (first - 1)..<last {
-            if let page = doc.page(at: i), let s = page.string { out += s + "\n" }
-            if out.count > maxChars { break }
+            guard let page = doc.page(at: i) else { continue }
+            let embedded = Self.repairHyphenation(page.string ?? "")
+            var text = embedded
+            var viaOCR = false
+
+            if policy.shouldOCR(hasText: !embedded.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
+                if ocrUsed >= maxOCRPages {
+                    ocrBudgetHit = true
+                } else if let recognized = Self.ocr(page: page), !recognized.isEmpty {
+                    ocrUsed += 1
+                    text = recognized
+                    viaOCR = true
+                }
+            }
+
+            out += viaOCR ? "[page \(i + 1) — OCR]\n" : "[page \(i + 1)]\n"
+            out += text.isEmpty ? "(no extractable text)\n" : text + "\n"
+            out += "\n"
+            if out.count > maxChars { truncated = true; break }
         }
-        if out.count > maxChars {
+
+        if truncated {
             out = String(out.prefix(maxChars)) + "\n… [truncated — narrow the page range]"
         }
+        if ocrBudgetHit {
+            out += "\n[OCR stopped after \(maxOCRPages) pages — request a later page range to continue]"
+        }
         return .success(toolCallId: "", toolName: name, result: out.isEmpty ? "(no extractable text)" : out)
+    }
+
+    /// When to OCR a page. `auto` fills in only where the text layer is empty.
+    private enum OCRPolicy {
+        case auto, off, force
+        init(_ raw: String?) {
+            switch raw?.lowercased() {
+            case "off", "false", "none": self = .off
+            case "force", "always", "all": self = .force
+            default: self = .auto
+            }
+        }
+        func shouldOCR(hasText: Bool) -> Bool {
+            switch self {
+            case .off: return false
+            case .force: return true
+            case .auto: return !hasText
+            }
+        }
+    }
+
+    /// Rejoin a word split by end-of-line hyphenation ("proces-\nsing"). The one
+    /// unambiguous wrap repair; everything else is left as the PDF laid it out.
+    static func repairHyphenation(_ text: String) -> String {
+        text.replacingOccurrences(of: "-\n", with: "")
+            .replacingOccurrences(of: "-\r\n", with: "")
+    }
+
+    /// Render a page and recognise its text with Vision. Returns nil when Vision
+    /// is unavailable, the render fails, or nothing was recognised.
+    static func ocr(page: PDFPage) -> String? {
+        #if canImport(Vision)
+        guard let image = renderForOCR(page: page) else { return nil }
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = true
+        // Let Vision pick the script rather than pinning en-US, which is the
+        // default and would mangle Arabic, CJK and Cyrillic pages.
+        if #available(macOS 13.0, iOS 16.0, *) { request.automaticallyDetectsLanguage = true }
+        try? VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
+        let lines = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+        return lines.isEmpty ? nil : lines.joined(separator: "\n")
+        #else
+        return nil
+        #endif
+    }
+
+    /// Rasterise a page for OCR. 3× the PDF's own scale: Vision loses small type
+    /// at 1×, and the extra pixels cost far less than a missed line.
+    static func renderForOCR(page: PDFPage, scale: CGFloat = 3.0) -> CGImage? {
+        let bounds = page.bounds(for: .mediaBox)
+        let width = Int(bounds.width * scale)
+        let height = Int(bounds.height * scale)
+        guard width > 0, height > 0, width * height < 80_000_000 else { return nil }
+        guard let ctx = CGContext(data: nil, width: width, height: height,
+                                  bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)
+        else { return nil }
+        // Scanned pages are often transparent-backed; paint white first or the
+        // text is recognised against black and accuracy collapses.
+        ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height)))
+        ctx.scaleBy(x: scale, y: scale)
+        ctx.translateBy(x: -bounds.origin.x, y: -bounds.origin.y)
+        page.draw(with: .mediaBox, to: ctx)
+        return ctx.makeImage()
     }
 }
 
