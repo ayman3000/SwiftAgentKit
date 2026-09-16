@@ -19,10 +19,16 @@ public protocol AgentSkillStore: Sendable {
     func loadAll() async throws -> [AgentSkill]
 }
 
-/// A markdown-backed skill store in a configurable directory. One file per skill:
+/// A markdown-backed skill store in a configurable directory. One file per skill,
+/// with an optional sibling directory holding the files that skill ships:
 ///
 ///     <directory>/
-///       <slug>.md
+///       <slug>.md          the skill itself — instructions the model reads
+///       <slug>/            optional: reference documents, templates, scripts
+///
+/// The file stays the skill. Bundled files sit beside it rather than inside a
+/// restructured layout, so every skill written before this existed keeps
+/// loading unchanged and there is no migration to get wrong.
 ///
 /// File format (human-editable):
 ///
@@ -68,6 +74,15 @@ public final class FileAgentSkillStore: AgentSkillStore, @unchecked Sendable {
             if fileManager.fileExists(atPath: url.path) {
                 try fileManager.removeItem(at: url)
             }
+            // A deleted skill takes its files with it — otherwise scripts from a
+            // removed skill stay on disk, and a later skill of the same name
+            // inherits them.
+            let resources = directory.appendingPathComponent(Self.slugify(name), isDirectory: true)
+            var isDirectory: ObjCBool = false
+            if fileManager.fileExists(atPath: resources.path, isDirectory: &isDirectory),
+               isDirectory.boolValue {
+                try fileManager.removeItem(at: resources)
+            }
         }
     }
 
@@ -77,11 +92,35 @@ public final class FileAgentSkillStore: AgentSkillStore, @unchecked Sendable {
             .filter { $0.hasSuffix(".md") }
             .sorted()
             .compactMap { file -> AgentSkill? in
-                guard let content = try? String(contentsOf: directory.appendingPathComponent(file), encoding: .utf8) else {
+                guard let content = try? String(contentsOf: directory.appendingPathComponent(file), encoding: .utf8),
+                      var skill = Self.parse(content) else {
                     return nil
                 }
-                return Self.parse(content)
+                skill.resourcesPath = resourcesDirectory(forFile: file)
+                return skill
             }
+    }
+
+    /// The sibling directory holding a skill's bundled files, or nil when it
+    /// ships none. Named from the file rather than the skill so a renamed
+    /// skill cannot silently adopt another's files.
+    private func resourcesDirectory(forFile file: String) -> String? {
+        let slug = String(file.dropLast(3))          // trim ".md"
+        let dir = directory.appendingPathComponent(slug, isDirectory: true)
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: dir.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else { return nil }
+        return dir.path
+    }
+
+    /// Where a skill's bundled files belong. The caller creates and fills it;
+    /// the store only says where.
+    ///
+    /// Always a subdirectory, never the store root: `slugify` substitutes a
+    /// fallback for a name with nothing usable in it, so a blank name cannot
+    /// resolve here to the directory that `delete` would then remove.
+    public func resourcesDirectory(forSkillNamed name: String) -> URL {
+        directory.appendingPathComponent(Self.slugify(name), isDirectory: true)
     }
 
     // MARK: - Parsing

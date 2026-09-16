@@ -40,13 +40,23 @@ public struct AgentSkill: Sendable, Identifiable, Equatable {
     /// Optional tier gate (e.g. ".free", ".pro") — apps can filter skills by tier.
     public var tier: String?
 
+    /// Absolute path to this skill's bundled files, or nil when it has none.
+    ///
+    /// The third level of progressive disclosure. A skill's metadata is always
+    /// in the prompt, its instructions load on `use_skill`, and files it ships
+    /// — reference documents, templates, scripts — cost nothing until the model
+    /// reads one. That is the whole mechanism: a directory and an agent with
+    /// file tools. Nothing here fetches or parses them.
+    public var resourcesPath: String?
+
     public init(
         id: String = UUID().uuidString,
         name: String,
         description: String = "",
         triggerKeywords: [String] = [],
         instructions: String,
-        tier: String? = nil
+        tier: String? = nil,
+        resourcesPath: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -56,6 +66,7 @@ public struct AgentSkill: Sendable, Identifiable, Equatable {
         self.triggerKeywords = triggerKeywords
         self.instructions = instructions
         self.tier = tier
+        self.resourcesPath = resourcesPath
     }
 
     /// Fallback description for skills authored before the field existed:
@@ -70,10 +81,25 @@ public struct AgentSkill: Sendable, Identifiable, Equatable {
 
     /// Render the skill's full instructions for a `use_skill` load.
     public func render() -> String {
-        """
+        var out = """
         [Skill "\(name)" loaded — follow these instructions for this task:]
         \(instructions)
         """
+        // Deliberately the base path and nothing else. The instructions above
+        // link the files they need, in their own words and at the point they
+        // are needed — that is what keeps level 3 free until it is used.
+        // Listing the directory here would push the model to read files the
+        // task never calls for, which is the cost this design exists to avoid.
+        if let resourcesPath, !resourcesPath.isEmpty {
+            out += """
+
+
+            [This skill ships files in \(resourcesPath). Paths the instructions \
+            mention are relative to it. Read one only when the instructions \
+            above point you at it.]
+            """
+        }
+        return out
     }
 
     /// The skill's single line in the system-prompt index.
