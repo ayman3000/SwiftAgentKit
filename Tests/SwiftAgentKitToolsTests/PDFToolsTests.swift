@@ -142,6 +142,50 @@ private func tempCache() -> PDFOCRCache {
     #expect(PDFOCRCache.digest(ofFileAt: "/nope/missing.pdf") == nil)
 }
 
+@Test func pageImageRendersAPNGAtTwiceScale() async throws {
+    let url = makeTextPDF(["A chart would go here"])
+    let out = try await PDFPageImageTool().execute(parameters: ["path": url.path, "page": 1])
+    #expect(out.isError == false)
+
+    // The result must name a real file the agent can hand to view_image.
+    let path = try #require(out.result.components(separatedBy: " ")
+        .first { $0.hasSuffix(".png") })
+    #expect(FileManager.default.fileExists(atPath: path))
+    #expect(out.result.contains("view_image"))
+
+    // Really a PNG, and really 2x the 612x792 page — not the 3x OCR scale,
+    // whose extra pixels a vision model would bill for and then discard.
+    let image = try #require(NSImage(contentsOfFile: path))
+    let rep = try #require(image.representations.first)
+    #expect(rep.pixelsWide == 1224)
+    #expect(rep.pixelsHigh == 1584)
+    #expect(try Data(contentsOf: URL(fileURLWithPath: path)).prefix(4)
+        == Data([0x89, 0x50, 0x4E, 0x47]))     // PNG magic
+
+    try? FileManager.default.removeItem(atPath: path)
+    try? FileManager.default.removeItem(at: url)
+}
+
+/// It is the only PDF read that spends the user's money, so it must ask.
+@Test func pageImageRequiresConfirmationUnlikeEveryOtherRead() {
+    #expect(PDFPageImageTool().requiresConfirmation)
+    #expect(PDFExtractTextTool().requiresConfirmation == false)
+    #expect(PDFInfoTool().requiresConfirmation == false)
+}
+
+@Test func pageImageRejectsAPageOutsideTheDocument() async throws {
+    let url = makeTextPDF(["one page only"])
+    let tool = PDFPageImageTool()
+    let high = try await tool.execute(parameters: ["path": url.path, "page": 9])
+    #expect(high.isError)
+    #expect(high.result.contains("1–1"))
+    let low = try await tool.execute(parameters: ["path": url.path, "page": 0])
+    #expect(low.isError)
+    let missing = try await tool.execute(parameters: ["path": "/nope/x.pdf", "page": 1])
+    #expect(missing.isError)
+    try? FileManager.default.removeItem(at: url)
+}
+
 @Test func repairsEndOfLineHyphenation() {
     #expect(PDFExtractTextTool.repairHyphenation("proces-\nsing") == "processing")
     // A hyphen NOT at a line end is part of the word and must survive.
