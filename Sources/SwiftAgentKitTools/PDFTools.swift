@@ -11,6 +11,8 @@
 import Foundation
 import PDFKit
 import CoreGraphics
+import ImageIO
+import UniformTypeIdentifiers
 #if canImport(Vision)
 import Vision
 #endif
@@ -314,6 +316,92 @@ public struct PDFExtractTextTool: AgentTool {
         ctx.translateBy(x: -bounds.origin.x, y: -bounds.origin.y)
         page.draw(with: .mediaBox, to: ctx)
         return ctx.makeImage()
+    }
+}
+
+/// Render a PDF page to a PNG so a vision model can LOOK at it.
+///
+/// OCR answers "what words are on this page". This answers "what is this page
+/// showing" — a chart's shape, a diagram's arrows, a photo, a stamp. Text
+/// extraction is blind to all of it.
+///
+/// Requires confirmation, unlike every other read here, because it is the one
+/// PDF operation that spends the user's money: the image goes to a vision
+/// model. Everything else in this file runs locally and free.
+public struct PDFPageImageTool: AgentTool {
+    public let name = "pdf_page_image"
+    public var requiresConfirmation: Bool { true }
+    public let description = """
+    Render one page of a PDF to a PNG image file and return its path, so the \
+    page can be LOOKED at rather than read as text — for a chart, diagram, \
+    photo, or layout that text extraction cannot convey. Follow it with \
+    `view_image` on the returned path to actually see it. Costs the user a \
+    vision-model call and asks their permission, so use it only when \
+    pdf_extract_text genuinely cannot answer the question — not to double-check \
+    text you already have.
+    """
+    public let parameters = ToolParameters(
+        properties: [
+            "path": ToolParameterProperty(type: "string", description: "Path to the PDF (a leading ~ is expanded)."),
+            "page": ToolParameterProperty(type: "integer", description: "Page to render, 1-based."),
+        ],
+        required: ["path", "page"]
+    )
+
+    /// 2x the PDF's own scale. The OCR path renders at 3x because Vision loses
+    /// small type, but a vision model downscales anyway, so the extra pixels
+    /// are billed and then thrown away.
+    private let scale: CGFloat = 2.0
+
+    public init() {}
+
+    public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
+        guard let raw = parameters["path"] as? String, !raw.isEmpty else {
+            return .error(toolCallId: "", toolName: name, message: "pdf_page_image requires a `path`.")
+        }
+        guard let requested = intValue(parameters["page"]) else {
+            return .error(toolCallId: "", toolName: name, message: "pdf_page_image requires a `page`.")
+        }
+        guard let doc = PDFDocument(url: URL(fileURLWithPath: expandPath(raw))) else {
+            return .error(toolCallId: "", toolName: name, message: "Cannot open PDF: \(raw)")
+        }
+        guard requested >= 1, requested <= doc.pageCount else {
+            return .error(toolCallId: "", toolName: name,
+                          message: "Page \(requested) is outside this PDF (1–\(doc.pageCount)).")
+        }
+        guard let page = doc.page(at: requested - 1),
+              let image = PDFExtractTextTool.renderForOCR(page: page, scale: scale)
+        else {
+            return .error(toolCallId: "", toolName: name, message: "Could not render page \(requested).")
+        }
+        guard let data = Self.pngData(from: image) else {
+            return .error(toolCallId: "", toolName: name, message: "Could not encode page \(requested).")
+        }
+
+        let base = URL(fileURLWithPath: expandPath(raw)).deletingPathExtension().lastPathComponent
+        let out = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(base)-p\(requested)-\(UUID().uuidString.prefix(8)).png")
+        do {
+            try data.write(to: out, options: .atomic)
+        } catch {
+            return .error(toolCallId: "", toolName: name, message: "Could not write the page image: \(error.localizedDescription)")
+        }
+        return .success(toolCallId: "", toolName: name, result: """
+        Rendered page \(requested) of \(doc.pageCount) to \(out.path) \
+        (\(image.width)x\(image.height)). Call view_image with that path to see it.
+        """)
+    }
+
+    /// PNG, not JPEG. Counter-intuitive but measured: a page of text is sharp
+    /// edges on flat white, which JPEG spends bits fighting — PNG came out
+    /// both smaller AND lossless on real pages.
+    static func pngData(from image: CGImage) -> Data? {
+        let data = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil)
+        else { return nil }
+        CGImageDestinationAddImage(dest, image, nil)
+        guard CGImageDestinationFinalize(dest) else { return nil }
+        return data as Data
     }
 }
 
