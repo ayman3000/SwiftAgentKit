@@ -84,10 +84,16 @@ public struct PDFExtractTextTool: AgentTool {
 
     private let maxChars = 40_000
     /// OCR is seconds-per-page. Bound it so a 400-page scan can't stall a turn —
-    /// the model can always ask for the next range.
+    /// the model can always ask for the next range. Cached pages are free and
+    /// do NOT count against this, so a document recognised once can be re-read
+    /// whole.
     private let maxOCRPages = 20
 
-    public init() {}
+    private let cache: PDFOCRCache
+
+    public init(cache: PDFOCRCache = PDFOCRCache()) {
+        self.cache = cache
+    }
 
     public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
         guard let raw = parameters["path"] as? String, !raw.isEmpty else {
@@ -111,6 +117,10 @@ public struct PDFExtractTextTool: AgentTool {
         var truncatedAtPage: Int? = nil
         var ocrUsed = 0
         var ocrBudgetHit = false
+        // Computed at most once, and only if a page actually needs OCR —
+        // hashing the file is wasted work on a document with a text layer.
+        var fileDigest: String? = nil
+        var digestComputed = false
 
         for i in (first - 1)..<last {
             guard let page = doc.page(at: i) else { continue }
@@ -119,12 +129,21 @@ public struct PDFExtractTextTool: AgentTool {
             var viaOCR = false
 
             if policy.shouldOCR(hasText: !embedded.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
-                if ocrUsed >= maxOCRPages {
+                if !digestComputed {
+                    fileDigest = PDFOCRCache.digest(ofFileAt: expandPath(raw))
+                    digestComputed = true
+                }
+                if let fileDigest, let cached = cache.text(digest: fileDigest, page: i + 1) {
+                    // A hit costs nothing, so it neither waits nor spends budget.
+                    text = cached
+                    viaOCR = true
+                } else if ocrUsed >= maxOCRPages {
                     ocrBudgetHit = true
                 } else if let recognized = Self.ocr(page: page), !recognized.isEmpty {
                     ocrUsed += 1
                     text = recognized
                     viaOCR = true
+                    if let fileDigest { cache.store(recognized, digest: fileDigest, page: i + 1) }
                 }
             }
 
@@ -141,7 +160,8 @@ public struct PDFExtractTextTool: AgentTool {
                 + "\n… [truncated mid-page \(page) — call again with first_page: \(page) for the rest]"
         }
         if ocrBudgetHit {
-            out += "\n[OCR stopped after \(maxOCRPages) pages — request a later page range to continue]"
+            out += "\n[OCR stopped after \(maxOCRPages) new pages — call again for the rest; "
+                + "pages already recognised are cached and return immediately]"
         }
         return .success(toolCallId: "", toolName: name, result: out.isEmpty ? "(no extractable text)" : out)
     }

@@ -121,40 +121,126 @@ private func makeBigPDF(pages: Int) -> URL {
     #expect(f("plain ascii") == "plain ascii")
 }
 
+/// A cache in its own temp directory, so tests never touch the real one.
+private func tempCache() -> PDFOCRCache {
+    let dir = FileManager.default.temporaryDirectory
+        .appendingPathComponent("ocr-cache-\(UUID().uuidString)", isDirectory: true)
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    return PDFOCRCache(directory: dir)
+}
+
+@Test func digestIsStableAndContentAddressed() throws {
+    let a = makeTextPDF(["same bytes"])
+    let copy = FileManager.default.temporaryDirectory
+        .appendingPathComponent("d-\(UUID().uuidString).pdf")
+    try FileManager.default.copyItem(at: a, to: copy)
+
+    let d1 = try #require(PDFOCRCache.digest(ofFileAt: a.path))
+    let d2 = try #require(PDFOCRCache.digest(ofFileAt: copy.path))
+    #expect(d1 == d2)
+    #expect(d1.count == 64)
+    #expect(PDFOCRCache.digest(ofFileAt: "/nope/missing.pdf") == nil)
+}
+
 @Test func repairsEndOfLineHyphenation() {
     #expect(PDFExtractTextTool.repairHyphenation("proces-\nsing") == "processing")
     // A hyphen NOT at a line end is part of the word and must survive.
     #expect(PDFExtractTextTool.repairHyphenation("dual-pane") == "dual-pane")
 }
 
-@Test func ocrReadsAScannedPageWithNoTextLayer() async throws {
-    let scanned = try makeScannedPDF(from: makeTextPDF(["Invoice total 4200"]))
+/// Vision recognition is CPU-heavy and these run it for real. Serialized so at
+/// most one OCR is in flight: run in parallel they saturate the machine and
+/// make unrelated timing-sensitive tests elsewhere in the suite flake.
+@Suite(.serialized)
+struct PDFOCRTests {
+    @Test func ocrIsCachedAcrossCallsAndIsMuchFasterTheSecondTime() async throws {
+        let scanned = try makeScannedPDF(from: makeTextPDF(["Cached invoice 8100"]))
+        let tool = PDFExtractTextTool(cache: tempCache())
+    
+        let coldStart = Date()
+        let cold = try await tool.execute(parameters: ["path": scanned.path])
+        let coldMs = Date().timeIntervalSince(coldStart) * 1000
+        #expect(cold.result.contains("8100"))
+    
+        let warmStart = Date()
+        let warm = try await tool.execute(parameters: ["path": scanned.path])
+        let warmMs = Date().timeIntervalSince(warmStart) * 1000
+    
+        // Same text back...
+        #expect(warm.result.contains("8100"))
+        #expect(warm.result.contains("[page 1 — OCR]"))
+        // ...without paying for recognition again. Recognition is ~700 ms a page,
+        // so a real hit is an order of magnitude faster, not a few percent.
+        #expect(warmMs < coldMs / 2, "warm \(warmMs) ms was not clearly faster than cold \(coldMs) ms")
+    }
 
-    // Precondition: the rasterised PDF really has no text layer.
-    let doc = try #require(PDFDocument(url: scanned))
-    let embedded = doc.page(at: 0)?.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    #expect(embedded.isEmpty)
+    @Test func cacheIsKeyedByContentNotByPath() async throws {
+        let cache = tempCache()
+        let original = try makeScannedPDF(from: makeTextPDF(["Portable total 5150"]))
+        _ = try await PDFExtractTextTool(cache: cache).execute(parameters: ["path": original.path])
+    
+        // The same bytes at a different path — what a second conversation's copy is.
+        let copy = FileManager.default.temporaryDirectory
+            .appendingPathComponent("copy-\(UUID().uuidString).pdf")
+        try FileManager.default.copyItem(at: original, to: copy)
+    
+        let start = Date()
+        let out = try await PDFExtractTextTool(cache: cache).execute(parameters: ["path": copy.path])
+        let ms = Date().timeIntervalSince(start) * 1000
+        #expect(out.result.contains("5150"))
+        #expect(ms < 400, "a copy of an already-recognised file re-ran OCR (\(ms) ms)")
+    }
 
-    let out = try await PDFExtractTextTool().execute(parameters: ["path": scanned.path])
-    #expect(out.result.contains("[page 1 — OCR]"))
-    #expect(out.result.contains("Invoice"))
-    #expect(out.result.contains("4200"))
+    @Test func differentContentIsADifferentCacheEntry() async throws {
+        let cache = tempCache()
+        let a = try makeScannedPDF(from: makeTextPDF(["First doc 1111"]))
+        let b = try makeScannedPDF(from: makeTextPDF(["Second doc 2222"]))
+        let tool = PDFExtractTextTool(cache: cache)
+    
+        let outA = try await tool.execute(parameters: ["path": a.path])
+        let outB = try await tool.execute(parameters: ["path": b.path])
+        #expect(outA.result.contains("1111"))
+        #expect(outB.result.contains("2222"))
+        #expect(!outB.result.contains("1111"))   // no cross-contamination
+    }
+
+    @Test func cacheCanBeDisabled() async throws {
+        let scanned = try makeScannedPDF(from: makeTextPDF(["No cache 7000"]))
+        let tool = PDFExtractTextTool(cache: PDFOCRCache(directory: nil))
+        let out = try await tool.execute(parameters: ["path": scanned.path])
+        #expect(out.result.contains("7000"))     // still works, just never stored
+    }
+
+    @Test func ocrReadsAScannedPageWithNoTextLayer() async throws {
+        let scanned = try makeScannedPDF(from: makeTextPDF(["Invoice total 4200"]))
+    
+        // Precondition: the rasterised PDF really has no text layer.
+        let doc = try #require(PDFDocument(url: scanned))
+        let embedded = doc.page(at: 0)?.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        #expect(embedded.isEmpty)
+    
+        let out = try await PDFExtractTextTool().execute(parameters: ["path": scanned.path])
+        #expect(out.result.contains("[page 1 — OCR]"))
+        #expect(out.result.contains("Invoice"))
+        #expect(out.result.contains("4200"))
+    }
+
+    @Test func ocrOffLeavesAScannedPageEmpty() async throws {
+        let scanned = try makeScannedPDF(from: makeTextPDF(["Invoice total 4200"]))
+        let out = try await PDFExtractTextTool().execute(
+            parameters: ["path": scanned.path, "ocr": "off"])
+        #expect(out.result.contains("(no extractable text)"))
+        #expect(!out.result.contains("OCR"))
+    }
+
+    @Test func ocrReadsArabic() async throws {
+        // Vision advertises ar-SA; this proves the whole path (render → detect
+        // script → recognise) works for a right-to-left scan, not just Latin.
+        let scanned = try makeScannedPDF(from: makeTextPDF(["فاتورة"], font: "Geeza Pro"))
+        let out = try await PDFExtractTextTool().execute(parameters: ["path": scanned.path])
+        #expect(out.result.contains("[page 1 — OCR]"))
+        #expect(out.result.contains("فاتورة"))
+    }
 }
 
-@Test func ocrOffLeavesAScannedPageEmpty() async throws {
-    let scanned = try makeScannedPDF(from: makeTextPDF(["Invoice total 4200"]))
-    let out = try await PDFExtractTextTool().execute(
-        parameters: ["path": scanned.path, "ocr": "off"])
-    #expect(out.result.contains("(no extractable text)"))
-    #expect(!out.result.contains("OCR"))
-}
-
-@Test func ocrReadsArabic() async throws {
-    // Vision advertises ar-SA; this proves the whole path (render → detect
-    // script → recognise) works for a right-to-left scan, not just Latin.
-    let scanned = try makeScannedPDF(from: makeTextPDF(["فاتورة"], font: "Geeza Pro"))
-    let out = try await PDFExtractTextTool().execute(parameters: ["path": scanned.path])
-    #expect(out.result.contains("[page 1 — OCR]"))
-    #expect(out.result.contains("فاتورة"))
-}
 #endif
