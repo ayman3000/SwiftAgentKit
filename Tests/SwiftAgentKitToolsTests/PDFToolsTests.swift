@@ -204,6 +204,36 @@ struct PDFOCRTests {
         #expect(!outB.result.contains("1111"))   // no cross-contamination
     }
 
+    /// A host that turns OCR off (a plan tier, a policy) must get an honest
+    /// "couldn't read this", never a silent empty page the model then guesses at.
+    @Test func ocrCanBeUnavailableAndSaysSo() async throws {
+        let scanned = try makeScannedPDF(from: makeTextPDF(["Gated total 9300"]))
+        let tool = PDFExtractTextTool(cache: tempCache(),
+                                      ocrUnavailableNote: "reading scanned pages needs Pro")
+        let out = try await tool.execute(parameters: ["path": scanned.path])
+
+        #expect(out.isError == false)                       // not a failure, a limit
+        #expect(out.result.contains("no text layer on page 1"))
+        #expect(out.result.contains("reading scanned pages needs Pro"))
+        #expect(out.result.contains("rather than guessing"))
+        #expect(!out.result.contains("9300"))               // it really did not OCR
+        #expect(!out.result.contains("— OCR]"))
+
+        // The tool's own description must not promise OCR it will not do.
+        #expect(tool.description.contains("cannot be read"))
+        #expect(PDFExtractTextTool().description.contains("read with OCR"))
+    }
+
+    /// Turning OCR off must not touch text-layer PDFs.
+    @Test func textLayerPagesAreUnaffectedWhenOCRIsUnavailable() async throws {
+        let url = makeTextPDF(["Ordinary readable page"])
+        let out = try await PDFExtractTextTool(cache: tempCache(),
+                                               ocrUnavailableNote: "needs Pro")
+            .execute(parameters: ["path": url.path])
+        #expect(out.result.contains("Ordinary readable page"))
+        #expect(!out.result.contains("needs Pro"))
+    }
+
     @Test func cacheCanBeDisabled() async throws {
         let scanned = try makeScannedPDF(from: makeTextPDF(["No cache 7000"]))
         let tool = PDFExtractTextTool(cache: PDFOCRCache(directory: nil))

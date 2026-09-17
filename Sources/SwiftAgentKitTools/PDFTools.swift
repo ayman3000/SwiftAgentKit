@@ -67,11 +67,16 @@ public struct PDFInfoTool: AgentTool {
 public struct PDFExtractTextTool: AgentTool {
     public let name = "pdf_extract_text"
     public var isReadOnly: Bool { true }
-    public let description = """
-    Extract text from a PDF, labelled by page. Optionally limit to a 1-based \
-    page range with `first_page` / `last_page`. Scanned pages with no text \
-    layer are read with OCR. Output is bounded; narrow the range for big PDFs.
-    """
+    public var description: String {
+        let ocrLine = ocrUnavailableNote == nil
+            ? "Scanned pages with no text layer are read with OCR."
+            : "Scanned pages cannot be read: \(ocrUnavailableNote!)"
+        return """
+        Extract text from a PDF, labelled by page. Optionally limit to a 1-based \
+        page range with `first_page` / `last_page`. \(ocrLine) Output is \
+        bounded; narrow the range for big PDFs.
+        """
+    }
     public let parameters = ToolParameters(
         properties: [
             "path": ToolParameterProperty(type: "string", description: "Path to the PDF (a leading ~ is expanded)."),
@@ -90,9 +95,14 @@ public struct PDFExtractTextTool: AgentTool {
     private let maxOCRPages = 20
 
     private let cache: PDFOCRCache
+    /// When set, OCR never runs and the reason is reported once in the output.
+    /// Lets a host turn recognition off — for a plan tier, a policy, or a
+    /// machine without Vision — without the tool pretending it read the page.
+    private let ocrUnavailableNote: String?
 
-    public init(cache: PDFOCRCache = PDFOCRCache()) {
+    public init(cache: PDFOCRCache = PDFOCRCache(), ocrUnavailableNote: String? = nil) {
         self.cache = cache
+        self.ocrUnavailableNote = ocrUnavailableNote
     }
 
     public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
@@ -121,6 +131,8 @@ public struct PDFExtractTextTool: AgentTool {
         // hashing the file is wasted work on a document with a text layer.
         var fileDigest: String? = nil
         var digestComputed = false
+        /// Pages with no text layer that could not be OCR'd.
+        var unreadablePages: [Int] = []
 
         for i in (first - 1)..<last {
             guard let page = doc.page(at: i) else { continue }
@@ -128,7 +140,11 @@ public struct PDFExtractTextTool: AgentTool {
             var text = embedded
             var viaOCR = false
 
-            if policy.shouldOCR(hasText: !embedded.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
+            let needsOCR = policy.shouldOCR(
+                hasText: !embedded.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            if needsOCR, ocrUnavailableNote != nil {
+                unreadablePages.append(i + 1)
+            } else if needsOCR {
                 if !digestComputed {
                     fileDigest = PDFOCRCache.digest(ofFileAt: expandPath(raw))
                     digestComputed = true
@@ -158,6 +174,11 @@ public struct PDFExtractTextTool: AgentTool {
             // and it tended to re-read pages it already had.
             out = String(out.prefix(maxChars))
                 + "\n… [truncated mid-page \(page) — call again with first_page: \(page) for the rest]"
+        }
+        if let note = ocrUnavailableNote, !unreadablePages.isEmpty {
+            let list = unreadablePages.map(String.init).joined(separator: ", ")
+            out += "\n[no text layer on \(unreadablePages.count == 1 ? "page" : "pages") \(list) — "
+                + "\(note). Say so rather than guessing at what those pages contain.]"
         }
         if ocrBudgetHit {
             out += "\n[OCR stopped after \(maxOCRPages) new pages — call again for the rest; "
