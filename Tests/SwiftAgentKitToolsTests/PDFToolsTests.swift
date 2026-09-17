@@ -55,6 +55,51 @@ private func makeScannedPDF(from source: URL) throws -> URL {
     #expect(out.isError == true)
 }
 
+/// A PDF big enough to blow the 40k output cap, so truncation is exercised.
+private func makeBigPDF(pages: Int) -> URL {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("big-\(UUID().uuidString).pdf")
+    var box = CGRect(x: 0, y: 0, width: 612, height: 792)
+    let ctx = CGContext(url as CFURL, mediaBox: &box, nil)!
+    let font = CTFontCreateWithName("Helvetica" as CFString, 11, nil)
+    for p in 1...pages {
+        ctx.beginPDFPage(nil)
+        for row in 0..<55 {
+            let text = "Page \(p) line \(row) " + String(repeating: "lorem ipsum dolor ", count: 4)
+            let line = CTLineCreateWithAttributedString(
+                NSAttributedString(string: text, attributes: [.font: font]))
+            ctx.textPosition = CGPoint(x: 36, y: 750 - CGFloat(row) * 13)
+            CTLineDraw(line, ctx)
+        }
+        ctx.endPDFPage()
+    }
+    ctx.closePDF()
+    return url
+}
+
+@Test func truncationNamesThePageToResumeFrom() async throws {
+    let url = makeBigPDF(pages: 40)
+    let out = try await PDFExtractTextTool().execute(parameters: ["path": url.path])
+    let text = out.result
+
+    // It really did truncate, and it says where to pick up.
+    #expect(text.contains("truncated mid-page"))
+    let marker = try #require(text.range(of: #"first_page: (\d+)"#, options: .regularExpression))
+    let resume = try #require(Int(text[marker].replacingOccurrences(of: "first_page: ", with: "")))
+    #expect(resume > 1)
+
+    // The resume call continues the document rather than repeating it.
+    let rest = try await PDFExtractTextTool().execute(
+        parameters: ["path": url.path, "first_page": resume])
+    #expect(rest.result.contains("[page \(resume)]"))
+
+    // No gap: every page from 1 to `resume` appears across the two calls.
+    for p in 1..<resume {
+        #expect(text.contains("[page \(p)]"), "page \(p) missing from the first call")
+    }
+    try? FileManager.default.removeItem(at: url)
+}
+
 @Test func repairsEndOfLineHyphenation() {
     #expect(PDFExtractTextTool.repairHyphenation("proces-\nsing") == "processing")
     // A hyphen NOT at a line end is part of the word and must survive.
