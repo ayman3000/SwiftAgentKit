@@ -331,6 +331,9 @@ public struct PDFExtractTextTool: AgentTool {
 public struct PDFPageImageTool: AgentTool {
     public let name = "pdf_page_image"
     public var requiresConfirmation: Bool { true }
+    /// And autonomy does not waive it: this is the one PDF operation billed
+    /// outside the machine, and there is no undoing a vision-model call.
+    public var requiresConfirmationEvenWhenAutonomous: Bool { true }
     public let description = """
     Render one page of a PDF to a PNG image file and return its path, so the \
     page can be LOOKED at rather than read as text — for a chart, diagram, \

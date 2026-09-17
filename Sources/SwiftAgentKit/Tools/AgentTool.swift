@@ -57,6 +57,22 @@ public protocol AgentTool: Sendable {
     /// Default is `false`. Override for dangerous tools (delete, shell, etc.).
     var requiresConfirmation: Bool { get }
 
+    /// Whether that confirmation stands even in autonomous mode.
+    ///
+    /// Autonomy waives ordinary confirmations because the run has no human to
+    /// ask and denial would just dead-end it. That reasoning holds for actions
+    /// whose cost is local and recoverable — a file written can be rewritten, a
+    /// command re-run.
+    ///
+    /// It does NOT hold for an action that spends the user's money outside the
+    /// machine. There is no undo for a billed API call, and "the user turned on
+    /// autonomy" is consent to work unattended, not consent to spend. A tool
+    /// like that sets this to `true` and is asked about every time.
+    ///
+    /// Default `false`, so autonomy behaves exactly as before for every
+    /// existing tool.
+    var requiresConfirmationEvenWhenAutonomous: Bool { get }
+
     /// One or two REAL calls, as JSON objects of the arguments only. A schema
     /// says a field is a string; an example shows the date format, how an id is
     /// written, and which optional fields belong together — the things a model
@@ -98,6 +114,7 @@ public extension AgentTool {
 
 public extension AgentTool {
     var requiresConfirmation: Bool { false }
+    var requiresConfirmationEvenWhenAutonomous: Bool { false }
     var isReadOnly: Bool { false }
     var inputExamples: [String] { [] }
 

@@ -361,3 +361,14 @@ struct PDFOCRTests {
 }
 
 #endif
+
+@Test func pageImageConfirmationSurvivesAutonomousMode() {
+    // Autonomy waives ordinary confirmations. It must NOT waive this one:
+    // a vision-model call is billed outside the machine and cannot be undone.
+    #expect(PDFPageImageTool().requiresConfirmationEvenWhenAutonomous)
+
+    // Everything else here is local and free, so autonomy may waive it as before.
+    #expect(!PDFMergeTool().requiresConfirmationEvenWhenAutonomous)
+    #expect(!PDFSplitTool().requiresConfirmationEvenWhenAutonomous)
+    #expect(!PDFExtractTextTool().requiresConfirmationEvenWhenAutonomous)
+}

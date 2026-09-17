@@ -271,7 +271,13 @@ public actor ToolDispatcher {
         // approved before it runs, unless autonomous mode is enabled. If no
         // confirmation handler is provided we fail closed (deny) rather than
         // run an unconfirmed dangerous operation.
-        if tool.requiresConfirmation && !autonomousMode {
+        //
+        // A tool may opt out of the autonomy waiver. Autonomy means "work
+        // unattended"; for an action billed outside this machine it would
+        // otherwise mean "spend unattended", which is not the same consent and
+        // has no undo.
+        let waivedByAutonomy = autonomousMode && !tool.requiresConfirmationEvenWhenAutonomous
+        if tool.requiresConfirmation && !waivedByAutonomy {
             observer?.onEvent(.toolConfirmationRequired(call: call))
             let approved = await callbacks?.onToolConfirmation?(call, context) ?? false
             if !approved {
