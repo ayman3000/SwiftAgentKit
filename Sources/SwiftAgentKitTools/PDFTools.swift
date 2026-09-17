@@ -114,7 +114,7 @@ public struct PDFExtractTextTool: AgentTool {
 
         for i in (first - 1)..<last {
             guard let page = doc.page(at: i) else { continue }
-            let embedded = Self.repairHyphenation(page.string ?? "")
+            let embedded = Self.normalizePresentationForms(Self.repairHyphenation(page.string ?? ""))
             var text = embedded
             var viaOCR = false
 
@@ -170,6 +170,43 @@ public struct PDFExtractTextTool: AgentTool {
     static func repairHyphenation(_ text: String) -> String {
         text.replacingOccurrences(of: "-\n", with: "")
             .replacingOccurrences(of: "-\r\n", with: "")
+    }
+
+    /// Replace typographic ligatures and Arabic presentation forms with their
+    /// ordinary letters: "eﬀect" → "effect", "ﻻ" → "لا".
+    ///
+    /// PDFs embed these because they are what the font actually draws, but they
+    /// are a poor thing to hand a model — they tokenise badly, break search, and
+    /// in Arabic the presentation-form blocks are used heavily, so a whole
+    /// document can arrive in characters that never appear in typed Arabic.
+    ///
+    /// Applied per character to the ligature and presentation-form blocks ONLY,
+    /// rather than running NFKC over everything: blanket NFKC also rewrites
+    /// "x²" to "x2" and "½" to "1⁄2", which loses meaning the document had.
+    static func normalizePresentationForms(_ text: String) -> String {
+        guard text.unicodeScalars.contains(where: { isPresentationForm($0) }) else { return text }
+        var out = String()
+        out.reserveCapacity(text.count)
+        for scalar in text.unicodeScalars {
+            if isPresentationForm(scalar) {
+                out += String(scalar).precomposedStringWithCompatibilityMapping
+            } else {
+                out.unicodeScalars.append(scalar)
+            }
+        }
+        return out
+    }
+
+    private static func isPresentationForm(_ s: Unicode.Scalar) -> Bool {
+        switch s.value {
+        case 0xFB00...0xFB06:   // Latin ligatures: ﬀ ﬁ ﬂ ﬃ ﬄ ﬅ ﬆ
+            return true
+        case 0xFB50...0xFDFF,   // Arabic Presentation Forms-A
+             0xFE70...0xFEFF:   // Arabic Presentation Forms-B
+            return true
+        default:
+            return false
+        }
     }
 
     /// Render a page and recognise its text with Vision. Returns nil when Vision

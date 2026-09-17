@@ -100,6 +100,27 @@ private func makeBigPDF(pages: Int) -> URL {
     try? FileManager.default.removeItem(at: url)
 }
 
+@Test func normalisesLigaturesAndArabicPresentationForms() {
+    let f = PDFExtractTextTool.normalizePresentationForms
+
+    // Typographic ligatures a PDF embeds because that is what the font draws.
+    #expect(f("e\u{FB00}ect") == "effect")
+    #expect(f("\u{FB01}le") == "file")
+
+    // Arabic presentation forms — whole documents arrive in these, and they
+    // never appear in typed Arabic, so search and tokenisation both suffer.
+    #expect(f("\u{FEFB}") == "لا")           // lam-alef ligature
+    #expect(f("\u{FEF3}\u{FE8E}") == "يا")  // medial/final forms
+
+    // Ordinary Arabic is already in its normal form and must not be touched.
+    #expect(f("فاتورة العميل") == "فاتورة العميل")
+
+    // Blanket NFKC would rewrite these and lose what the document meant.
+    #expect(f("x² area") == "x² area")
+    #expect(f("½ cup") == "½ cup")
+    #expect(f("plain ascii") == "plain ascii")
+}
+
 @Test func repairsEndOfLineHyphenation() {
     #expect(PDFExtractTextTool.repairHyphenation("proces-\nsing") == "processing")
     // A hyphen NOT at a line end is part of the word and must survive.
