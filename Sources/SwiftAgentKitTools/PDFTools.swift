@@ -107,7 +107,8 @@ public struct PDFExtractTextTool: AgentTool {
         let policy = OCRPolicy(parameters["ocr"] as? String)
 
         var out = ""
-        var truncated = false
+        /// The page whose text was cut off, so the caller can resume there.
+        var truncatedAtPage: Int? = nil
         var ocrUsed = 0
         var ocrBudgetHit = false
 
@@ -130,11 +131,14 @@ public struct PDFExtractTextTool: AgentTool {
             out += viaOCR ? "[page \(i + 1) — OCR]\n" : "[page \(i + 1)]\n"
             out += text.isEmpty ? "(no extractable text)\n" : text + "\n"
             out += "\n"
-            if out.count > maxChars { truncated = true; break }
+            if out.count > maxChars { truncatedAtPage = i + 1; break }
         }
 
-        if truncated {
-            out = String(out.prefix(maxChars)) + "\n… [truncated — narrow the page range]"
+        if let page = truncatedAtPage {
+            // Name the resume point. "Narrow the range" left the model guessing
+            // and it tended to re-read pages it already had.
+            out = String(out.prefix(maxChars))
+                + "\n… [truncated mid-page \(page) — call again with first_page: \(page) for the rest]"
         }
         if ocrBudgetHit {
             out += "\n[OCR stopped after \(maxOCRPages) pages — request a later page range to continue]"
