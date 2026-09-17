@@ -57,7 +57,20 @@ public struct PDFInfoTool: AgentTool {
 /// 2. **OCR fallback.** A scanned PDF has no text layer and `page.string`
 ///    returns nothing. Those pages are rendered and run through Vision, which
 ///    recognises 30 languages including Arabic. Pages that DO have a text layer
-///    are never OCR'd — the embedded text is both faster and more accurate.
+///    are not OCR'd by default — the embedded text is 17x faster and gives the
+///    exact characters.
+///
+///    It is NOT always more accurate, which is worth knowing before trusting
+///    it. The text layer is stored in the PDF's own content-stream order, and
+///    that order is sometimes wrong: measured on a real guide, the text layer
+///    returned `println!("{:?}", instant, readable debugging.\nvalue) for`
+///    where OCR of the same page returned the sentence intact. OCR reads the
+///    page as rendered, so reading order comes from the visual layout.
+///
+///    The trade runs both ways: OCR inserts spaces that are not there
+///    (`println! (`, `#[derive (Debug) ]`), which is harmless in prose and
+///    wrong in code. So `ocr: "force"` is offered as a REPAIR for a document
+///    whose text layer comes back scrambled — not as a better default.
 ///
 /// Deliberately NOT done: un-wrapping lines. PDF text runs break mid-sentence
 /// ("…a dual-pane mac\nOS file manager…"), and every rule that rejoins them
@@ -69,7 +82,10 @@ public struct PDFExtractTextTool: AgentTool {
     public var isReadOnly: Bool { true }
     public var description: String {
         let ocrLine = ocrUnavailableNote == nil
-            ? "Scanned pages with no text layer are read with OCR."
+            ? "Scanned pages with no text layer are read with OCR. If a page's "
+              + "text comes back garbled or out of order, read it again with "
+              + "`ocr: force` — that re-reads the page as rendered, which fixes "
+              + "reading order (at the cost of stray spaces in code)."
             : "Scanned pages cannot be read: \(ocrUnavailableNote!)"
         return """
         Extract text from a PDF, labelled by page. Optionally limit to a 1-based \
@@ -133,6 +149,8 @@ public struct PDFExtractTextTool: AgentTool {
         var digestComputed = false
         /// Pages with no text layer that could not be OCR'd.
         var unreadablePages: [Int] = []
+        /// `force` was asked for on pages that do have text, and OCR is off.
+        var ocrRefusedDespiteText = false
 
         for i in (first - 1)..<last {
             guard let page = doc.page(at: i) else { continue }
@@ -140,10 +158,13 @@ public struct PDFExtractTextTool: AgentTool {
             var text = embedded
             var viaOCR = false
 
-            let needsOCR = policy.shouldOCR(
-                hasText: !embedded.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            let hasText = !embedded.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let needsOCR = policy.shouldOCR(hasText: hasText)
             if needsOCR, ocrUnavailableNote != nil {
-                unreadablePages.append(i + 1)
+                // `force` asks to OCR pages that already have text. When OCR is
+                // unavailable those pages are NOT unreadable — their text layer
+                // is returned as usual, and only the re-read was refused.
+                if hasText { ocrRefusedDespiteText = true } else { unreadablePages.append(i + 1) }
             } else if needsOCR {
                 if !digestComputed {
                     fileDigest = PDFOCRCache.digest(ofFileAt: expandPath(raw))
@@ -179,6 +200,10 @@ public struct PDFExtractTextTool: AgentTool {
             let list = unreadablePages.map(String.init).joined(separator: ", ")
             out += "\n[no text layer on \(unreadablePages.count == 1 ? "page" : "pages") \(list) — "
                 + "\(note). Say so rather than guessing at what those pages contain.]"
+        }
+        if let note = ocrUnavailableNote, ocrRefusedDespiteText {
+            out += "\n[re-reading with OCR is unavailable — \(note). "
+                + "The text above is the document's own text layer.]"
         }
         if ocrBudgetHit {
             out += "\n[OCR stopped after \(maxOCRPages) new pages — call again for the rest; "

@@ -225,6 +225,49 @@ struct PDFOCRTests {
     }
 
     /// Turning OCR off must not touch text-layer PDFs.
+    /// `force` on a gated install used to mark EVERY page "no text layer",
+    /// including pages whose text was returned perfectly well.
+    @Test func forcedOCRWhenUnavailableStillReturnsTheTextLayer() async throws {
+        let url = makeTextPDF(["Readable page one"])
+        let out = try await PDFExtractTextTool(cache: tempCache(),
+                                               ocrUnavailableNote: "needs Pro")
+            .execute(parameters: ["path": url.path, "ocr": "force"])
+
+        #expect(out.result.contains("Readable page one"))        // text still returned
+        #expect(!out.result.contains("no text layer"))           // and NOT called unreadable
+        #expect(out.result.contains("re-reading with OCR is unavailable"))
+        #expect(out.result.contains("needs Pro"))
+    }
+
+    /// A genuinely blank page must still be reported as unreadable, even under
+    /// `force` — the two cases must not be confused for one another.
+    @Test func forcedOCRWhenUnavailableStillFlagsAScan() async throws {
+        let scanned = try makeScannedPDF(from: makeTextPDF(["Scan only 4242"]))
+        let out = try await PDFExtractTextTool(cache: tempCache(),
+                                               ocrUnavailableNote: "needs Pro")
+            .execute(parameters: ["path": scanned.path, "ocr": "force"])
+
+        #expect(out.result.contains("no text layer on page 1"))
+        #expect(!out.result.contains("4242"))
+    }
+
+    /// The repair route is advertised only when it can actually run.
+    @Test func theForceRepairIsOfferedOnlyWhenOCRIsAvailable() {
+        #expect(PDFExtractTextTool().description.contains("ocr: force"))
+        #expect(!PDFExtractTextTool(ocrUnavailableNote: "needs Pro")
+            .description.contains("ocr: force"))
+    }
+
+    /// The reason `force` exists: OCR reads the page as rendered, so it can
+    /// recover content the text layer returns in the wrong order.
+    @Test func forcedOCRReadsAPageThatAlreadyHasText() async throws {
+        let url = makeTextPDF(["Repaired line 6060"])
+        let out = try await PDFExtractTextTool(cache: tempCache())
+            .execute(parameters: ["path": url.path, "ocr": "force"])
+        #expect(out.result.contains("[page 1 — OCR]"))   // really re-read, not passed through
+        #expect(out.result.contains("6060"))
+    }
+
     @Test func textLayerPagesAreUnaffectedWhenOCRIsUnavailable() async throws {
         let url = makeTextPDF(["Ordinary readable page"])
         let out = try await PDFExtractTextTool(cache: tempCache(),
