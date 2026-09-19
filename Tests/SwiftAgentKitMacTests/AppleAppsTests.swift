@@ -248,3 +248,37 @@ final class AppleAppsTests: XCTestCase {
     }
 }
 #endif
+
+#if os(macOS)
+extension AppleAppsTests {
+    /// A model with no reminders tool used to invent a calendar event "as a
+    /// reminder", or blame the profile. The guidance now names what is off.
+    func testGuidanceNamesTheAppsThatAreOff() {
+        let g = appleAppsPromptGuidance([.calendar, .notes])
+        XCTAssertTrue(g.contains("NOT turned on"))
+        XCTAssertTrue(g.contains("Reminders"))
+        XCTAssertTrue(g.contains("Mail"))
+        XCTAssertTrue(g.contains("Settings ▸ Integrations"))
+        XCTAssertTrue(g.contains("EVERY profile"))
+        XCTAssertFalse(g.contains("Reminder or event"), "no disambiguation when reminders is off")
+    }
+
+    func testGuidanceDisambiguatesReminderFromEventWhenBothAreOn() {
+        let g = appleAppsPromptGuidance([.calendar, .reminders])
+        XCTAssertTrue(g.contains("Reminder or event"))
+        XCTAssertTrue(g.contains("reminders_add"))
+        XCTAssertFalse(g.contains("NOT turned on: Calendar"))
+    }
+
+    func testGuidanceSaysNothingAboutOffAppsWhenAllAreOn() {
+        let g = appleAppsPromptGuidance(.all)
+        XCTAssertFalse(g.contains("NOT turned on"))
+        XCTAssertTrue(g.contains("Reminder or event"))
+    }
+
+    func testToolDescriptionsPointAtEachOther() {
+        XCTAssertTrue(CalendarCreateEventTool(store: MockEvents()).description.contains("reminders_add"))
+        XCTAssertTrue(RemindersAddTool(store: MockEvents()).description.contains("calendar_create_event"))
+    }
+}
+#endif

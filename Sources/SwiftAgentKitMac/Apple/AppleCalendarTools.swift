@@ -190,7 +190,12 @@ public struct CalendarEventsTool: AgentTool {
 
 public struct CalendarCreateEventTool: AgentTool {
     public let name = "calendar_create_event"
-    public let description = "Create an event in the user's Calendar. Confirmed by the user. Dates ISO 8601 in the Mac's time zone; omit `end` for one hour."
+    public let description = """
+    Create an event in the user's Calendar: a meeting, an appointment, a trip — something that \
+    occupies a span of time. For a task the user wants to be reminded about ("remind me to…"), \
+    use reminders_add instead; a calendar event is not a reminder. Confirmed by the user. Dates \
+    ISO 8601 in the Mac's time zone; omit `end` for one hour.
+    """
     public let parameters = ToolParameters(properties: [
         "title": ToolParameterProperty(type: "string", description: "Event title."),
         "start": ToolParameterProperty(type: "string", description: "Start, ISO 8601 (or YYYY-MM-DD with all_day)."),
@@ -251,7 +256,12 @@ public struct RemindersListTool: AgentTool {
 
 public struct RemindersAddTool: AgentTool {
     public let name = "reminders_add"
-    public let description = "Add a reminder, optionally with a due date (ISO 8601) and a list name. Confirmed by the user."
+    public let description = """
+    Add a reminder to the Reminders app — this is what "remind me to…", "add a reminder" and \
+    "don't let me forget" mean, with or without a time. Optionally a due date (ISO 8601) and a \
+    list name. For a meeting or appointment that occupies time, use calendar_create_event \
+    instead. Confirmed by the user.
+    """
     public let parameters = ToolParameters(properties: [
         "title": ToolParameterProperty(type: "string", description: "What to remember."),
         "due": ToolParameterProperty(type: "string", description: "Due date/time, ISO 8601 (optional)."),
