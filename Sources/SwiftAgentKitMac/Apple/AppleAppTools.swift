@@ -32,13 +32,15 @@ public func makeAppleAppTools(_ apps: AppleApps,
                   MailDraftTool(runner: runner), MailSendTool(runner: runner)]
     }
     if apps.contains(.notes) {
-        tools += [NotesListTool(runner: runner), NotesSearchTool(runner: runner), NotesReadTool(runner: runner), NotesCreateTool(runner: runner)]
+        tools += [NotesListTool(runner: runner), NotesSearchTool(runner: runner), NotesReadTool(runner: runner),
+                  NotesCreateTool(runner: runner), NotesDeleteTool(runner: runner)]
     }
     if apps.contains(.calendar) {
-        tools += [CalendarEventsTool(store: events), CalendarCreateEventTool(store: events)]
+        tools += [CalendarEventsTool(store: events), CalendarCreateEventTool(store: events), CalendarDeleteEventTool(store: events)]
     }
     if apps.contains(.reminders) {
-        tools += [RemindersListTool(store: events), RemindersAddTool(store: events), RemindersCompleteTool(store: events)]
+        tools += [RemindersListTool(store: events), RemindersAddTool(store: events),
+                  RemindersCompleteTool(store: events), RemindersDeleteTool(store: events)]
     }
     if apps.contains(.contacts) {
         tools += [ContactsSearchTool(store: contacts)]
@@ -54,9 +56,9 @@ public func makeAppleAppTools(_ apps: AppleApps,
 public func appleAppsPromptGuidance(_ apps: AppleApps) -> String {
     let all: [(AppleApps, String, String)] = [
         (.mail, "Mail", "mail_inbox, mail_search, mail_read, mail_draft, mail_send"),
-        (.calendar, "Calendar", "calendar_events, calendar_create_event"),
-        (.reminders, "Reminders", "reminders_list, reminders_add, reminders_complete"),
-        (.notes, "Notes", "notes_list, notes_search, notes_read, notes_create"),
+        (.calendar, "Calendar", "calendar_events, calendar_create_event, calendar_delete_event"),
+        (.reminders, "Reminders", "reminders_list, reminders_add, reminders_complete, reminders_delete"),
+        (.notes, "Notes", "notes_list, notes_search, notes_read, notes_create, notes_delete"),
         (.contacts, "Contacts", "contacts_search"),
     ]
     let on = all.filter { apps.contains($0.0) }.map { "\($0.1) (\($0.2))" }
@@ -69,7 +71,9 @@ public func appleAppsPromptGuidance(_ apps: AppleApps) -> String {
     windows with mac_* or the shell for the same job. Read before you write; keep reads bounded \
     (a time window, a limit). Dates are ISO 8601 in the Mac's time zone. Every write asks the \
     user first. Sending mail asks every time: prefer mail_draft, which opens the message in Mail \
-    for the user to send, unless the user explicitly said to send.
+    for the user to send, unless the user explicitly said to send. Deleting an event, a reminder \
+    or a note asks every time too, even in a conversation set to run without asking — and needs \
+    an id from a list you just read, never a guessed one.
     """
     if apps.contains(.reminders) && apps.contains(.calendar) {
         text += """

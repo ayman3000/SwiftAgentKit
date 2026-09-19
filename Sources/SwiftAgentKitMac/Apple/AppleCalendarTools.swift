@@ -25,8 +25,10 @@ public struct CalendarEvent: Equatable, Sendable {
         self.id = id; self.title = title; self.start = start; self.end = end; self.allDay = allDay
         self.calendar = calendar; self.location = location; self.notes = notes
     }
+    /// Enough of the identifier to name this event in a later call.
+    public var shortID: String { String(id.prefix(8)) }
     public var line: String {
-        var s = "\(AppleDates.span(start, end, allDay: allDay))  \(title)  (\(calendar))"
+        var s = "[\(shortID)] \(AppleDates.span(start, end, allDay: allDay))  \(title)  (\(calendar))"
         if let location, !location.isEmpty { s += "  @ \(location)" }
         return s
     }
@@ -56,10 +58,12 @@ public protocol EventStoring: Sendable {
     func calendars() -> [String]
     func events(from: Date, to: Date, calendars: [String]?) -> [CalendarEvent]
     func createEvent(title: String, start: Date, end: Date, allDay: Bool, calendar: String?, location: String?, notes: String?) throws -> CalendarEvent
+    func deleteEvent(id: String) throws -> CalendarEvent
     func reminderLists() -> [String]
     func reminders(list: String?, includeCompleted: Bool) async -> [ReminderItem]
     func addReminder(title: String, due: Date?, list: String?, notes: String?) throws -> ReminderItem
     func completeReminder(id: String) async throws -> ReminderItem
+    func deleteReminder(id: String) async throws -> ReminderItem
 }
 
 public final class EKStore: EventStoring, @unchecked Sendable {
@@ -109,6 +113,24 @@ public final class EKStore: EventStoring, @unchecked Sendable {
                              calendar: e.calendar.title, location: location, notes: notes)
     }
 
+    /// Deleting needs the event first; an id from a list is a prefix, so fall
+    /// back to a search across a year either side when the exact id misses.
+    public func deleteEvent(id: String) throws -> CalendarEvent {
+        let found = store.event(withIdentifier: id) ?? {
+            let predicate = store.predicateForEvents(withStart: Date().addingTimeInterval(-365 * 86_400),
+                                                     end: Date().addingTimeInterval(365 * 86_400), calendars: nil)
+            return store.events(matching: predicate).first { ($0.eventIdentifier ?? "").hasPrefix(id) }
+        }()
+        guard let e = found else {
+            throw NSError(domain: "AppleCalendar", code: 404,
+                          userInfo: [NSLocalizedDescriptionKey: "No event with id \(id) in the year around today. List the events again and use an id from that list."])
+        }
+        let snapshot = CalendarEvent(id: e.eventIdentifier ?? id, title: e.title ?? "", start: e.startDate, end: e.endDate,
+                                     allDay: e.isAllDay, calendar: e.calendar.title, location: e.location, notes: e.notes)
+        try store.remove(e, span: .thisEvent, commit: true)
+        return snapshot
+    }
+
     public func reminderLists() -> [String] { store.calendars(for: .reminder).map(\.title).sorted() }
 
     public func reminders(list: String?, includeCompleted: Bool) async -> [ReminderItem] {
@@ -135,6 +157,17 @@ public final class EKStore: EventStoring, @unchecked Sendable {
         r.calendar = list.flatMap { name in store.calendars(for: .reminder).first { $0.title == name } } ?? store.defaultCalendarForNewReminders()
         try store.save(r, commit: true)
         return ReminderItem(id: r.calendarItemIdentifier, title: title, due: due, list: r.calendar.title, completed: false, notes: notes)
+    }
+
+    public func deleteReminder(id: String) async throws -> ReminderItem {
+        let all = await reminders(list: nil, includeCompleted: true)
+        guard let match = all.first(where: { $0.id == id || $0.id.hasPrefix(id) }),
+              let r = store.calendarItem(withIdentifier: match.id) as? EKReminder else {
+            throw NSError(domain: "AppleReminders", code: 404,
+                          userInfo: [NSLocalizedDescriptionKey: "No reminder with id \(id). List the reminders again and use an id from that list."])
+        }
+        try store.remove(r, commit: true)
+        return match
     }
 
     public func completeReminder(id: String) async throws -> ReminderItem {
@@ -229,6 +262,33 @@ public struct CalendarCreateEventTool: AgentTool {
 
 // MARK: - Reminders tools
 
+/// Deleting the user's own data: always asks, autonomy or not.
+public struct CalendarDeleteEventTool: AgentTool {
+    public let name = "calendar_delete_event"
+    public let description = """
+    Delete an event from the user's Calendar, by the id shown in square brackets by \
+    calendar_events. There is no undo, so list the events first and delete the one the user \
+    named — never guess an id. The user is asked to confirm every deletion.
+    """
+    public let parameters = ToolParameters(properties: [
+        "id": ToolParameterProperty(type: "string", description: "Event id from calendar_events (the bracketed prefix is enough)."),
+    ], required: ["id"])
+    public var requiresConfirmation: Bool { true }
+    public var requiresConfirmationEvenWhenAutonomous: Bool { true }
+    public var inputExamples: [String] { [#"{"id": "A1B2C3D4"}"#] }
+    let store: any EventStoring
+    public init(store: any EventStoring = EKStore()) { self.store = store }
+
+    public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
+        guard await store.requestEvents() else {
+            return .error(toolCallId: "", toolName: name, message: "macOS has not allowed Naseem to use the calendar. Allow it in System Settings ▸ Privacy & Security ▸ Calendars.")
+        }
+        guard let id = stringArg(parameters["id"]) else { return .error(toolCallId: "", toolName: name, message: "id is required.") }
+        let e = try store.deleteEvent(id: id)
+        return .success(toolCallId: "", toolName: name, result: "Deleted: " + e.line)
+    }
+}
+
 public struct RemindersListTool: AgentTool {
     public let name = "reminders_list"
     public var isReadOnly: Bool { true }
@@ -281,6 +341,32 @@ public struct RemindersAddTool: AgentTool {
         let due = stringArg(parameters["due"]).flatMap(AppleDates.parse)
         let r = try store.addReminder(title: title, due: due, list: stringArg(parameters["list"]), notes: parameters["notes"] as? String)
         return .success(toolCallId: "", toolName: name, result: "Added: " + r.line)
+    }
+}
+
+public struct RemindersDeleteTool: AgentTool {
+    public let name = "reminders_delete"
+    public let description = """
+    Delete a reminder, by the id from reminders_list. There is no undo — if the user only means \
+    it is done, use reminders_complete instead, which keeps it. The user is asked to confirm \
+    every deletion.
+    """
+    public let parameters = ToolParameters(properties: [
+        "id": ToolParameterProperty(type: "string", description: "Reminder id (the prefix shown in the list is enough)."),
+    ], required: ["id"])
+    public var requiresConfirmation: Bool { true }
+    public var requiresConfirmationEvenWhenAutonomous: Bool { true }
+    public var inputExamples: [String] { [#"{"id": "3F2A9C10"}"#] }
+    let store: any EventStoring
+    public init(store: any EventStoring = EKStore()) { self.store = store }
+
+    public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
+        guard await store.requestReminders() else {
+            return .error(toolCallId: "", toolName: name, message: "macOS has not allowed Naseem to use reminders. Allow it in System Settings ▸ Privacy & Security ▸ Reminders.")
+        }
+        guard let id = stringArg(parameters["id"]) else { return .error(toolCallId: "", toolName: name, message: "id is required.") }
+        let r = try await store.deleteReminder(id: id)
+        return .success(toolCallId: "", toolName: name, result: "Deleted: " + r.line)
     }
 }
 

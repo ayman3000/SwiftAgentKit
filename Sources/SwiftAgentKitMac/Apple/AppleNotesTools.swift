@@ -117,6 +117,23 @@ public enum AppleNotesScripts {
         """
     }
 
+    /// Notes deleted this way go to the Notes app's Recently Deleted folder,
+    /// which is the closest thing to an undo any of these apps offer.
+    public static func delete(id: String) -> String {
+        let q = AppleScriptText.literal(id)
+        return """
+        \(AppleScriptText.launchGuard("Notes"))
+        tell application "Notes"
+            set hits to (notes whose id ends with \(q))
+            if (count of hits) is 0 then error "No note with that id." number 9001
+            set nt to item 1 of hits
+            set nm to name of nt
+            delete nt
+            return nm
+        end tell
+        """
+    }
+
     public static func parseSummaries(_ text: String) -> [NoteSummary] {
         AppleScriptText.records(text).compactMap { f in
             guard f.count >= 4 else { return nil }
@@ -224,6 +241,28 @@ public struct NotesCreateTool: AgentTool {
         let folder = stringArg(parameters["folder"])
         let id = try await runner.run(AppleNotesScripts.create(title: title, body: body, folder: folder))
         return .success(toolCallId: "", toolName: name, result: "Created note \"\(title)\"\(folder.map { " in \($0)" } ?? "") [\(id.components(separatedBy: "/").last ?? id)].")
+    }
+}
+public struct NotesDeleteTool: AgentTool {
+    public let name = "notes_delete"
+    public let description = """
+    Delete a note, by the id from notes_list or notes_search. It goes to the Notes app's \
+    Recently Deleted folder, where the user can restore it for a while. Read the note first if \
+    there is any doubt which one is meant. The user is asked to confirm every deletion.
+    """
+    public let parameters = ToolParameters(properties: [
+        "id": ToolParameterProperty(type: "string", description: "Note id (as shown in a list)."),
+    ], required: ["id"])
+    public var requiresConfirmation: Bool { true }
+    public var requiresConfirmationEvenWhenAutonomous: Bool { true }
+    public var inputExamples: [String] { [#"{"id": "p152"}"#] }
+    let runner: any AppleScripting
+    public init(runner: any AppleScripting = NSAppleScriptRunner()) { self.runner = runner }
+
+    public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
+        guard let id = stringArg(parameters["id"]) else { return .error(toolCallId: "", toolName: name, message: "id is required.") }
+        let name_ = try await runner.run(AppleNotesScripts.delete(id: id))
+        return .success(toolCallId: "", toolName: name, result: "Deleted the note \"\(name_)\". It is in Recently Deleted in the Notes app if the user wants it back.")
     }
 }
 #endif

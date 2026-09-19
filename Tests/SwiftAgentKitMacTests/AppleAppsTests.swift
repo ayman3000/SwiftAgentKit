@@ -42,6 +42,19 @@ final class MockEvents: EventStoring, @unchecked Sendable {
         guard let r = items.first(where: { $0.id.hasPrefix(id) }) else { throw NSError(domain: "t", code: 404) }
         return ReminderItem(id: r.id, title: r.title, due: r.due, list: r.list, completed: true, notes: r.notes)
     }
+    private(set) var deleted: [String] = []
+    func deleteEvent(id: String) throws -> CalendarEvent {
+        guard let e = stored.first(where: { $0.id.hasPrefix(id) }) else { throw NSError(domain: "t", code: 404) }
+        deleted.append(e.id)
+        stored.removeAll { $0.id == e.id }
+        return e
+    }
+    func deleteReminder(id: String) async throws -> ReminderItem {
+        guard let r = items.first(where: { $0.id.hasPrefix(id) }) else { throw NSError(domain: "t", code: 404) }
+        deleted.append(r.id)
+        items.removeAll { $0.id == r.id }
+        return r
+    }
 }
 
 final class MockContacts: ContactsStoring, @unchecked Sendable {
@@ -239,9 +252,9 @@ final class AppleAppsTests: XCTestCase {
 
     func testFactoryRegistersOnlyTheAppsTurnedOn() {
         let all = makeAppleAppTools(.all, runner: MockScript(), events: MockEvents(), contacts: MockContacts())
-        XCTAssertEqual(all.count, 15)
+        XCTAssertEqual(all.count, 18)
         let some = makeAppleAppTools([.calendar, .contacts], runner: MockScript(), events: MockEvents(), contacts: MockContacts())
-        XCTAssertEqual(some.map(\.name).sorted(), ["calendar_create_event", "calendar_events", "contacts_search"])
+        XCTAssertEqual(some.map(\.name).sorted(), ["calendar_create_event", "calendar_delete_event", "calendar_events", "contacts_search"])
         XCTAssertEqual(appleAppsPromptGuidance([]), "")
         XCTAssertTrue(appleAppsPromptGuidance(.mail).contains("mail_draft"))
         XCTAssertFalse(appleAppsPromptGuidance(.mail).contains("calendar_events"))
@@ -279,6 +292,60 @@ extension AppleAppsTests {
     func testToolDescriptionsPointAtEachOther() {
         XCTAssertTrue(CalendarCreateEventTool(store: MockEvents()).description.contains("reminders_add"))
         XCTAssertTrue(RemindersAddTool(store: MockEvents()).description.contains("calendar_create_event"))
+    }
+}
+#endif
+
+#if os(macOS)
+extension AppleAppsTests {
+    /// Deleting the user's own data has no undo, so autonomy never waives it.
+    func testEveryDeleteAsksEvenWhenAutonomous() {
+        XCTAssertTrue(CalendarDeleteEventTool(store: MockEvents()).requiresConfirmationEvenWhenAutonomous)
+        XCTAssertTrue(RemindersDeleteTool(store: MockEvents()).requiresConfirmationEvenWhenAutonomous)
+        XCTAssertTrue(NotesDeleteTool(runner: MockScript()).requiresConfirmationEvenWhenAutonomous)
+        // Completing keeps the reminder, so it behaves like any other write.
+        XCTAssertFalse(RemindersCompleteTool(store: MockEvents()).requiresConfirmationEvenWhenAutonomous)
+    }
+
+    func testEventsListShowsAnIdThatDeleteAccepts() async throws {
+        let store = MockEvents()
+        let soon = Date().addingTimeInterval(3_600)
+        store.stored = [CalendarEvent(id: "A1B2C3D4E5F6", title: "Leave for Miami", start: soon, end: soon.addingTimeInterval(900),
+                                      allDay: false, calendar: "Work", location: nil, notes: nil)]
+        let listed = try await CalendarEventsTool(store: store).execute(parameters: [:])
+        XCTAssertTrue(listed.result.contains("[A1B2C3D4]"), listed.result)
+
+        let gone = try await CalendarDeleteEventTool(store: store).execute(parameters: ["id": "A1B2C3D4"])
+        XCTAssertTrue(gone.result.contains("Deleted"))
+        XCTAssertTrue(gone.result.contains("Leave for Miami"))
+        XCTAssertEqual(store.deleted, ["A1B2C3D4E5F6"])
+    }
+
+    func testDeletingAReminderRemovesItAndAMissingIdIsAnError() async throws {
+        let store = MockEvents()
+        store.items = [ReminderItem(id: "3F2A9C10-X", title: "Pay", due: nil, list: "Reminders", completed: false, notes: nil)]
+        let gone = try await RemindersDeleteTool(store: store).execute(parameters: ["id": "3F2A9C10"])
+        XCTAssertTrue(gone.result.contains("Pay"))
+        XCTAssertTrue(store.items.isEmpty)
+        do {
+            _ = try await RemindersDeleteTool(store: store).execute(parameters: ["id": "nope"])
+            XCTFail("a missing id must not silently succeed")
+        } catch { /* expected */ }
+    }
+
+    func testNotesDeleteScriptMatchesByIdSuffixAndNamesWhatWent() async throws {
+        let mock = MockScript()
+        mock.reply = "Old plan"
+        let r = try await NotesDeleteTool(runner: mock).execute(parameters: ["id": "p152"])
+        XCTAssertTrue(r.result.contains("Old plan"))
+        XCTAssertTrue(r.result.contains("Recently Deleted"))
+        XCTAssertTrue(mock.scripts[0].contains(#"id ends with "p152""#))
+    }
+
+    func testGuidanceSaysDeletesAlwaysAsk() {
+        let g = appleAppsPromptGuidance(.all)
+        XCTAssertTrue(g.contains("Deleting an event"))
+        XCTAssertTrue(g.contains("never a guessed one"))
     }
 }
 #endif
