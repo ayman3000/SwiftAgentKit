@@ -55,6 +55,12 @@ final class MockContacts: ContactsStoring, @unchecked Sendable {
 final class AppleAppsTests: XCTestCase {
     let fs = String(AppleScriptText.field), rs = String(AppleScriptText.record)
 
+    /// What `«class isot»` gives for a moment `hoursAgo` in the Mac's zone.
+    func localISO(hoursAgo: Double) -> String {
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = .current; f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+        return f.string(from: Date().addingTimeInterval(-hoursAgo * 3_600))
+    }
+
     // MARK: Text plumbing
 
     func testLiteralEscapesQuotesAndBackslashes() {
@@ -80,20 +86,39 @@ final class AppleAppsTests: XCTestCase {
 
     func testInboxToolParsesAndSortsNewestFirst() async throws {
         let mock = MockScript()
-        mock.reply = ["11", "2026-09-19T08:00:00", "Ali <ali@x.com>", "Old", "true", "INBOX", "iCloud"].joined(separator: fs) + rs
-                   + ["12", "2026-09-19T09:30:00", "Sara <sara@x.com>", "New one", "false", "INBOX", "Gmail"].joined(separator: fs)
+        mock.reply = ["11", localISO(hoursAgo: 5), "Ali <ali@x.com>", "Old", "false", "INBOX", "iCloud"].joined(separator: fs) + rs
+                   + ["12", localISO(hoursAgo: 1), "Sara <sara@x.com>", "New one", "false", "INBOX", "Gmail"].joined(separator: fs)
         let result = try await MailInboxTool(runner: mock).execute(parameters: ["hours": 48, "unread_only": true])
-        XCTAssertTrue(result.result.contains("2 message(s)"))
+        XCTAssertTrue(result.result.contains("2 message(s)"), result.result)
         XCTAssertLessThan(result.result.range(of: "New one")!.lowerBound, result.result.range(of: "Old")!.lowerBound)
         XCTAssertTrue(result.result.contains("• Sara"), "unread marker")
-        XCTAssertTrue(mock.scripts[0].contains("48 * hours"))
-        XCTAssertTrue(mock.scripts[0].contains("read status is false"))
+        XCTAssertTrue(mock.scripts[0].contains("messages 1 thru lim of mb"))
+        XCTAssertTrue(mock.scripts[0].contains("with timeout"))
     }
 
-    func testInboxBoundsAreClamped() async throws {
+    func testInboxFiltersByHoursAndUnreadInSwift() async throws {
         let mock = MockScript()
-        _ = try await MailInboxTool(runner: mock).execute(parameters: ["hours": 99_999])
-        XCTAssertTrue(mock.scripts[0].contains("720 * hours"))
+        mock.reply = ["1", localISO(hoursAgo: 1), "a@x", "Fresh", "false", "INBOX", "iCloud"].joined(separator: fs) + rs
+                   + ["2", localISO(hoursAgo: 240), "b@x", "Stale", "false", "INBOX", "iCloud"].joined(separator: fs) + rs
+                   + ["3", localISO(hoursAgo: 2), "c@x", "Read already", "true", "INBOX", "iCloud"].joined(separator: fs)
+        let r = try await MailInboxTool(runner: mock).execute(parameters: ["hours": 24, "unread_only": true])
+        XCTAssertTrue(r.result.contains("Fresh"))
+        XCTAssertFalse(r.result.contains("Stale"))
+        XCTAssertFalse(r.result.contains("Read already"))
+    }
+
+    func testNoAccountsIsSaidPlainly() async throws {
+        let mock = MockScript()
+        mock.replies = ["", "0"]
+        let r = try await MailInboxTool(runner: mock).execute(parameters: [:])
+        XCTAssertTrue(r.result.contains("no accounts"))
+    }
+
+    func testNotesScriptsAvoidReservedPlurals() {
+        let s = AppleNotesScripts.list(folder: nil, limit: 10)
+        XCTAssertFalse(s.contains("set dates to"))
+        XCTAssertFalse(s.contains("set folders to"))
+        XCTAssertTrue(s.contains("if not running then launch"))
     }
 
     func testMailReadCapsTheBody() async throws {

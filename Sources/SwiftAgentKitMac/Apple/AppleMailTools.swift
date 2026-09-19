@@ -28,59 +28,116 @@ public struct MailMessage: Equatable, Sendable {
 }
 
 public enum AppleMailScripts {
-    /// Messages received in the last `hours`, newest first, up to `limit`.
-    public static func inbox(hours: Int, limit: Int, unreadOnly: Bool) -> String {
+    /// The newest `limit` messages of every account's inbox, as bulk property
+    /// lists (one round trip per property, not per message). A `whose date`
+    /// filter over a big inbox times out; an index range does not. Whether
+    /// index 1 is the newest depends on the mailbox, so the script checks both
+    /// ends and takes the newer one; the tool filters by `hours` afterwards.
+    private static func perAccountInbox(limit: Int, filter: String) -> String {
         """
         \(AppleScriptText.delimiterPrelude)
-        set cutoff to (current date) - (\(hours) * hours)
+        \(AppleScriptText.launchGuard("Mail"))
         set out to {}
+        with timeout of 120 seconds
         tell application "Mail"
-            set msgs to (messages of inbox whose date received > cutoff\(unreadOnly ? " and read status is false" : ""))
-            set n to count of msgs
-            repeat with i from 1 to n
-                set m to item i of msgs
+            repeat with a in (every account)
+                set acct to name of a
+                set mb to missing value
                 try
-                    set acct to name of account of mailbox of m
-                on error
-                    set acct to ""
+                    set mb to (first mailbox of a whose name is "INBOX" or name is "Inbox")
                 end try
-                set end of out to ((id of m) as string) & fs & ((date received of m as «class isot») as string) & fs & (sender of m) & fs & (subject of m) & fs & ((read status of m) as string) & fs & (name of mailbox of m) & fs & acct
+                if mb is not missing value then
+                    set n to count of messages of mb
+                    set lim to \(limit)
+                    if n < lim then set lim to n
+                    if lim > 0 then
+                        set ms to messages 1 thru lim of mb
+                        if n > lim then
+                            set dFirst to date received of message 1 of mb
+                            set dLast to date received of message n of mb
+                            if dLast > dFirst then set ms to messages (n - lim + 1) thru n of mb
+                        end if
+                        \(filter)
+                        set mIDs to id of ms
+                        set mDates to date received of ms
+                        set mSenders to sender of ms
+                        set mSubjects to subject of ms
+                        set mRead to read status of ms
+                        set mBox to name of mb
+                        repeat with i from 1 to count of mIDs
+                            set end of out to ((item i of mIDs) as string) & fs & ((item i of mDates as «class isot») as string) & fs & (item i of mSenders) & fs & (item i of mSubjects) & fs & ((item i of mRead) as string) & fs & mBox & fs & acct
+                        end repeat
+                    end if
+                end if
             end repeat
         end tell
+        end timeout
         set AppleScript's text item delimiters to rs
         return out as string
         """
+    }
+
+    public static func inbox(hours: Int, limit: Int, unreadOnly: Bool) -> String {
+        // Unread is filtered in Swift from the newest window; the hours cut
+        // is applied there too, so one shape of script serves both.
+        perAccountInbox(limit: limit, filter: "")
     }
 
     public static func search(query: String, limit: Int) -> String {
         let q = AppleScriptText.literal(query)
         return """
         \(AppleScriptText.delimiterPrelude)
+        \(AppleScriptText.launchGuard("Mail"))
         set out to {}
+        with timeout of 120 seconds
         tell application "Mail"
-            set msgs to (messages of inbox whose subject contains \(q) or sender contains \(q))
-            set n to count of msgs
-            if n > \(limit) then set n to \(limit)
-            repeat with i from 1 to n
-                set m to item i of msgs
+            repeat with a in (every account)
+                set acct to name of a
+                set mb to missing value
                 try
-                    set acct to name of account of mailbox of m
-                on error
-                    set acct to ""
+                    set mb to (first mailbox of a whose name is "INBOX" or name is "Inbox")
                 end try
-                set end of out to ((id of m) as string) & fs & ((date received of m as «class isot») as string) & fs & (sender of m) & fs & (subject of m) & fs & ((read status of m) as string) & fs & (name of mailbox of m) & fs & acct
+                if mb is not missing value then
+                    set ms to (messages of mb whose subject contains \(q) or sender contains \(q))
+                    set n to count of ms
+                    if n > \(limit) then set n to \(limit)
+                    repeat with i from 1 to n
+                        set m to item i of ms
+                        set end of out to ((id of m) as string) & fs & ((date received of m as «class isot») as string) & fs & (sender of m) & fs & (subject of m) & fs & ((read status of m) as string) & fs & (name of mb) & fs & acct
+                    end repeat
+                end if
             end repeat
         end tell
+        end timeout
         set AppleScript's text item delimiters to rs
         return out as string
+        """
+    }
+
+    /// True when Mail has at least one account; without one every inbox
+    /// script returns nothing and the user deserves a sentence, not silence.
+    public static func accountCount() -> String {
+        """
+        \(AppleScriptText.launchGuard("Mail"))
+        tell application "Mail" to return (count of accounts) as string
         """
     }
 
     public static func read(id: String) -> String {
         """
         \(AppleScriptText.delimiterPrelude)
+        \(AppleScriptText.launchGuard("Mail"))
+        with timeout of 120 seconds
         tell application "Mail"
-            set m to first message of inbox whose id is \(Int(id) ?? 0)
+            set m to missing value
+            repeat with a in (every account)
+                try
+                    set mb to (first mailbox of a whose name is "INBOX" or name is "Inbox")
+                    set m to (first message of mb whose id is \(Int(id) ?? 0))
+                    exit repeat
+                end try
+            end repeat
+            if m is missing value then error "No message with that id in any inbox." number 9002
             set tos to {}
             repeat with r in to recipients of m
                 set end of tos to (address of r)
@@ -89,6 +146,7 @@ public enum AppleMailScripts {
             set toLine to tos as string
             return (subject of m) & fs & (sender of m) & fs & toLine & fs & ((date received of m as «class isot») as string) & fs & (content of m)
         end tell
+        end timeout
         """
     }
 
@@ -96,6 +154,7 @@ public enum AppleMailScripts {
         let recipients = to.map { "make new to recipient at end of to recipients with properties {address:\(AppleScriptText.literal($0))}" }
             + cc.map { "make new cc recipient at end of cc recipients with properties {address:\(AppleScriptText.literal($0))}" }
         return """
+        \(AppleScriptText.launchGuard("Mail"))
         tell application "Mail"
             set msg to make new outgoing message with properties {subject:\(AppleScriptText.literal(subject)), content:\(AppleScriptText.literal(body)), visible:\(send ? "false" : "true")}
             tell msg
@@ -142,8 +201,14 @@ public struct MailInboxTool: AgentTool {
         let limit = min(max(intArg(parameters["limit"]) ?? 30, 1), 100)
         let unread = (parameters["unread_only"] as? Bool) ?? false
         let text = try await runner.run(AppleMailScripts.inbox(hours: hours, limit: limit, unreadOnly: unread))
-        let messages = Array(AppleMailScripts.parseMessages(text).prefix(limit))
+        let cutoff = Date().addingTimeInterval(-Double(hours) * 3_600)
+        let messages = Array(AppleMailScripts.parseMessages(text)
+            .filter { ($0.date ?? .distantPast) >= cutoff && (!unread || !$0.isRead) }
+            .prefix(limit))
         guard !messages.isEmpty else {
+            if (try? await runner.run(AppleMailScripts.accountCount())) == "0" {
+                return .success(toolCallId: "", toolName: name, result: "The Mail app has no accounts set up on this Mac, so there is no inbox to read. The user can add one in Mail ▸ Settings ▸ Accounts.")
+            }
             return .success(toolCallId: "", toolName: name, result: "No \(unread ? "unread " : "")messages in the last \(hours) hours.")
         }
         return .success(toolCallId: "", toolName: name,

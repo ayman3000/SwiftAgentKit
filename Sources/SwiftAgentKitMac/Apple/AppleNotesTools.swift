@@ -27,18 +27,23 @@ public struct NoteSummary: Equatable, Sendable {
 public enum AppleNotesScripts {
     public static func list(folder: String?, limit: Int) -> String {
         let source = folder.map { "notes of folder \(AppleScriptText.literal($0))" } ?? "notes"
+        // `dates` and `folders` are class plurals in Notes' dictionary; plain
+        // names collide with them ("Can't set every date…").
         return """
         \(AppleScriptText.delimiterPrelude)
+        \(AppleScriptText.launchGuard("Notes"))
         set out to {}
+        with timeout of 120 seconds
         tell application "Notes"
-            set ids to id of \(source)
-            set names to name of \(source)
-            set dates to modification date of \(source)
-            set folders to name of container of \(source)
-            repeat with i from 1 to count of ids
-                set end of out to (item i of ids) & fs & (item i of names) & fs & ((item i of dates as «class isot») as string) & fs & (item i of folders)
+            set nIDs to id of \(source)
+            set nNames to name of \(source)
+            set nDates to modification date of \(source)
+            set nFolders to name of container of \(source)
+            repeat with i from 1 to count of nIDs
+                set end of out to (item i of nIDs) & fs & (item i of nNames) & fs & ((item i of nDates as «class isot») as string) & fs & (item i of nFolders)
             end repeat
         end tell
+        end timeout
         set AppleScript's text item delimiters to rs
         return out as string
         """
@@ -47,6 +52,7 @@ public enum AppleNotesScripts {
     public static func folders() -> String {
         """
         \(AppleScriptText.delimiterPrelude)
+        \(AppleScriptText.launchGuard("Notes"))
         tell application "Notes"
             set out to {}
             repeat with f in folders
@@ -62,6 +68,7 @@ public enum AppleNotesScripts {
         let q = AppleScriptText.literal(query)
         return """
         \(AppleScriptText.delimiterPrelude)
+        \(AppleScriptText.launchGuard("Notes"))
         set out to {}
         tell application "Notes"
             set hits to (notes whose name contains \(q) or plaintext contains \(q))
@@ -82,6 +89,7 @@ public enum AppleNotesScripts {
         let q = AppleScriptText.literal(id)
         return """
         \(AppleScriptText.delimiterPrelude)
+        \(AppleScriptText.launchGuard("Notes"))
         tell application "Notes"
             set hits to (notes whose id ends with \(q))
             if (count of hits) is 0 then error "No note with that id." number 9001
@@ -101,6 +109,7 @@ public enum AppleNotesScripts {
         let html = "<h1>\(title.replacingOccurrences(of: "<", with: "&lt;"))</h1>" + paragraphs
         let target = folder.map { "at folder \(AppleScriptText.literal($0))" } ?? ""
         return """
+        \(AppleScriptText.launchGuard("Notes"))
         tell application "Notes"
             set nt to make new note \(target) with properties {body:\(AppleScriptText.literal(html))}
             return id of nt
@@ -111,7 +120,9 @@ public enum AppleNotesScripts {
     public static func parseSummaries(_ text: String) -> [NoteSummary] {
         AppleScriptText.records(text).compactMap { f in
             guard f.count >= 4 else { return nil }
-            return NoteSummary(id: f[0], name: f[1], modified: AppleScriptText.date(fromISO: f[2]), folder: f[3])
+            // A note at the account root has no container: "missing value".
+            return NoteSummary(id: f[0], name: f[1], modified: AppleScriptText.date(fromISO: f[2]),
+                               folder: f[3] == "missing value" ? "" : f[3])
         }
         .sorted { ($0.modified ?? .distantPast) > ($1.modified ?? .distantPast) }
     }

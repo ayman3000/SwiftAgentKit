@@ -76,6 +76,21 @@ public enum AppleScriptText {
     set rs to character id 30
     """
 
+    /// Make sure an app is up before talking to it: the first event to an
+    /// app that is still launching fails with -609 "connection is invalid".
+    public static func launchGuard(_ app: String) -> String {
+        """
+        tell application \(literal(app))
+            if not running then launch
+            set tries to 0
+            repeat until running or tries > 20
+                delay 0.25
+                set tries to tries + 1
+            end repeat
+        end tell
+        """
+    }
+
     /// A Swift string as an AppleScript string literal, escaped.
     public static func literal(_ s: String) -> String {
         "\"" + s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
