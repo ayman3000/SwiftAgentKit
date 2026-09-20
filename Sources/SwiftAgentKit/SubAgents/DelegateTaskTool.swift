@@ -97,7 +97,7 @@ public final class DelegateTaskTool: AgentTool, @unchecked Sendable {
             }
             let trimmed = answer.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else {
-                emit(.subAgentFinished(id: id, summary: "(no answer)"))
+                emit(.subAgentFinished(id: id, summary: "(no answer)", failed: true))
                 return .error(toolCallId: "", toolName: name,
                               message: "Sub-agent returned no answer.")
             }
@@ -114,11 +114,11 @@ public final class DelegateTaskTool: AgentTool, @unchecked Sendable {
                 emit(.subAgentFinished(id: id, summary: "partial (out of turns)"))
                 return .success(toolCallId: "", toolName: name, result: partial)
             }
-            emit(.subAgentFinished(id: id, summary: "error: \(error.localizedDescription)"))
+            emit(.subAgentFinished(id: id, summary: "error: \(error.localizedDescription)", failed: true))
             return .error(toolCallId: "", toolName: name,
                           message: "Sub-agent failed: \(error.localizedDescription)")
         } catch {
-            emit(.subAgentFinished(id: id, summary: "error: \(error.localizedDescription)"))
+            emit(.subAgentFinished(id: id, summary: "error: \(error.localizedDescription)", failed: true))
             return .error(toolCallId: "", toolName: name,
                           message: "Sub-agent failed: \(error.localizedDescription)")
         }
