@@ -1,4 +1,6 @@
 import Testing
+import CoreGraphics
+import CoreText
 import Foundation
 @testable import SwiftAgentKitTools
 import SwiftAgentKit
@@ -163,5 +165,63 @@ struct DocumentDigestToolTests {
         #expect(p.contains("cut at"))
         #expect(DocumentDigestTool.cacheKey(focus: "") == "digest")
         #expect(DocumentDigestTool.cacheKey(focus: "a") != DocumentDigestTool.cacheKey(focus: "b"))
+    }
+}
+
+/// A PDF's text layer is cached by content too, so several readers of one
+/// document pay for the parsing once.
+@Suite(.serialized)
+struct PDFTextCacheTests {
+    private func makePDF(_ lines: [String]) -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("pdftext-\(UUID().uuidString).pdf")
+        var box = CGRect(x: 0, y: 0, width: 612, height: 792)
+        let ctx = CGContext(url as CFURL, mediaBox: &box, nil)!
+        ctx.beginPDFPage(nil)
+        let font = CTFontCreateWithName("Helvetica" as CFString, 28, nil)
+        for (i, line) in lines.enumerated() {
+            let attributed = NSAttributedString(string: line, attributes: [.font: font])
+            ctx.textPosition = CGPoint(x: 48, y: 700 - CGFloat(i) * 44)
+            CTLineDraw(CTLineCreateWithAttributedString(attributed), ctx)
+        }
+        ctx.endPDFPage(); ctx.closePDF()
+        return url
+    }
+
+    @Test func aPageReadOnceIsServedFromTheCacheAfterwards() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("pdfcache-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let cache = DocumentTextCache(directory: dir)
+        let pdf = makePDF(["Phase one ships in twelve weeks"])
+        let tool = PDFExtractTextTool(textCache: cache)
+
+        let first = try await tool.execute(parameters: ["path": pdf.path])
+        #expect(first.result.contains("Phase one ships"))
+
+        // The entry exists and is what a second read returns — proven by
+        // rewriting it: the cache answers before PDFKit is asked.
+        let digest = try #require(PDFOCRCache.digest(ofFileAt: pdf.path))
+        #expect(cache.text(digest: digest, key: PDFExtractTextTool.textKey(page: 1)) != nil)
+        cache.store("SERVED FROM CACHE", digest: digest, key: PDFExtractTextTool.textKey(page: 1))
+        let second = try await tool.execute(parameters: ["path": pdf.path])
+        #expect(second.result.contains("SERVED FROM CACHE"))
+        #expect(!second.result.contains("Phase one ships"))
+    }
+
+    /// An edited PDF has new content, so it is read again rather than stale.
+    @Test func adifferentDocumentIsNotServedAnotherDocumentsPage() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("pdfcache-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let cache = DocumentTextCache(directory: dir)
+        let tool = PDFExtractTextTool(textCache: cache)
+        let a = makePDF(["Document A"]), b = makePDF(["Document B"])
+        _ = try await tool.execute(parameters: ["path": a.path])
+        let second = try await tool.execute(parameters: ["path": b.path])
+        #expect(second.result.contains("Document B"))
+        #expect(!second.result.contains("Document A"))
+    }
+
+    @Test func pageKeysDoNotCollide() {
+        #expect(PDFExtractTextTool.textKey(page: 1) != PDFExtractTextTool.textKey(page: 2))
+        #expect(PDFExtractTextTool.textKey(page: 7) == "pdf-text-7")
     }
 }
