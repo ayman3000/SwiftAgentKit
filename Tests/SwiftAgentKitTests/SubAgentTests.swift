@@ -194,7 +194,7 @@ actor GateCounter { private(set) var n = 0; func bump() { n += 1 } }
         else { Issue.record("expected wrapped .started") }
     } else { Issue.record("expected subAgentEvent") }
 
-    if case .subAgentFinished(let eid, let summary) = finished {
+    if case .subAgentFinished(let eid, let summary, _) = finished {
         #expect(eid == id)
         #expect(summary == "done")
     } else { Issue.record("expected subAgentFinished") }
@@ -326,7 +326,7 @@ private let delegateArgs = #"{"description": "echo task", "prompt": "answer the 
     for event in recorder.events {
         switch event {
         case .subAgentStarted(_, let label): startedLabel = label
-        case .subAgentFinished(_, let summary): finishedSummary = summary
+        case .subAgentFinished(_, let summary, _): finishedSummary = summary
         case .subAgentEvent: wrappedCount += 1
         default: break
         }
@@ -398,7 +398,7 @@ private let delegateArgs = #"{"description": "echo task", "prompt": "answer the 
     #expect(delegateResults.first?.result == "real child answer")
 
     let finishedSummaries = recorder.events.compactMap { event -> String? in
-        if case .subAgentFinished(_, let summary) = event { return summary }
+        if case .subAgentFinished(_, let summary, _) = event { return summary }
         return nil
     }
     #expect(finishedSummaries.first == "real child answer")
