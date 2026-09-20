@@ -129,7 +129,9 @@ public enum AgentEvent: Sendable {
     indirect case subAgentEvent(id: UUID, event: AgentEvent)
 
     /// A sub-agent run finished; `summary` is a truncated form of its final answer.
-    case subAgentFinished(id: UUID, summary: String)
+    /// `failed` is true when the child errored or answered nothing — a host
+    /// should not draw a tick beside the word "error".
+    case subAgentFinished(id: UUID, summary: String, failed: Bool = false)
 
     // MARK: - Reasoning
 
