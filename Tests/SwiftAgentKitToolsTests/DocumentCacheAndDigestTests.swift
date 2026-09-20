@@ -142,6 +142,19 @@ struct DocumentDigestToolTests {
         #expect(reader.calls == 0)
     }
 
+    /// An empty answer must not invite three more identical calls.
+    @Test func anEmptyAnswerTellsTheCallerToReadTheFileDirectly() async throws {
+        let dir = tempDir()
+        let doc = write("content", ext: "txt", in: dir)
+        let tool = DocumentDigestTool(read: { _ in "   \n  " }, cache: DocumentTextCache(directory: tempDir()))
+        let r = try await tool.execute(parameters: ["path": doc.path])
+        #expect(r.isError)
+        #expect(r.result.contains("Do NOT call document_digest again"))
+        #expect(r.result.contains("read_file"))
+        #expect(r.result.contains("non-reasoning"))
+        #expect(r.result.contains(doc.lastPathComponent))
+    }
+
     @Test func promptAsksForLocationsAndFaithfulness() {
         let p = DocumentDigestTool.prompt(document: "spec.pdf", kind: "PDF", units: "page", focus: "", truncated: true, text: "body")
         #expect(p.contains("[page N]"))
