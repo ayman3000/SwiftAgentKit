@@ -40,7 +40,8 @@ public struct OfficeExtractTextTool: AgentTool {
 
     private let maxChars = 40_000
 
-    public init() {}
+    let cache: DocumentTextCache
+    public init(cache: DocumentTextCache = DocumentTextCache()) { self.cache = cache }
 
     public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
         guard let raw = parameters["path"] as? String, !raw.isEmpty else {
@@ -54,15 +55,7 @@ public struct OfficeExtractTextTool: AgentTool {
         let last = intValue(parameters["last"])
 
         do {
-            let text: String
-            switch url.pathExtension.lowercased() {
-            case "docx": text = try Self.wordText(at: url)
-            case "pptx": text = try Self.slideText(at: url, first: first, last: last)
-            case "xlsx": text = try Self.sheetText(at: url, first: first, last: last)
-            default:
-                return .error(toolCallId: "", toolName: name,
-                              message: "office_extract_text reads .docx, .pptx and .xlsx. For a PDF use pdf_extract_text.")
-            }
+            let text = try Self.text(at: url, first: first, last: last, cache: cache)
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 return .success(toolCallId: "", toolName: name, result: "(no extractable text)")
             }
@@ -75,6 +68,31 @@ public struct OfficeExtractTextTool: AgentTool {
             return .error(toolCallId: "", toolName: name,
                           message: "Could not read \(url.lastPathComponent): \(error)")
         }
+    }
+
+    /// Extraction, through the content cache: the same bytes are read once
+    /// however many agents ask. Throws for anything that is not an Office file.
+    static func text(at url: URL, first: Int, last: Int?, cache: DocumentTextCache) throws -> String {
+        let ext = url.pathExtension.lowercased()
+        guard ["docx", "pptx", "xlsx"].contains(ext) else {
+            throw OfficeError.unsupported("office_extract_text reads .docx, .pptx and .xlsx. For a PDF use pdf_extract_text.")
+        }
+        let key = ext == "docx" ? "docx" : "\(ext)-\(first)-\(last ?? 0)"
+        let digest = DocumentTextCache.digest(ofFileAt: url.path)
+        if let digest, let hit = cache.text(digest: digest, key: key) { return hit }
+        let text: String
+        switch ext {
+        case "docx": text = try wordText(at: url)
+        case "pptx": text = try slideText(at: url, first: first, last: last)
+        default:     text = try sheetText(at: url, first: first, last: last)
+        }
+        if let digest { cache.store(text, digest: digest, key: key) }
+        return text
+    }
+
+    enum OfficeError: LocalizedError {
+        case unsupported(String)
+        var errorDescription: String? { if case .unsupported(let m) = self { return m }; return nil }
     }
 
     // MARK: - Word

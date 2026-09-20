@@ -55,6 +55,9 @@ public final class SubAgentSpawner: @unchecked Sendable {
     /// Tools a child never inherits: no recursive delegation, and memory/skill
     /// writes stay with the parent (children read memory via a prompt snapshot).
     public static let excludedToolNames: Set<String> = ["delegate_task", "remember", "learn_skill"]
+    /// Tools that put an image in front of the model. Dropped for a child
+    /// whose model cannot see (`AgentConfig.subAgentCanSeeImages`).
+    public static let visionToolNames: Set<String> = ["view_image", "pdf_page_image", "mac_screenshot", "sim_screenshot"]
 
     /// Turn cap for children — a delegated task is bounded by design.
     public static let maxChildTurns = 15
@@ -81,6 +84,7 @@ public final class SubAgentSpawner: @unchecked Sendable {
         await parent.flushRegistrations()
 
         var config = parent.config
+        let childCanSee = config.subAgentCanSeeImages
         // A dedicated sub-agent provider/model, when the app set one; the
         // parent's otherwise. Cleared on the child so a grandchild can't
         // inherit a stale pair (children can't spawn anyway).
@@ -103,6 +107,15 @@ public final class SubAgentSpawner: @unchecked Sendable {
         complete, self-contained answer containing the facts, paths, and \
         conclusions you found.
         """
+        if !childCanSee {
+            prompt += """
+
+
+            You cannot view images: your model does not accept image input and \
+            you have no image tools. If the task depends on a picture, diagram or \
+            screenshot, say exactly that in your answer instead of trying.
+            """
+        }
         if let memoryStore = await parent.memoryStore {
             let block = await memoryStore.loadContextBlock()
             if !block.isEmpty {
@@ -133,6 +146,7 @@ public final class SubAgentSpawner: @unchecked Sendable {
         // child is fully wired when this method returns.
         let inherited = await parent.tools.allTools()
             .filter { !Self.excludedToolNames.contains($0.name) }
+            .filter { childCanSee || !Self.visionToolNames.contains($0.name) }
             // When the child has its own ContextManager it registers artifact_read /
             // artifact_search over the same shared store — skip the parent's copies.
             .filter { config.contextManager == nil || !["artifact_read", "artifact_search"].contains($0.name) }
