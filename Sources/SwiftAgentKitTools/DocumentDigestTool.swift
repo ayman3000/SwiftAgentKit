@@ -47,11 +47,16 @@ public struct DocumentDigestTool: AgentTool {
     let cache: DocumentTextCache
     /// The most text handed to the reading model in one go.
     let maxChars: Int
+    /// When set, Word/PowerPoint/Excel are refused with this sentence — the
+    /// host gates Office reading the same way for office_extract_text.
+    let officeUnavailableNote: String?
 
-    public init(read: @escaping Reader, cache: DocumentTextCache = DocumentTextCache(), maxChars: Int = 160_000) {
+    public init(read: @escaping Reader, cache: DocumentTextCache = DocumentTextCache(),
+                maxChars: Int = 160_000, officeUnavailableNote: String? = nil) {
         self.read = read
         self.cache = cache
         self.maxChars = maxChars
+        self.officeUnavailableNote = officeUnavailableNote
     }
 
     public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
@@ -79,6 +84,9 @@ public struct DocumentDigestTool: AgentTool {
             return .success(toolCallId: "", toolName: name, result: Self.reply(notesURL: notesURL, notes: notes, cached: true))
         }
 
+        if let officeUnavailableNote, ["docx", "pptx", "xlsx"].contains(url.pathExtension.lowercased()) {
+            return .error(toolCallId: "", toolName: name, message: officeUnavailableNote)
+        }
         let extracted: DocumentText
         do { extracted = try Self.extract(url, cache: cache) }
         catch { return .error(toolCallId: "", toolName: name, message: "Could not read \(url.lastPathComponent): \(error.localizedDescription)") }

@@ -131,6 +131,17 @@ struct DocumentDigestToolTests {
         #expect(cache.text(digest: DocumentTextCache.digest(ofFileAt: doc.path)!, key: "digest") == nil)
     }
 
+    @Test func officeFilesAreRefusedWithTheHostsNoteWhenGated() async throws {
+        let dir = tempDir()
+        let doc = write("not really a docx", ext: "docx", in: dir)
+        let reader = FakeReader()
+        let tool = DocumentDigestTool(read: reader.read, cache: DocumentTextCache(directory: tempDir()),
+                                      officeUnavailableNote: "Word files need Naseem Pro.")
+        let r = try await tool.execute(parameters: ["path": doc.path])
+        #expect(r.isError && r.result == "Word files need Naseem Pro.")
+        #expect(reader.calls == 0)
+    }
+
     @Test func promptAsksForLocationsAndFaithfulness() {
         let p = DocumentDigestTool.prompt(document: "spec.pdf", kind: "PDF", units: "page", focus: "", truncated: true, text: "body")
         #expect(p.contains("[page N]"))
