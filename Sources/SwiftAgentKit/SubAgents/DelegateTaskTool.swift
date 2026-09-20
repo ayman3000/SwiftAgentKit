@@ -22,7 +22,11 @@ public final class DelegateTaskTool: AgentTool, @unchecked Sendable {
     don't need to see — they won't consume your context. The sub-agent has \
     your tools but cannot delegate further, and it sees NONE of this \
     conversation: put everything it needs in `prompt`. You may call this \
-    multiple times in one turn to run independent tasks in parallel.
+    multiple times in one turn to run independent tasks in parallel. If the \
+    sub-agent model cannot see images, describe any image yourself in the \
+    prompt rather than asking the sub-agent to look at it. When a document \
+    has been read with document_digest, give the sub-agent the notes path, \
+    not the document.
     """
 
     public let parameters = ToolParameters(

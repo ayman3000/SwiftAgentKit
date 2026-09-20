@@ -118,6 +118,10 @@ public struct AgentConfig: Sendable {
     /// model, execute the bulk of tool calls on the cheap one).
     public var subAgentProvider: (any LLMProvider)?
     public var subAgentModel: String?
+    /// Whether the sub-agent model accepts images. When false the child is not
+    /// given vision tools and is told so — a text-only child handed
+    /// `view_image` fails the whole delegation the first time it tries.
+    public var subAgentCanSeeImages: Bool
 
     /// Max times an unsatisfied `AgentCallbacks.verifyCompletion` verdict may
     /// re-nudge the model to keep working before the agent stops anyway. Bounds
@@ -157,6 +161,7 @@ public struct AgentConfig: Sendable {
         maxSubAgentTurns: Int = SubAgentSpawner.maxChildTurns,
         subAgentProvider: (any LLMProvider)? = nil,
         subAgentModel: String? = nil,
+        subAgentCanSeeImages: Bool = true,
         maxVerificationRetries: Int = 3,
         loopDetection: LoopDetectionConfig? = .default,
         parallelToolCalls: Bool = false,
@@ -183,6 +188,7 @@ public struct AgentConfig: Sendable {
         self.maxSubAgentTurns = maxSubAgentTurns
         self.subAgentProvider = subAgentProvider
         self.subAgentModel = subAgentModel
+        self.subAgentCanSeeImages = subAgentCanSeeImages
         self.maxVerificationRetries = maxVerificationRetries
         self.loopDetection = loopDetection
         self.parallelToolCalls = parallelToolCalls

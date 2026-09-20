@@ -606,3 +606,30 @@ func liveDelegateTask() async throws {
     #expect(sawStart)
     #expect(sawFinish)
 }
+
+// MARK: - A child only gets tools its model can use
+
+private struct ViewImageStub: AgentTool {
+    let name = "view_image"
+    let description = "stub"
+    let parameters = ToolParameters(properties: [:], required: [])
+    func execute(parameters: [String: Any]) async throws -> AgentToolResult { .success(toolCallId: "", toolName: name, result: "") }
+}
+
+@Test func testChildWithoutVisionDoesNotInheritImageToolsAndIsToldSo() async throws {
+    var config = AgentConfig(provider: PlainAnswerProvider(text: "x"), tools: [EchoTool(), ViewImageStub()])
+    config.subAgentCanSeeImages = false
+    let parent = Agent(config: config)          // the spawner holds its parent unowned
+    let child = await SubAgentSpawner(parent: parent).makeChild()
+    #expect(await child.tools.contains("echo"))
+    #expect(await child.tools.contains("view_image") == false)
+    #expect(child.config.systemPrompt?.contains("cannot view images") == true)
+}
+
+@Test func testChildWithVisionKeepsImageTools() async throws {
+    let config = AgentConfig(provider: PlainAnswerProvider(text: "x"), tools: [EchoTool(), ViewImageStub()])
+    let parent = Agent(config: config)
+    let child = await SubAgentSpawner(parent: parent).makeChild()
+    #expect(await child.tools.contains("view_image"))
+    #expect(child.config.systemPrompt?.contains("cannot view images") != true)
+}
