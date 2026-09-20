@@ -113,15 +113,27 @@ public struct PDFExtractTextTool: AgentTool {
     private let maxOCRPages = 20
 
     private let cache: PDFOCRCache
+    /// Text layers, kept by the file's content so a page read once is free
+    /// for everyone afterwards — the parent, a sub-agent, another
+    /// conversation. Extracting a text layer is cheap per page but not free
+    /// per document, and several readers of one long PDF used to pay for the
+    /// same parsing each (2026-09-20).
+    private let textCache: DocumentTextCache
     /// When set, OCR never runs and the reason is reported once in the output.
     /// Lets a host turn recognition off — for a plan tier, a policy, or a
     /// machine without Vision — without the tool pretending it read the page.
     private let ocrUnavailableNote: String?
 
-    public init(cache: PDFOCRCache = PDFOCRCache(), ocrUnavailableNote: String? = nil) {
+    public init(cache: PDFOCRCache = PDFOCRCache(),
+                textCache: DocumentTextCache = DocumentTextCache(),
+                ocrUnavailableNote: String? = nil) {
         self.cache = cache
+        self.textCache = textCache
         self.ocrUnavailableNote = ocrUnavailableNote
     }
+
+    /// Cache key for one page's text layer. Pure — unit-tested.
+    static func textKey(page: Int) -> String { "pdf-text-\(page)" }
 
     public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
         guard let raw = parameters["path"] as? String, !raw.isEmpty else {
@@ -154,9 +166,27 @@ public struct PDFExtractTextTool: AgentTool {
         /// `force` was asked for on pages that do have text, and OCR is off.
         var ocrRefusedDespiteText = false
 
+        // Hashed at most once per call, and only when a page is actually
+        // read: hashing a large PDF to answer "page 3" would cost more than
+        // the extraction it saves.
+        func digest() -> String? {
+            if !digestComputed {
+                fileDigest = PDFOCRCache.digest(ofFileAt: expandPath(raw))
+                digestComputed = true
+            }
+            return fileDigest
+        }
+
         for i in (first - 1)..<last {
             guard let page = doc.page(at: i) else { continue }
-            let embedded = Self.normalizePresentationForms(Self.repairHyphenation(page.string ?? ""))
+            let cachedText = digest().flatMap { textCache.text(digest: $0, key: Self.textKey(page: i + 1)) }
+            let embedded: String
+            if let cachedText {
+                embedded = cachedText
+            } else {
+                embedded = Self.normalizePresentationForms(Self.repairHyphenation(page.string ?? ""))
+                if let d = digest(), !embedded.isEmpty { textCache.store(embedded, digest: d, key: Self.textKey(page: i + 1)) }
+            }
             var text = embedded
             var viaOCR = false
 
@@ -168,10 +198,7 @@ public struct PDFExtractTextTool: AgentTool {
                 // is returned as usual, and only the re-read was refused.
                 if hasText { ocrRefusedDespiteText = true } else { unreadablePages.append(i + 1) }
             } else if needsOCR {
-                if !digestComputed {
-                    fileDigest = PDFOCRCache.digest(ofFileAt: expandPath(raw))
-                    digestComputed = true
-                }
+                let fileDigest = digest()
                 if let fileDigest, let cached = cache.text(digest: fileDigest, page: i + 1) {
                     // A hit costs nothing, so it neither waits nor spends budget.
                     text = cached
