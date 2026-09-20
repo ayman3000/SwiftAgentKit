@@ -104,7 +104,10 @@ public struct DocumentDigestTool: AgentTool {
         do { notes = try await read(prompt) }
         catch { return .error(toolCallId: "", toolName: name, message: "The reading model failed: \(error.localizedDescription)") }
         guard !notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return .error(toolCallId: "", toolName: name, message: "The reading model returned nothing for \(url.lastPathComponent).")
+            // Calling again will fail the same way, and each attempt is a
+            // billed request: say what to do instead (observed 2026-09-20,
+            // four identical calls before the model worked it out itself).
+            return .error(toolCallId: "", toolName: name, message: Self.emptyAnswerGuidance(file: url.lastPathComponent))
         }
         cache.store(notes, digest: digest, key: key)
         Self.write(notes, to: notesURL, source: url, digest: digest)
@@ -138,6 +141,19 @@ public struct DocumentDigestTool: AgentTool {
         if truncated { p += "\n\nNote: the document was cut at \(text.count) characters; say so in section 1 and note what may be missing." }
         p += "\n\n---\n\n\(text)"
         return p
+    }
+
+    /// A reading model that answers nothing answers nothing twice. Tell the
+    /// caller to stop and read the file directly. Pure — unit-tested.
+    static func emptyAnswerGuidance(file: String) -> String {
+        """
+        The reading model produced no answer for \(file) — most often a reasoning model \
+        that spent its whole budget thinking. Do NOT call document_digest again for this \
+        file: read it directly instead (pdf_extract_text for a PDF, office_extract_text for \
+        Word/PowerPoint/Excel, read_file for text) and carry on. Tell the user their reading \
+        model returned nothing, and that Settings ▸ Models ▸ Reading model wants a \
+        long-context, non-reasoning model.
+        """
     }
 
     static func reply(notesURL: URL, notes: String, cached: Bool) -> String {
