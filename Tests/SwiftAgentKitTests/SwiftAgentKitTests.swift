@@ -2798,44 +2798,58 @@ private func completedShellExchange(id i: Int, size: Int) -> [AgentMessage] {
 
 // MARK: - Parallel dispatch is limited to read-only batches
 
+/// Records how many tools were ever inside `execute` at the same time.
+///
+/// The overlap tests used to time two 300 ms sleeps and assert the total came
+/// in under 550 ms — a 50 ms margin against a loaded machine, which is no
+/// margin at all. Peak concurrency is the property those tests are actually
+/// about, and it does not care how busy the CPU is.
+private actor ConcurrencyPeak {
+    private var current = 0
+    private(set) var peak = 0
+    func enter() { current += 1; peak = max(peak, current) }
+    func leave() { current -= 1 }
+}
+
 private struct SlowTool: AgentTool {
     let name: String
     let readOnly: Bool
+    let peak: ConcurrencyPeak
     var description: String { "sleeps" }
     var parameters: ToolParameters { .empty }
     var isReadOnly: Bool { readOnly }
     func execute(parameters: [String: Any]) async throws -> AgentToolResult {
-        try await Task.sleep(nanoseconds: 300_000_000)
+        await peak.enter()
+        try await Task.sleep(nanoseconds: 50_000_000)
+        await peak.leave()
         return .success(toolCallId: "", toolName: name, result: name)
     }
 }
 
 @Test func testReadOnlyBatchRunsConcurrently() async {
+    let peak = ConcurrencyPeak()
     let registry = ToolRegistry()
-    await registry.register(SlowTool(name: "read_a", readOnly: true))
-    await registry.register(SlowTool(name: "read_b", readOnly: true))
+    await registry.register(SlowTool(name: "read_a", readOnly: true, peak: peak))
+    await registry.register(SlowTool(name: "read_b", readOnly: true, peak: peak))
     let dispatcher = ToolDispatcher(registry: registry)
-    let start = Date()
     let results = await dispatcher.dispatch(
         calls: [AgentToolCall(name: "read_a", parameters: [:]), AgentToolCall(name: "read_b", parameters: [:])],
         state: AgentState(), parallel: true, observer: nil)
-    let elapsed = Date().timeIntervalSince(start)
     #expect(results.map(\.result) == ["read_a", "read_b"])
-    #expect(elapsed < 0.55, "two 300 ms reads should overlap, took \(elapsed)")
+    #expect(await peak.peak == 2, "two read-only tools must be in flight at the same time")
 }
 
 @Test func testBatchWithAnyWriteRunsInOrder() async {
+    let peak = ConcurrencyPeak()
     let registry = ToolRegistry()
-    await registry.register(SlowTool(name: "read_a", readOnly: true))
-    await registry.register(SlowTool(name: "write_b", readOnly: false))
+    await registry.register(SlowTool(name: "read_a", readOnly: true, peak: peak))
+    await registry.register(SlowTool(name: "write_b", readOnly: false, peak: peak))
     let dispatcher = ToolDispatcher(registry: registry)
-    let start = Date()
     let results = await dispatcher.dispatch(
         calls: [AgentToolCall(name: "write_b", parameters: [:]), AgentToolCall(name: "read_a", parameters: [:])],
         state: AgentState(), parallel: true, observer: nil)
-    let elapsed = Date().timeIntervalSince(start)
     #expect(results.map(\.result) == ["write_b", "read_a"], "model order preserved")
-    #expect(elapsed >= 0.55, "a write in the batch forces sequential execution, took \(elapsed)")
+    #expect(await peak.peak == 1, "a write in the batch forces strictly sequential execution")
 }
 
 // MARK: - Tool use examples

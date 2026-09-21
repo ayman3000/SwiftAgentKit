@@ -96,7 +96,15 @@ public struct FileWriteTool: AgentTool {
 
     let policy: FileToolPolicy?
 
-    public init(policy: FileToolPolicy? = nil) { self.policy = policy }
+    /// Which interpreter judges the written file. The host names the one that
+    /// will actually run it (Naseem: its own venv); empty means "guess at the
+    /// newest copy on this machine".
+    let verifier: WriteVerifierConfig
+
+    public init(policy: FileToolPolicy? = nil, verifier: WriteVerifierConfig = .default) {
+        self.policy = policy
+        self.verifier = verifier
+    }
 
     public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
         guard let raw = (parameters["path"] as? String), !raw.isEmpty else {
@@ -139,16 +147,16 @@ public struct FileWriteTool: AgentTool {
             ? (FileManager.default.contents(atPath: path)
                 .flatMap { String(data: $0, encoding: .utf8) } ?? content)
             : content
-        if let reason = await WriteVerifier.corruptionReason(path: path, content: landed) {
+        if let rejection = await WriteVerifier.rejection(path: path, content: landed, config: verifier) {
             if let original {
                 try? original.write(to: url, options: .atomic)      // restore
             } else {
                 try? FileManager.default.removeItem(at: url)        // never existed
             }
             return .error(toolCallId: "", toolName: name, message: """
-            Write to \(raw) REJECTED — \(reason).
+            Write to \(raw) REJECTED — \(rejection.reason).
 
-            \(WriteVerifier.retryGuidance)
+            \(rejection.guidance)
             """)
         }
 
@@ -191,7 +199,15 @@ public struct PatchFileTool: AgentTool {
 
     let policy: FileToolPolicy?
 
-    public init(policy: FileToolPolicy? = nil) { self.policy = policy }
+    /// Which interpreter judges the written file. The host names the one that
+    /// will actually run it (Naseem: its own venv); empty means "guess at the
+    /// newest copy on this machine".
+    let verifier: WriteVerifierConfig
+
+    public init(policy: FileToolPolicy? = nil, verifier: WriteVerifierConfig = .default) {
+        self.policy = policy
+        self.verifier = verifier
+    }
 
     public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
         guard let raw = (parameters["path"] as? String), !raw.isEmpty else {
@@ -238,11 +254,11 @@ public struct PatchFileTool: AgentTool {
             // TRANSACTION: verify the patched result before it can persist —
             // a hunk that applies cleanly can still leave broken syntax when
             // the patch content itself was corrupted in transit.
-            if let reason = await WriteVerifier.corruptionReason(path: path, content: patched) {
+            if let rejection = await WriteVerifier.rejection(path: path, content: patched, config: verifier) {
                 return .error(toolCallId: "", toolName: name, message: """
-                Patch to \(raw) REJECTED — applying it would leave the file broken: \(reason).
+                Patch to \(raw) REJECTED — applying it would leave the file broken: \(rejection.reason).
 
-                \(WriteVerifier.retryGuidance)
+                \(rejection.guidance)
                 """)
             }
             do {

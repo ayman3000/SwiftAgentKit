@@ -86,3 +86,82 @@ struct WriteVerifierVersionTests {
         #expect(reason!.contains("python3"), "the rejection names the interpreter that made it")
     }
 }
+
+/// The verifier must judge a file with the interpreter that will actually run
+/// it, and must not tell the model a syntax error was a transmission fault —
+/// that advice ("resend the write") is a loop with no exit.
+struct WriteVerifierJudgeTests {
+
+    private static let appleSystemPython = "/usr/bin/python3"
+
+    /// Python that needs 3.10+.
+    private let modern = """
+    def classify(x: int) -> str:
+        match x:
+            case 0:
+                return "zero"
+            case _:
+                return "other"
+    """
+
+    /// The host's interpreter is used even when a newer one exists on the
+    /// machine — proved by inverting the bug: point it at Apple's 3.9 and the
+    /// modern file must be rejected again.
+    @Test func theHostsInterpreterWins() async throws {
+        try #require(FileManager.default.isExecutableFile(atPath: Self.appleSystemPython))
+        let systemVersion = WriteVerifier.parseVersion(
+            WriteVerifier.versionString(of: Self.appleSystemPython, versionArgs: ["-V"]) ?? "")
+        try #require(WriteVerifier.lexicographicallyPrecedes(systemVersion, [3, 10]),
+                     "this test needs an older /usr/bin/python3 to point at")
+
+        let config = WriteVerifierConfig(interpreters: ["py": Self.appleSystemPython])
+        let verdict = await WriteVerifier.rejection(path: "/tmp/x.py", content: modern, config: config)
+        #expect(verdict != nil, "the named interpreter decides, not the newest on the machine")
+        #expect(verdict!.reason.contains(Self.appleSystemPython))
+    }
+
+    /// A path that is not executable is ignored rather than failing the write.
+    @Test func aMissingHostedInterpreterFallsBack() async throws {
+        try #require(WriteVerifier.parserAvailable(forExtension: "py"))
+        let config = WriteVerifierConfig(interpreters: ["py": "/nowhere/bin/python3"])
+        let verdict = await WriteVerifier.rejection(path: "/tmp/x.py", content: "x = 1\n", config: config)
+        #expect(verdict == nil)
+    }
+
+    /// The loop-breaker: a syntax rejection must not claim transit corruption
+    /// or ask for a resend, and must name the judge so the model can write for
+    /// the version that will run it.
+    @Test func aSyntaxRejectionDoesNotAskForAResend() async throws {
+        try #require(WriteVerifier.parserAvailable(forExtension: "py"))
+        let verdict = await WriteVerifier.rejection(path: "/tmp/x.py", content: "def f(:\n  pass\n")
+        let rejection = try #require(verdict)
+        guard case .syntax = rejection else {
+            Issue.record("a syntax error must not be classed as transit corruption")
+            return
+        }
+        #expect(rejection.guidance.contains("NOT transit corruption"))
+        #expect(!rejection.guidance.contains("resend the write"))
+        #expect(rejection.guidance.contains("python3"), "the model is told which version will run the file")
+    }
+
+    /// Real transit corruption keeps the advice that actually helps it.
+    @Test func leakedDiffMarkersStillAskForAResend() async {
+        let corrupted = (0..<10).map { "+    line \($0)" }.joined(separator: "\n")
+        let verdict = await WriteVerifier.rejection(path: "/tmp/x.py", content: corrupted)
+        guard case .transitCorruption = verdict else {
+            Issue.record("leaked diff markers are transit corruption")
+            return
+        }
+        #expect(verdict!.guidance.contains("resend the write"))
+    }
+
+    /// Invalid JSON is the content's fault, not the wire's.
+    @Test func invalidJSONIsASyntaxRejection() async {
+        let verdict = await WriteVerifier.rejection(path: "/tmp/x.json", content: "{\"a\": }")
+        guard case .syntax = verdict else {
+            Issue.record("malformed JSON is a syntax error, not transit corruption")
+            return
+        }
+        #expect(!verdict!.guidance.contains("resend the write"))
+    }
+}
