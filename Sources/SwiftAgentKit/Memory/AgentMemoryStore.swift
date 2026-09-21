@@ -24,11 +24,23 @@ public struct AgentMemoryEntry: Sendable, Identifiable, Codable, Equatable {
     public let createdAt: Date
     public var updatedAt: Date
 
+    /// The project this memory belongs to, or nil for a memory that is true
+    /// everywhere.
+    ///
+    /// A fact like "Phase 1 starts with the voice agent" is about one piece of
+    /// work, and presenting it as a standing truth in an unrelated
+    /// conversation is how an agent ends up pursuing the wrong mission. Facts
+    /// learned inside a project are filed under it and loaded only when it is
+    /// open. Preferences and facts about the user stay global — those are
+    /// about how someone works, not about one codebase.
+    public var project: String?
+
     public init(
         id: String = UUID().uuidString,
         kind: AgentMemoryKind,
         title: String,
         content: String,
+        project: String? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
@@ -36,6 +48,7 @@ public struct AgentMemoryEntry: Sendable, Identifiable, Codable, Equatable {
         self.kind = kind
         self.title = title
         self.content = content
+        self.project = project
         self.createdAt = createdAt
         self.updatedAt = updatedAt
     }
@@ -74,6 +87,19 @@ public protocol AgentMemoryStore: Sendable {
 
     /// Build a context block suitable for injection into a system prompt.
     func loadContextBlock() async -> String
+
+    /// Build a context block for a conversation working inside `project`.
+    ///
+    /// Global memory always appears; the named project's memory is added to
+    /// it. Other projects' memory is left out — that is the whole point.
+    func loadContextBlock(project: String?) async -> String
+}
+
+public extension AgentMemoryStore {
+    /// Stores that do not scope by project simply ignore it.
+    func loadContextBlock(project: String?) async -> String {
+        await loadContextBlock()
+    }
 }
 
 // MARK: - File-based Memory Store
@@ -85,9 +111,12 @@ public protocol AgentMemoryStore: Sendable {
 ///     <directory>/
 ///       AGENT.md     — identity, principles
 ///       USER.md      — facts about the user
-///       memory/      — discrete fact files
+///       memory/      — discrete fact files that are true everywhere
 ///         <slug>.md
-///       MEMORY.md    — index of memory/*.md files
+///         projects/<project-slug>/
+///           <slug>.md      — facts that belong to one project
+///           MEMORY.md      — that project's own index
+///       MEMORY.md    — index of the global memory/*.md files
 ///
 /// Apps decide the directory. A file-manager app might use `~/.kommanda`,
 /// a different app might use `~/.myagent`.
@@ -126,6 +155,42 @@ public final class FileAgentMemoryStore: AgentMemoryStore, @unchecked Sendable {
     private var agentURL: URL { directory.appendingPathComponent("AGENT.md") }
     private var userURL: URL { directory.appendingPathComponent("USER.md") }
     private var indexURL: URL { directory.appendingPathComponent("MEMORY.md") }
+
+    private var projectsDirectory: URL { memoryDirectory.appendingPathComponent("projects") }
+
+    private func directory(forProject project: String) -> URL {
+        projectsDirectory.appendingPathComponent(Self.slugify(project))
+    }
+
+    private func indexURL(forProject project: String?) -> URL {
+        guard let project else { return indexURL }
+        return directory(forProject: project).appendingPathComponent("MEMORY.md")
+    }
+
+    private func factURL(slug: String, project: String?) -> URL {
+        guard let project else { return memoryDirectory.appendingPathComponent("\(slug).md") }
+        return directory(forProject: project).appendingPathComponent("\(slug).md")
+    }
+
+    /// Every project that has filed at least one memory, by the name the
+    /// caller used.
+    ///
+    /// Folders are named by slug so they are safe on disk, but a caller that
+    /// saved under "XonTel" must get "XonTel" back, not "xontel" — otherwise
+    /// the name that reaches the model and the inspector is a mangled one. The
+    /// display name is kept as the H1 of that project's index.
+    public var knownProjects: [String] {
+        let dirs = (try? fileManager.contentsOfDirectory(atPath: projectsDirectory.path)) ?? []
+        return dirs.filter { !$0.hasPrefix(".") }.map { displayName(forSlug: $0) }.sorted()
+    }
+
+    private func displayName(forSlug slug: String) -> String {
+        let url = projectsDirectory.appendingPathComponent(slug).appendingPathComponent("MEMORY.md")
+        guard let text = try? String(contentsOf: url, encoding: .utf8),
+              let first = text.components(separatedBy: "\n").first(where: { $0.hasPrefix("# ") })
+        else { return slug }
+        return String(first.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+    }
 
     private func ensureMemoryDirectory() {
         try? fileManager.createDirectory(at: memoryDirectory, withIntermediateDirectories: true)
@@ -168,11 +233,15 @@ public final class FileAgentMemoryStore: AgentMemoryStore, @unchecked Sendable {
                 try (existing + line).write(to: userURL, atomically: true, encoding: .utf8)
 
             case .fact:
+                // A project fact lands in that project's folder and its own
+                // index, so opening a different project never surfaces it.
                 let slug = Self.slugify(entry.title)
-                let fileURL = memoryDirectory.appendingPathComponent("\(slug).md")
+                let fileURL = factURL(slug: slug, project: entry.project)
+                try? fileManager.createDirectory(at: fileURL.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true)
                 let body = "# \(entry.title)\n\n\(entry.content)\n"
                 try body.write(to: fileURL, atomically: true, encoding: .utf8)
-                addIndexLine(title: entry.title, slug: slug)
+                addIndexLine(title: entry.title, slug: slug, project: entry.project)
             }
         }
     }
@@ -183,11 +252,15 @@ public final class FileAgentMemoryStore: AgentMemoryStore, @unchecked Sendable {
             // NOTE: fact files are named by *title* slug, so callers must pass the
             // entry's title here (not its UUID `id`) for the delete to match.
             let slug = Self.slugify(id)
-            let fileURL = memoryDirectory.appendingPathComponent("\(slug).md")
-            if fileManager.fileExists(atPath: fileURL.path) {
-                try fileManager.removeItem(at: fileURL)
+            // A fact may be global or filed under a project; the caller passes
+            // only a title, so clear it wherever it sits.
+            for project in [nil] + knownProjects.map(Optional.init) {
+                let fileURL = factURL(slug: slug, project: project)
+                if fileManager.fileExists(atPath: fileURL.path) {
+                    try fileManager.removeItem(at: fileURL)
+                }
+                removeIndexLine(slug: slug, project: project)
             }
-            removeIndexLine(slug: slug)
         }
     }
 
@@ -203,15 +276,26 @@ public final class FileAgentMemoryStore: AgentMemoryStore, @unchecked Sendable {
             entries.append(AgentMemoryEntry(kind: .user, title: "User", content: user))
         }
 
-        let memoryFiles = (try? fileManager.contentsOfDirectory(atPath: memoryDirectory.path)) ?? []
-        for file in memoryFiles.filter({ $0.hasSuffix(".md") }).sorted() {
-            let fileURL = memoryDirectory.appendingPathComponent(file)
-            guard let content = try? String(contentsOf: fileURL, encoding: .utf8) else { continue }
-            let title = Self.titleFromMarkdown(content) ?? String(file.dropLast(3))
-            entries.append(AgentMemoryEntry(kind: .fact, title: title, content: content))
+        entries += facts(inDirectory: memoryDirectory, project: nil)
+        for project in knownProjects {
+            entries += facts(inDirectory: directory(forProject: project), project: project)
         }
 
         return entries
+    }
+
+    /// Read the fact files directly inside one folder. A project's own
+    /// MEMORY.md index is not a fact and is skipped.
+    private func facts(inDirectory url: URL, project: String?) -> [AgentMemoryEntry] {
+        let files = (try? fileManager.contentsOfDirectory(atPath: url.path)) ?? []
+        return files.filter { $0.hasSuffix(".md") && $0 != "MEMORY.md" }.sorted().compactMap { file in
+            guard let content = try? String(contentsOf: url.appendingPathComponent(file), encoding: .utf8)
+            else { return nil }
+            return AgentMemoryEntry(kind: .fact,
+                                    title: Self.titleFromMarkdown(content) ?? String(file.dropLast(3)),
+                                    content: content,
+                                    project: project)
+        }
     }
 
     public func load(kind: AgentMemoryKind) async throws -> [AgentMemoryEntry] {
@@ -219,6 +303,10 @@ public final class FileAgentMemoryStore: AgentMemoryStore, @unchecked Sendable {
     }
 
     public func loadContextBlock() async -> String {
+        await loadContextBlock(project: nil)
+    }
+
+    public func loadContextBlock(project: String?) async -> String {
         seedIfNeeded()
         let agent = (try? String(contentsOf: agentURL, encoding: .utf8)) ?? ""
         let user = (try? String(contentsOf: userURL, encoding: .utf8)) ?? ""
@@ -235,6 +323,21 @@ public final class FileAgentMemoryStore: AgentMemoryStore, @unchecked Sendable {
         what matters. Offer ONCE; if they decline, drop it and don't ask again.
         """
 
+        // Only THIS project's memory joins the global set. Another project's
+        // decisions are not background truth here, and an agent handed them
+        // will act on them.
+        var projectSection = ""
+        if let project,
+           let projectIndex = try? String(contentsOf: indexURL(forProject: project), encoding: .utf8),
+           !projectIndex.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            projectSection = """
+
+
+            Memory filed under the project you are working in (\(project)) — paths are relative to the memory root:
+            \(projectIndex)
+            """
+        }
+
         return """
         === MEMORY (persistent — you already know this about the user; don't ask them to re-introduce themselves) ===
         \(agent)
@@ -242,7 +345,7 @@ public final class FileAgentMemoryStore: AgentMemoryStore, @unchecked Sendable {
         \(user)
 
         Memory index — read the referenced file with your file tools when a line is relevant:
-        \(index)
+        \(index)\(projectSection)
         \(coldStart)
         === END MEMORY ===
 
@@ -252,20 +355,34 @@ public final class FileAgentMemoryStore: AgentMemoryStore, @unchecked Sendable {
 
     // MARK: - Index helpers
 
-    private func addIndexLine(title: String, slug: String) {
-        var text = (try? String(contentsOf: indexURL, encoding: .utf8)) ?? Self.defaultIndex
-        let newLine = "- [\(title)](memory/\(slug).md)"
-        var lines = text.components(separatedBy: "\n").filter { !$0.contains("(memory/\(slug).md)") }
-        lines.append(newLine)
-        text = lines.joined(separator: "\n")
-        try? text.write(to: indexURL, atomically: true, encoding: .utf8)
+    /// The link a fact's index line carries. Relative to the store root for
+    /// global facts, and to the project folder for project facts, so either
+    /// index can be handed to a file tool as-is.
+    private static func link(slug: String, project: String?) -> String {
+        guard let project else { return "memory/\(slug).md" }
+        return "memory/projects/\(slugify(project))/\(slug).md"
     }
 
-    private func removeIndexLine(slug: String) {
-        guard var text = try? String(contentsOf: indexURL, encoding: .utf8) else { return }
-        let lines = text.components(separatedBy: "\n").filter { !$0.contains("(memory/\(slug).md)") }
+    private func addIndexLine(title: String, slug: String, project: String? = nil) {
+        let url = indexURL(forProject: project)
+        let link = Self.link(slug: slug, project: project)
+        // The H1 carries the project's display name — see `knownProjects`.
+        let fallback = project == nil ? Self.defaultIndex : "# \(project!)\n"
+        var text = (try? String(contentsOf: url, encoding: .utf8)) ?? fallback
+        var lines = text.components(separatedBy: "\n").filter { !$0.contains("(\(link))") }
+        lines.append("- [\(title)](\(link))")
         text = lines.joined(separator: "\n")
-        try? text.write(to: indexURL, atomically: true, encoding: .utf8)
+        try? fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? text.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    private func removeIndexLine(slug: String, project: String? = nil) {
+        let url = indexURL(forProject: project)
+        guard var text = try? String(contentsOf: url, encoding: .utf8) else { return }
+        let link = Self.link(slug: slug, project: project)
+        text = text.components(separatedBy: "\n").filter { !$0.contains("(\(link))") }
+            .joined(separator: "\n")
+        try? text.write(to: url, atomically: true, encoding: .utf8)
     }
 
     private func isUserKnown(user: String, index: String) -> Bool {
