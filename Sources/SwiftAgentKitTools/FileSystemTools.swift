@@ -15,14 +15,16 @@ public struct FileReadTool: AgentTool {
     public let name = "read_file"
     public var isReadOnly: Bool { true }
     public let description = """
-    Read a UTF-8 text file and return its contents. Use `offset` and `limit` to \
-    page through large files.
+    Read a UTF-8 text file and return its contents. Files up to ~40,000 characters \
+    come back whole — read them in ONE call. Use `offset` and `limit` only to page \
+    through genuinely large files, in big slices: every call re-sends the whole \
+    conversation, so many small reads cost far more than one large one.
     """
     public let parameters = ToolParameters(
         properties: [
             "path": ToolParameterProperty(type: "string", description: "File path (a leading ~ is expanded)."),
             "offset": ToolParameterProperty(type: "integer", description: "Start character offset (default 0)."),
-            "limit": ToolParameterProperty(type: "integer", description: "Max characters to read (default 40000)."),
+            "limit": ToolParameterProperty(type: "integer", description: "Max characters to read (default 40000). Small values are widened — paging in tiny slices is the most expensive way to read a file."),
         ],
         required: ["path"]
     )
@@ -55,15 +57,13 @@ public struct FileReadTool: AgentTool {
             return .error(toolCallId: "", toolName: name, message: "Not a UTF-8 text file: \(raw)")
         }
         let chars = Array(text)
-        let offset = max(0, intValue(parameters["offset"]) ?? 0)
-        let limit = intValue(parameters["limit"]) ?? 40_000
-        let start = min(offset, chars.count)
-        let end = min(start + max(0, limit), chars.count)
-        var slice = String(chars[start..<end])
-        if end < chars.count {
-            slice += "\n… [truncated at \(end)/\(chars.count) chars — call again with offset \(end)]"
-        }
-        return .success(toolCallId: "", toolName: name, result: slice)
+        // `limit` is a hint: ReadSlice refuses to serve a slice so small that
+        // paging costs more in round trips than the content is worth.
+        let slice = ReadSlice(totalChars: chars.count,
+                              offset: intValue(parameters["offset"]),
+                              limit: intValue(parameters["limit"]))
+        let body = String(chars[slice.start..<slice.end])
+        return .success(toolCallId: "", toolName: name, result: slice.annotate(body))
     }
 }
 
