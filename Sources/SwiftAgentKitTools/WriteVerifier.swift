@@ -21,12 +21,15 @@ public enum WriteVerifier {
 
     /// Per-extension parse commands (syntax check only, no mutation).
     /// Each is (executable-resolution names, arguments-before-path).
-    private static let parsers: [String: (names: [String], args: [String])] = [
-        "dart": (["dart"], ["format", "--output=none"]),
-        "swift": (["swiftc"], ["-parse"]),
-        "py": (["python3"], ["-m", "py_compile"]),
-        "js": (["node"], ["--check"]),
-        "mjs": (["node"], ["--check"]),
+    /// `versionArgs` names the flag that prints the binary's version. When a
+    /// machine has several copies of an interpreter, the NEWEST one decides —
+    /// see `resolve`.
+    private static let parsers: [String: (names: [String], args: [String], versionArgs: [String]?)] = [
+        "dart": (["dart"], ["format", "--output=none"], ["--version"]),
+        "swift": (["swiftc"], ["-parse"], nil),
+        "py": (["python3"], ["-m", "py_compile"], ["-V"]),
+        "js": (["node"], ["--check"], ["--version"]),
+        "mjs": (["node"], ["--check"], ["--version"]),
     ]
 
     /// Extensions treated as code for the leaked-diff-marker heuristic.
@@ -64,7 +67,7 @@ public enum WriteVerifier {
         //    problem (missing binary, timeout, crash).
         guard content.utf8.count <= maxVerifiedBytes,
               let parser = parsers[ext],
-              let executable = resolve(names: parser.names) else { return nil }
+              let executable = resolve(names: parser.names, versionArgs: parser.versionArgs) else { return nil }
 
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("write-verify-\(UUID().uuidString).\(ext)")
@@ -73,7 +76,12 @@ public enum WriteVerifier {
 
         switch runParser(executable: executable, args: parser.args + [tmp.path]) {
         case .failed(let diagnostics):
-            return "content failed the \(parser.names[0]) syntax check:\n\(diagnostics)"
+            // Name the interpreter. A rejection is only as trustworthy as the
+            // binary that made it, and the reader — model or person — cannot
+            // judge it without knowing which one ran.
+            return "content failed the syntax check run by \(executable)"
+                + (versionString(of: executable, versionArgs: parser.versionArgs).map { " (\($0))" } ?? "")
+                + ":\n\(diagnostics)"
         case .passed, .unavailable:
             return nil
         }
@@ -84,49 +92,118 @@ public enum WriteVerifier {
     public static func parserAvailable(forExtension ext: String) -> Bool {
         if ext == "json" { return true }
         guard let parser = parsers[ext.lowercased()] else { return false }
-        return resolve(names: parser.names) != nil
+        return resolve(names: parser.names, versionArgs: parser.versionArgs) != nil
     }
 
     // MARK: - Process plumbing
 
     private enum ParseOutcome { case passed, failed(String), unavailable }
 
+    /// Thread-safe accumulator for a pipe drained on the reader's queue.
+    private final class OutputBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var bytes = Data()
+        func append(_ chunk: Data) {
+            guard !chunk.isEmpty else { return }
+            lock.lock(); bytes.append(chunk); lock.unlock()
+        }
+        var data: Data { lock.lock(); defer { lock.unlock() }; return bytes }
+    }
+
     private static let resolveLock = NSLock()
     nonisolated(unsafe) private static var resolved: [String: String?] = [:]
 
-    private static func resolve(names: [String]) -> String? {
+    private static func resolve(names: [String], versionArgs: [String]?) -> String? {
         for name in names {
             resolveLock.lock()
             if let cached = resolved[name] { resolveLock.unlock(); return cached }
             resolveLock.unlock()
 
-            let candidates = ["/usr/bin", "/usr/local/bin", "/opt/homebrew/bin"]
-                .map { "\($0)/\(name)" }
-            var found: String? = candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
-            if found == nil {
-                // PATH lookup via /usr/bin/env — covers version managers (fvm, asdf…).
-                let probe = Process()
-                probe.executableURL = URL(fileURLWithPath: "/usr/bin/which")
-                probe.arguments = [name]
-                let pipe = Pipe()
-                probe.standardOutput = pipe
-                probe.standardError = FileHandle.nullDevice
-                if (try? probe.run()) != nil {
-                    probe.waitUntilExit()
-                    if probe.terminationStatus == 0,
-                       let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(),
-                                        encoding: .utf8) {
-                        let path = out.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if !path.isEmpty { found = path }
-                    }
-                }
-            }
+            let found = newest(among: candidates(for: name), versionArgs: versionArgs)
+
             resolveLock.lock()
             resolved[name] = found
             resolveLock.unlock()
             if let found { return found }
         }
         return nil
+    }
+
+    /// Every copy of a binary this machine has: the usual install prefixes,
+    /// plus whatever PATH resolves to (version managers like fvm or asdf).
+    private static func candidates(for name: String) -> [String] {
+        var paths = ["/usr/bin", "/usr/local/bin", "/opt/homebrew/bin"]
+            .map { "\($0)/\(name)" }
+            .filter { FileManager.default.isExecutableFile(atPath: $0) }
+        if let viaPath = which(name), !paths.contains(viaPath) { paths.append(viaPath) }
+        return paths
+    }
+
+    /// Pick the newest of several copies.
+    ///
+    /// This is the fix for a real false rejection: macOS ships
+    /// /usr/bin/python3 3.9, and a machine with a modern Python installed
+    /// alongside it still hit the 3.9 one first, so any file using `match`
+    /// (3.10) or `type` aliases (3.12) was reported to the model as corrupted
+    /// content and rolled back. The file was fine; the judge was eleven
+    /// releases out of date. Order on a list is not a judgement about which
+    /// interpreter the user meant — the version is.
+    static func newest(among candidates: [String], versionArgs: [String]?) -> String? {
+        guard candidates.count > 1, let versionArgs else { return candidates.first }
+        let ranked = candidates.map { (path: $0, version: parseVersion(versionString(of: $0, versionArgs: versionArgs) ?? "")) }
+        // Nobody reported a version: fall back to list order rather than guess.
+        guard ranked.contains(where: { !$0.version.isEmpty }) else { return candidates.first }
+        return ranked.max(by: { lexicographicallyPrecedes($0.version, $1.version) })?.path
+    }
+
+    /// Compare version components, treating a missing component as zero, so
+    /// 3.12 beats 3.9 and 3.12.1 beats 3.12.
+    static func lexicographicallyPrecedes(_ a: [Int], _ b: [Int]) -> Bool {
+        for i in 0..<max(a.count, b.count) {
+            let l = i < a.count ? a[i] : 0
+            let r = i < b.count ? b[i] : 0
+            if l != r { return l < r }
+        }
+        return false
+    }
+
+    /// The first dotted number in a version banner ("Python 3.12.8",
+    /// "v22.3.0", "Dart SDK version: 3.5.0 (stable)"), as components.
+    static func parseVersion(_ banner: String) -> [Int] {
+        guard let match = banner.range(of: #"\d+(\.\d+)+"#, options: .regularExpression) else { return [] }
+        return banner[match].split(separator: ".").compactMap { Int($0) }
+    }
+
+    /// Run a binary's version flag and return the banner, or nil.
+    static func versionString(of executable: String, versionArgs: [String]?) -> String? {
+        guard let versionArgs else { return nil }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = versionArgs
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe          // python 3.9 and older print -V to stderr
+        guard (try? process.run()) != nil else { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let banner = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (banner?.isEmpty ?? true) ? nil : banner
+    }
+
+    private static func which(_ name: String) -> String? {
+        let probe = Process()
+        probe.executableURL = URL(fileURLWithPath: "/usr/bin/which")
+        probe.arguments = [name]
+        let pipe = Pipe()
+        probe.standardOutput = pipe
+        probe.standardError = FileHandle.nullDevice
+        guard (try? probe.run()) != nil else { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        probe.waitUntilExit()
+        guard probe.terminationStatus == 0,
+              let out = String(data: data, encoding: .utf8) else { return nil }
+        let path = out.trimmingCharacters(in: .whitespacesAndNewlines)
+        return path.isEmpty ? nil : path
     }
 
     private static func runParser(executable: String, args: [String]) -> ParseOutcome {
@@ -136,7 +213,17 @@ public enum WriteVerifier {
         let out = Pipe()
         process.standardOutput = out
         process.standardError = out
-        do { try process.run() } catch { return .unavailable }
+        // Drain the pipe WHILE the parser runs. Reading only after it exits
+        // deadlocks any parser whose diagnostics exceed the 64 KB pipe buffer:
+        // it blocks on write, never exits, and the wait below times out.
+        let collected = OutputBox()
+        out.fileHandleForReading.readabilityHandler = { handle in
+            collected.append(handle.availableData)
+        }
+        do { try process.run() } catch {
+            out.fileHandleForReading.readabilityHandler = nil
+            return .unavailable
+        }
 
         // Bounded wait (10s) — a hung parser must never hang the write tool.
         let deadline = Date().addingTimeInterval(10)
@@ -145,10 +232,13 @@ public enum WriteVerifier {
         }
         if process.isRunning {
             process.terminate()
+            out.fileHandleForReading.readabilityHandler = nil
             return .unavailable
         }
+        out.fileHandleForReading.readabilityHandler = nil
+        collected.append(out.fileHandleForReading.readDataToEndOfFile())
+        let data = collected.data
         guard process.terminationStatus != 0 else { return .passed }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
         let diagnostics = String(data: data, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return .failed(String(diagnostics.prefix(600)))
