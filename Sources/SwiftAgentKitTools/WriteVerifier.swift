@@ -14,6 +14,61 @@ import Foundation
 /// - Parsers must be fast and side-effect-free (parse/format-check modes).
 ///   A missing parser binary, timeout, or crash = verification SKIPPED, never
 ///   a rejection.
+/// Which interpreter judges a file.
+///
+/// A file should be checked by the interpreter that will actually RUN it, not
+/// by whichever copy of the language the machine happens to expose first. The
+/// host knows that: Naseem runs Python from its own venv, so it names that
+/// venv here. Without it the verifier falls back to the newest copy on the
+/// machine, which is a decent guess and nothing more.
+public struct WriteVerifierConfig: Sendable, Equatable {
+    /// File extension → absolute path of the interpreter to use for it.
+    public var interpreters: [String: String]
+    public init(interpreters: [String: String] = [:]) { self.interpreters = interpreters }
+    public static let `default` = WriteVerifierConfig()
+}
+
+/// Why a write was refused — and, crucially, whether resending it could
+/// possibly help.
+public enum WriteRejection: Sendable, Equatable {
+
+    /// The bytes were damaged on the way in (leaked diff markers, truncation).
+    /// Resending really can fix this.
+    case transitCorruption(String)
+
+    /// The bytes arrived intact and the language rejected them. Resending the
+    /// same content fails identically — saying "corrupted, resend" here is how
+    /// an agent ends up in a loop with no way out.
+    case syntax(reason: String, judgedBy: String)
+
+    public var reason: String {
+        switch self {
+        case .transitCorruption(let r): return r
+        case .syntax(let r, _): return r
+        }
+    }
+
+    /// What to tell the model to do about it.
+    public var guidance: String {
+        switch self {
+        case .transitCorruption:
+            return """
+            The file was NOT changed (original restored). The content arrived corrupted \
+            in transit — resend the write; for large files write in chunks: an initial \
+            write_file under ~4KB, then append:true pieces, each under ~4KB.
+            """
+        case .syntax(_, let judgedBy):
+            return """
+            The file was NOT changed (original restored). This is NOT transit corruption: \
+            the content arrived intact and \(judgedBy) rejected it, so resending the same \
+            content will fail in exactly the same way. Fix the syntax. If the code is \
+            correct for a newer version of the language, write for the version above — \
+            that is the one this machine will run the file with.
+            """
+        }
+    }
+}
+
 public enum WriteVerifier {
 
     /// Files above this size skip external-parser verification (perf guard).
@@ -38,9 +93,16 @@ public enum WriteVerifier {
         "c", "cc", "cpp", "h", "hpp", "m", "mm", "rs", "go", "rb", "json",
     ]
 
-    /// nil = content looks fine (or is unverifiable — fail open); otherwise a
-    /// model-facing reason describing the corruption.
-    public static func corruptionReason(path: String, content: String) async -> String? {
+    /// Reason only, for callers that do not act on the distinction.
+    public static func corruptionReason(path: String, content: String,
+                                        config: WriteVerifierConfig = .default) async -> String? {
+        await rejection(path: path, content: content, config: config)?.reason
+    }
+
+    /// nil = content looks fine (or is unverifiable — fail open); otherwise why
+    /// it was refused, and whether resending it could help.
+    public static func rejection(path: String, content: String,
+                                 config: WriteVerifierConfig = .default) async -> WriteRejection? {
         let ext = (path as NSString).pathExtension.lowercased()
 
         // 1. High-precision transit-corruption signature: many lines carrying
@@ -49,8 +111,9 @@ public enum WriteVerifier {
             let lines = content.split(separator: "\n", omittingEmptySubsequences: false)
             let leaked = lines.filter { $0.hasPrefix("+") && !$0.hasPrefix("++") }.count
             if leaked >= 5, lines.count > 0, Double(leaked) / Double(lines.count) > 0.2 {
-                return "content contains \(leaked) lines with leaked unified-diff '+' prefixes — "
-                    + "this is patch syntax bleeding into file content (transit corruption)"
+                return .transitCorruption(
+                    "content contains \(leaked) lines with leaked unified-diff '+' prefixes — "
+                    + "this is patch syntax bleeding into file content (transit corruption)")
             }
         }
 
@@ -58,16 +121,22 @@ public enum WriteVerifier {
         if ext == "json" {
             if (try? JSONSerialization.jsonObject(with: Data(content.utf8),
                                                   options: [.fragmentsAllowed])) == nil {
-                return "content is not valid JSON"
+                return .syntax(reason: "content is not valid JSON", judgedBy: "the JSON parser")
             }
             return nil
         }
 
         // 3. Language parser, when available. Fail open on any infrastructure
         //    problem (missing binary, timeout, crash).
+        // The host's interpreter wins: it is the one that will run the file.
+        // Only when it is absent (or unusable) do we guess at the machine's own.
+        let hosted = config.interpreters[ext].flatMap {
+            FileManager.default.isExecutableFile(atPath: $0) ? $0 : nil
+        }
         guard content.utf8.count <= maxVerifiedBytes,
               let parser = parsers[ext],
-              let executable = resolve(names: parser.names, versionArgs: parser.versionArgs) else { return nil }
+              let executable = hosted ?? resolve(names: parser.names, versionArgs: parser.versionArgs)
+        else { return nil }
 
         let tmp = FileManager.default.temporaryDirectory
             .appendingPathComponent("write-verify-\(UUID().uuidString).\(ext)")
@@ -79,9 +148,10 @@ public enum WriteVerifier {
             // Name the interpreter. A rejection is only as trustworthy as the
             // binary that made it, and the reader — model or person — cannot
             // judge it without knowing which one ran.
-            return "content failed the syntax check run by \(executable)"
+            let judge = executable
                 + (versionString(of: executable, versionArgs: parser.versionArgs).map { " (\($0))" } ?? "")
-                + ":\n\(diagnostics)"
+            return .syntax(reason: "content failed the syntax check run by \(judge):\n\(diagnostics)",
+                           judgedBy: judge)
         case .passed, .unavailable:
             return nil
         }
@@ -244,10 +314,6 @@ public enum WriteVerifier {
         return .failed(String(diagnostics.prefix(600)))
     }
 
-    /// Model-facing retry guidance appended to every corruption error.
-    static let retryGuidance = """
-    The file was NOT changed (original restored). The content arrived corrupted \
-    in transit — resend the write; for large files write in chunks: an initial \
-    write_file under ~4KB, then append:true pieces, each under ~4KB.
-    """
+    /// Retained for callers that only ever meant transit corruption.
+    static var retryGuidance: String { WriteRejection.transitCorruption("").guidance }
 }
