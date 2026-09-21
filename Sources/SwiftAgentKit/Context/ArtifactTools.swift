@@ -39,7 +39,11 @@ public struct ArtifactReadTool: AgentTool {
         let offset = intValue(parameters["offset"]) ?? 0
         // Default high so retrieval is single-shot for typical outputs — paginated
         // reads (repeated "call again with offset…") can make weaker models loop.
-        let limit = intValue(parameters["limit"]) ?? 24_000
+        // Same rule as read_file (see ReadSlice): a slice smaller than the floor
+        // costs a whole round trip to deliver almost nothing, so tiny requests
+        // are widened rather than honoured.
+        let requested = intValue(parameters["limit"]) ?? 24_000
+        let limit = max(requested, ReadSlice.floor)
 
         guard let slice = await store.read(id, offset: offset, limit: limit) else {
             return .error(toolCallId: "", toolName: name, message: "Unknown artifact: \(id)")
@@ -47,7 +51,10 @@ public struct ArtifactReadTool: AgentTool {
         let more = slice.hasMore
             ? "\n… [truncated — call again with offset \(slice.offset + slice.content.count)]"
             : ""
-        return .success(toolCallId: "", toolName: name, result: slice.content + more)
+        let widened = limit > requested
+            ? "\n[Returned up to \(limit) characters, not the \(requested) requested — every call re-sends the whole conversation, so tiny reads are the most expensive kind. Ask for more at once.]"
+            : ""
+        return .success(toolCallId: "", toolName: name, result: slice.content + more + widened)
     }
 }
 
