@@ -117,7 +117,9 @@ public final class SubAgentSpawner: @unchecked Sendable {
             """
         }
         if let memoryStore = await parent.memoryStore {
-            let block = await memoryStore.loadContextBlock()
+            // A child works on the parent's project, so it sees the same
+            // project memory — and, like the parent, no other project's.
+            let block = await memoryStore.loadContextBlock(project: await parent.memoryProject)
             if !block.isEmpty {
                 prompt += "\n\n" + block
             }

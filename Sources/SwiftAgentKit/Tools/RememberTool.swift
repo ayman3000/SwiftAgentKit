@@ -30,6 +30,13 @@ public final class RememberTool: AgentTool, @unchecked Sendable {
     — these become their own memory file. Use `kind: "agent"` to update your own \
     identity or principles. Call this whenever the user shares something worth \
     remembering; do NOT ask permission first.
+
+    SCOPE a fact honestly. Anything about the work in front of you — a decision, \
+    a convention, a phase order, a path inside this codebase — belongs to the \
+    project and is loaded only when that project is open. Reserve \
+    `scope: "global"` for what is true of the user or of your own way of working \
+    everywhere. A project's decisions presented as standing truth in an unrelated \
+    conversation is how an agent ends up pursuing the wrong mission.
     """
 
     public let parameters = ToolParameters(
@@ -46,15 +53,31 @@ public final class RememberTool: AgentTool, @unchecked Sendable {
             "content": ToolParameterProperty(
                 type: "string",
                 description: "The value/detail to remember."
+            ),
+            "scope": ToolParameterProperty(
+                type: "string",
+                description: "\"project\" (default when a project is open) files this under the current project, so it is recalled only there. \"global\" is for what holds everywhere. Ignored for user/agent memories, which are always global.",
+                enum: ["project", "global"]
             )
         ],
         required: ["kind", "title", "content"]
     )
 
     private let store: any AgentMemoryStore
+    /// The project this conversation is working in, if any. Facts default to
+    /// it, because a fact learned inside a project is usually about it.
+    private let activeProject: String?
 
-    public init(store: any AgentMemoryStore) {
+    public init(store: any AgentMemoryStore, activeProject: String? = nil) {
         self.store = store
+        self.activeProject = activeProject
+    }
+
+    /// Which project a save belongs to. Only facts are scoped — what the agent
+    /// knows about the person, and who the agent is, hold everywhere.
+    static func project(for kind: AgentMemoryKind, scope: String?, activeProject: String?) -> String? {
+        guard kind == .fact, let activeProject else { return nil }
+        return scope?.lowercased() == "global" ? nil : activeProject
     }
 
     public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
@@ -70,10 +93,15 @@ public final class RememberTool: AgentTool, @unchecked Sendable {
             )
         }
 
-        let entry = AgentMemoryEntry(kind: kind, title: title, content: content)
+        let project = Self.project(for: kind,
+                                   scope: parameters["scope"] as? String,
+                                   activeProject: activeProject)
+        let entry = AgentMemoryEntry(kind: kind, title: title, content: content, project: project)
         do {
             try await store.save(entry)
-            return .success(toolCallId: "", toolName: name, result: "Remembered \(kind.rawValue) fact: \(title)")
+            let where_ = project.map { " in project \($0)" } ?? ""
+            return .success(toolCallId: "", toolName: name,
+                            result: "Remembered \(kind.rawValue) fact\(where_): \(title)")
         } catch {
             return .error(toolCallId: "", toolName: name, message: "Error saving memory: \(error.localizedDescription)")
         }

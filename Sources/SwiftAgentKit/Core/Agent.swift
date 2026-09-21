@@ -271,6 +271,8 @@ public actor Agent {
     /// Optional persistent memory store. When set, the agent auto-registers
     /// `RememberTool` and injects the memory context block into the system prompt.
     public private(set) var memoryStore: (any AgentMemoryStore)?
+    /// The project whose memory joins the global set for this agent's runs.
+    public private(set) var memoryProject: String?
 
     /// Optional persistent goal store. When set, `run(_:trackGoal:)` persists goal
     /// progress and results.
@@ -466,11 +468,15 @@ public actor Agent {
         }
     }
 
-    public func setMemoryStore(_ store: (any AgentMemoryStore)?) throws {
+    /// Attach a memory store, optionally naming the project this agent is
+    /// working in. Facts the model saves default to that project, and only
+    /// that project's memory joins the global set in the system prompt.
+    public func setMemoryStore(_ store: (any AgentMemoryStore)?, project: String? = nil) throws {
         try requireIdle()
         memoryStore = store
+        memoryProject = project
         if let store = store {
-            register(RememberTool(store: store))
+            register(RememberTool(store: store, activeProject: project))
         }
     }
     public func setGoalStore(_ store: (any AgentGoalStore)?) throws { try requireIdle(); goalStore = store }
@@ -796,7 +802,7 @@ public actor Agent {
         // Persistent memory must be part of every model call. Loading it at run
         // time ensures facts saved by earlier runs are immediately available.
         if let memoryStore {
-            let memoryContext = await memoryStore.loadContextBlock()
+            let memoryContext = await memoryStore.loadContextBlock(project: memoryProject)
             if !memoryContext.isEmpty {
                 if !effectiveSystemPrompt.isEmpty {
                     effectiveSystemPrompt += "\n\n"
