@@ -51,6 +51,9 @@ public struct ArtifactReadTool: AgentTool {
         let more = slice.hasMore
             ? "\n… [truncated — call again with offset \(slice.offset + slice.content.count)]"
             : ""
+        ToolTrace.read(tool: name, path: id, offset: slice.offset,
+                       requested: intValue(parameters["limit"]),
+                       served: slice.content.count, total: nil, more: slice.hasMore)
         let widened = limit > requested
             ? "\n[Returned up to \(limit) characters, not the \(requested) requested — every call re-sends the whole conversation, so tiny reads are the most expensive kind. Ask for more at once.]"
             : ""

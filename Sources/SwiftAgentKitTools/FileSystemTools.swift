@@ -63,6 +63,10 @@ public struct FileReadTool: AgentTool {
                               offset: intValue(parameters["offset"]),
                               limit: intValue(parameters["limit"]))
         let body = String(chars[slice.start..<slice.end])
+        ToolTrace.read(tool: name, path: path, offset: slice.start,
+                       requested: intValue(parameters["limit"]),
+                       served: slice.end - slice.start, total: chars.count,
+                       more: slice.end < chars.count)
         return .success(toolCallId: "", toolName: name, result: slice.annotate(body))
     }
 }
