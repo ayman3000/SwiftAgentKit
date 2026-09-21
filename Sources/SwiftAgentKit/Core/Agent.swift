@@ -601,6 +601,25 @@ public actor Agent {
         subAgentSpawner?.cancelAll()
     }
 
+    /// Cancel from OUTSIDE the actor, immediately.
+    ///
+    /// `cancel()` is actor-isolated, so a caller has to `await` it, and an
+    /// actor busy inside a long tool call may not service that hop for a
+    /// while — which is exactly the moment a person is pressing Stop. The
+    /// flag itself is guarded by a plain lock and needs no isolation, so set
+    /// it synchronously here and let the sub-agent teardown follow on the
+    /// actor. After this returns, `isCancelled` is already true and the run
+    /// loop stops at its next check.
+    public nonisolated func requestCancel() {
+        markCancelled()
+        Task { await self.cancelSubAgents() }
+    }
+
+    /// The actor-isolated half of `requestCancel()`.
+    func cancelSubAgents() {
+        subAgentSpawner?.cancelAll()
+    }
+
     private func resetCancellation() {
         resetCancellationFlag()
         subAgentSpawner?.resetCancellation()

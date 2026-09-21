@@ -633,3 +633,15 @@ private struct ViewImageStub: AgentTool {
     #expect(await child.tools.contains("view_image"))
     #expect(child.config.systemPrompt?.contains("cannot view images") != true)
 }
+
+// MARK: - Stop must not wait for a busy actor
+
+/// The Stop button's problem: `cancel()` is actor-isolated, so it queues
+/// behind whatever the agent is already doing. `requestCancel()` sets the
+/// flag from outside, with no await at all.
+@Test func testRequestCancelSetsTheFlagWithoutAwaitingTheActor() async throws {
+    let agent = Agent(config: AgentConfig(provider: PlainAnswerProvider(text: "x"), tools: [EchoTool()]))
+    #expect(agent.isCancelled == false)
+    agent.requestCancel()                       // no await, from a nonisolated context
+    #expect(agent.isCancelled, "the flag is readable immediately after the synchronous call")
+}
