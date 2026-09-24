@@ -229,33 +229,7 @@ public struct ShellTool: AgentTool {
     /// child pid, which (being the group leader) equals the group id — so
     /// `kill(-pid, …)` signals the whole tree.
     private func spawnInNewGroup(command: String, workingDirectory: String?, stdoutFD: Int32) throws -> pid_t {
-        var fileActions: posix_spawn_file_actions_t?
-        posix_spawn_file_actions_init(&fileActions)
-        defer { posix_spawn_file_actions_destroy(&fileActions) }
-        posix_spawn_file_actions_adddup2(&fileActions, stdoutFD, 1)
-        posix_spawn_file_actions_adddup2(&fileActions, stdoutFD, 2)
-        posix_spawn_file_actions_addopen(&fileActions, 0, "/dev/null", O_RDONLY, 0)
-        posix_spawn_file_actions_addclose(&fileActions, stdoutFD)
-        if let workingDirectory {
-            posix_spawn_file_actions_addchdir_np(&fileActions, workingDirectory)
-        }
-
-        var attr: posix_spawnattr_t?
-        posix_spawnattr_init(&attr)
-        defer { posix_spawnattr_destroy(&attr) }
-        // pgroup 0 → the child becomes leader of a brand-new group (pgid == pid).
-        posix_spawnattr_setpgroup(&attr, 0)
-        posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETPGROUP))
-
-        var pid: pid_t = 0
-        let rc = withCStringArray(["/bin/zsh", "-lc", command]) { argv in
-            posix_spawn(&pid, "/bin/zsh", &fileActions, &attr, argv, environ)
-        }
-        guard rc == 0 else {
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(rc),
-                          userInfo: [NSLocalizedDescriptionKey: String(cString: strerror(rc))])
-        }
-        return pid
+        try ProcessGroupRunner.spawnInNewGroup(command: command, workingDirectory: workingDirectory, stdoutFD: stdoutFD)
     }
 
     /// SIGKILL the entire process group led by `pid`. Best-effort — a race where
@@ -329,12 +303,5 @@ public struct ShellTool: AgentTool {
         return markers.contains { c.contains($0) }
     }
 
-    /// Build a null-terminated C string array for `posix_spawn`'s argv.
-    private func withCStringArray<R>(_ strings: [String], _ body: (UnsafePointer<UnsafeMutablePointer<CChar>?>) -> R) -> R {
-        var cStrings: [UnsafeMutablePointer<CChar>?] = strings.map { strdup($0) }
-        cStrings.append(nil)
-        defer { cStrings.forEach { free($0) } }
-        return cStrings.withUnsafeBufferPointer { body($0.baseAddress!) }
-    }
 }
 #endif

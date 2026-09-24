@@ -84,7 +84,19 @@ enum ProcessGroupRunner {
 
     // MARK: - Spawn
 
-    private static func spawnInNewGroup(
+    /// Launch `/bin/zsh -lc <command>` as the leader of a new process group,
+    /// stdin from /dev/null, stdout+stderr to `stdoutFD`. Shared by ShellTool and
+    /// PythonTool so the two cannot drift apart.
+    ///
+    /// The child starts with a CLEAN signal state: nothing blocked, every
+    /// handler at its default. posix_spawn otherwise copies the calling
+    /// thread's blocked-signal mask, and Swift's worker threads block most
+    /// signals — so every command started with SIGTERM blocked. Tools that stop
+    /// their own helpers with SIGTERM (Flutter's compiler, npm, Gradle, test
+    /// runners) then waited forever: `flutter test` hung for the full timeout
+    /// after its tests had passed. Apple's Process and Python's subprocess
+    /// reset the same way.
+    static func spawnInNewGroup(
         command: String, workingDirectory: String?, stdoutFD: Int32
     ) throws -> pid_t {
         var fileActions: posix_spawn_file_actions_t?
@@ -101,8 +113,15 @@ enum ProcessGroupRunner {
         var attr: posix_spawnattr_t?
         posix_spawnattr_init(&attr)
         defer { posix_spawnattr_destroy(&attr) }
+        // pgroup 0 → the child becomes leader of a brand-new group (pgid == pid).
         posix_spawnattr_setpgroup(&attr, 0)
-        posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETPGROUP))
+        var noneBlocked = sigset_t()
+        sigemptyset(&noneBlocked)
+        posix_spawnattr_setsigmask(&attr, &noneBlocked)
+        var allDefault = sigset_t()
+        sigfillset(&allDefault)
+        posix_spawnattr_setsigdefault(&attr, &allDefault)
+        posix_spawnattr_setflags(&attr, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF))
 
         var pid: pid_t = 0
         let argv: [String] = ["/bin/zsh", "-lc", command]
