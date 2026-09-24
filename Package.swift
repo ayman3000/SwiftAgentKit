@@ -20,7 +20,7 @@ let package = Package(
         .library(name: "SwiftAgentKitMac", targets: ["SwiftAgentKitMac"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/ayman3000/LLMProviderKit.git", from: "0.1.0-alpha.31"),
+        .package(url: "https://github.com/ayman3000/LLMProviderKit.git", from: "0.1.0-alpha.34"),
         .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "603.0.0"),
         .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.12.1"),
         .package(url: "https://github.com/swiftlang/swift-docc-plugin.git", from: "1.4.0"),
@@ -51,8 +51,10 @@ let package = Package(
             dependencies: [
                 "SwiftAgentKit",
                 .product(name: "LLMProviderKit", package: "LLMProviderKit"),
-                // Used only by the gated live-model smoke test (real Ollama provider).
+                // Real provider parsers: the live-model smoke test and the wire tests
+                // that pin one request per streamed tool step.
                 .product(name: "LLMProviderKitOllama", package: "LLMProviderKit"),
+                .product(name: "LLMProviderKitOpenAI", package: "LLMProviderKit"),
             ]
         ),
 
