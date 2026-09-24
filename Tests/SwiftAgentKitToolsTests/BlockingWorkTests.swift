@@ -22,7 +22,10 @@ struct BlockingWorkTests {
             }
         }
         let timerFired = await timer
-        #expect(timerFired < 0.35, "a 100 ms timer fired after \(timerFired)s: blocking work starved the pool")
+        // On a starved pool the blockers run in waves of one per core, so the
+        // timer waits >= 0.4 s x 4 = 1.6 s (measured: 1.6 s). Half that leaves
+        // room for a noisy CI runner and still catches starvation.
+        #expect(timerFired < 0.8, "a 100 ms timer fired after \(timerFired)s: blocking work starved the pool")
     }
 
     @Test func returnsTheBodysValue() async {
