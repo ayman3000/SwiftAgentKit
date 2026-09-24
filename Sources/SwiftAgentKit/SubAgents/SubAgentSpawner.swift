@@ -143,6 +143,7 @@ public final class SubAgentSpawner: @unchecked Sendable {
         // tools registered by ContextManager in Agent.init) before we snapshot
         // the parent's tool list — so the dedup filter below can see them.
         await child.flushRegistrations()
+        await child.setLoadedToolGroups(await parent.loadedToolGroupIDs)
 
         // Direct actor calls (not Agent's fire-and-forget register) so the
         // child is fully wired when this method returns.

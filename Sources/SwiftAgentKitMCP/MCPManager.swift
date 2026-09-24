@@ -83,7 +83,9 @@ public actor MCPManager {
             }
             let info = MCPServerInfo(
                 name: result.serverInfo.name,
-                version: result.serverInfo.version
+                version: result.serverInfo.version,
+                title: result.serverInfo.title,
+                instructions: result.instructions
             )
 
             connections.append(MCPConnection(
