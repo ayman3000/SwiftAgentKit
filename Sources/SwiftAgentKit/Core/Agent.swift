@@ -1435,8 +1435,12 @@ public actor Agent {
         }
 
         if sawNativeToolSignal {
-            // Signaled tool use but didn't stream usable args (e.g. an HTTP
-            // provider that only flags tool use) — re-issue non-streaming.
+            // Signaled tool use but didn't stream usable args — re-issue
+            // non-streaming. A safety net for providers that only flag tool
+            // use, NOT a normal path: it generates the whole step twice. Every
+            // built-in provider streams whole calls (StreamedToolStepWireTests
+            // pins that), so reaching here means a provider regressed. Say so.
+            logger.warning("\(type(of: config.provider).name) signalled tool use without streaming usable tool calls; re-asking without streaming. This doubles the model call for this step — the provider should stream whole tool calls.")
             let response = try await config.provider.complete(request)
             let parsed = AgentLLMResponse.from(response)
             // Keep any streamed preamble text if the re-issue returned none.
