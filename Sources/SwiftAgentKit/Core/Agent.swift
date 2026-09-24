@@ -143,6 +143,10 @@ public struct AgentConfig: Sendable {
     /// for the policy's limit is retried once, then reported. nil = off.
     public var stallPolicy: StreamStallPolicy?
 
+    /// Tool groups whose definitions are sent only after the model loads them
+    /// with `load_tools` (MCP servers, say). Empty = every tool always sent.
+    public var toolGroups: [DeferredToolGroup]
+
     public init(
         provider: any LLMProvider,
         model: String? = nil,
@@ -170,7 +174,8 @@ public struct AgentConfig: Sendable {
         loopDetection: LoopDetectionConfig? = .default,
         parallelToolCalls: Bool = false,
         progressNudgeFractions: [Double] = [0.5, 0.8],
-        stallPolicy: StreamStallPolicy? = nil
+        stallPolicy: StreamStallPolicy? = nil,
+        toolGroups: [DeferredToolGroup] = []
     ) {
         self.provider = provider
         self.model = model
@@ -198,6 +203,7 @@ public struct AgentConfig: Sendable {
         self.loopDetection = loopDetection
         self.parallelToolCalls = parallelToolCalls
         self.stallPolicy = stallPolicy
+        self.toolGroups = toolGroups
         self.progressNudgeFractions = progressNudgeFractions
     }
 }
@@ -453,6 +459,12 @@ public actor Agent {
             pendingRegistrationTasks.append(Task { [dispatcher] in await dispatcher.setAutonomousMode(true) })
         }
 
+        // Deferred tool groups: `load_tools` exists only when something is deferred.
+        if config.toolGroups.contains(where: { !$0.alwaysLoaded }) {
+            let loadTool = LoadToolsTool(handle: AgentHandle(self))
+            pendingRegistrationTasks.append(Task { [tools] in await tools.register(loadTool) })
+        }
+
         // Sub-agents: register the delegation tool. The spawner strips this
         // tool (and sets enableSubAgents=false) on children, so delegation is
         // one level deep.
@@ -464,6 +476,66 @@ public actor Agent {
             })
             pendingRegistrationTasks.append(Task { [tools] in await tools.register(delegateTool) })
         }
+    }
+
+    // MARK: - Deferred tool groups
+
+    /// Loaded group ids, in load order (their tools go last, in this order).
+    private(set) var loadedToolGroupIDs: [String] = []
+
+    /// Groups that are hidden until loaded.
+    private var deferredGroups: [DeferredToolGroup] { config.toolGroups.filter { !$0.alwaysLoaded } }
+
+    /// Load groups for the rest of the conversation; the reply says what happened.
+    public func loadToolGroups(_ ids: [String]) -> String {
+        var loaded: [String] = [], already: [String] = [], unknown: [String] = []
+        for id in ids {
+            guard let group = deferredGroups.first(where: { $0.id == id }) else { unknown.append(id); continue }
+            if loadedToolGroupIDs.contains(group.id) { already.append(id) }
+            else { loadedToolGroupIDs.append(group.id); loaded.append(id) }
+        }
+        var lines: [String] = []
+        for id in loaded {
+            let names = deferredGroups.first { $0.id == id }?.toolNames ?? []
+            lines.append("Loaded \(id): \(names.joined(separator: ", ")). Available from your next step.")
+        }
+        if !already.isEmpty { lines.append("Already loaded: \(already.joined(separator: ", ")).") }
+        if !unknown.isEmpty {
+            let available = deferredGroups.map(\.id).sorted().joined(separator: ", ")
+            lines.append("No tool group named \(unknown.joined(separator: ", ")). Groups you can load: \(available).")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Carry a parent's loaded groups into a child agent.
+    func setLoadedToolGroups(_ ids: [String]) { loadedToolGroupIDs = ids }
+
+    /// Tools sent to the model now: everything not deferred, then each loaded
+    /// group's tools in load order — so loading never moves what came before.
+    private func visibleTools(_ all: [any AgentTool]) -> [any AgentTool] {
+        let hidden = Set(deferredGroups.flatMap(\.toolNames))
+        var visible = all.filter { !hidden.contains($0.name) }
+        let byName = Dictionary(all.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+        for id in loadedToolGroupIDs {
+            guard let group = deferredGroups.first(where: { $0.id == id }) else { continue }
+            visible += group.toolNames.compactMap { byName[$0] }
+        }
+        return visible
+    }
+
+    /// The prompt's index of loadable groups: sorted and unaffected by loading,
+    /// so the prompt prefix stays byte-stable.
+    private func toolGroupIndex() -> String {
+        let groups = deferredGroups.sorted { $0.id < $1.id }
+        guard !groups.isEmpty else { return "" }
+        let lines = groups.map { "- \($0.id): \($0.description) (\($0.toolNames.count) tools)" }
+        return "\n\nTool groups you can load (call load_tools with their ids before using them):\n"
+            + lines.joined(separator: "\n")
+    }
+
+    /// The deferred group a tool belongs to, when it isn't loaded yet.
+    private func unloadedGroup(ofTool name: String) -> DeferredToolGroup? {
+        deferredGroups.first { $0.toolNames.contains(name) && !loadedToolGroupIDs.contains($0.id) }
     }
 
     // MARK: - Reconfiguration (idle-only)
@@ -821,7 +893,8 @@ public actor Agent {
         }
 
         if !registeredToolsEarly.isEmpty {
-            let toolNames = registeredToolsEarly.map { $0.name }.joined(separator: ", ")
+            let hiddenNames = Set(deferredGroups.flatMap(\.toolNames))
+            let toolNames = registeredToolsEarly.map { $0.name }.filter { !hiddenNames.contains($0) }.joined(separator: ", ")
             let toolInstruction = """
 
             You have access to the following tools: \(toolNames).
@@ -835,7 +908,7 @@ public actor Agent {
         // instructions on demand with `use_skill`. The index is byte-stable
         // (alphabetical, changes only when skills change) so the prompt
         // prefix stays cache-friendly across steps and turns.
-        let skillIndex = await skillRegistry.skillIndex()
+        let skillIndex = await skillRegistry.skillIndex() + toolGroupIndex()
         if !skillIndex.isEmpty || !effectiveSystemPrompt.isEmpty {
             conversation.setSystemMessage(.system(effectiveSystemPrompt + skillIndex))
         }
@@ -870,8 +943,8 @@ public actor Agent {
         // 2. Get registered tools (already fetched early for system prompt)
         let registeredTools = registeredToolsEarly
 
-        // Convert tool definitions to LLMProviderKit format
-        let llmToolDefs = makeLLMToolDefinitions(from: registeredTools)
+        // Tool definitions are rebuilt per call (below): a group loaded
+        // mid-run must appear on the very next call.
 
         // 3. Agent loop
         if config.maxTurns > 0 && !registeredTools.isEmpty {
@@ -954,6 +1027,7 @@ public actor Agent {
                 }
 
                 // Build LLM request (with state-templated system prompt)
+                let llmToolDefs = makeLLMToolDefinitions(from: visibleTools(registeredTools))
                 let request = await makeLLMRequest(messagesForLLM: messagesForLLM, tools: llmToolDefs)
 
                 // Call the provider (streamed when onText is set). Transient
@@ -1607,6 +1681,25 @@ public actor Agent {
         let dispatcherObserver = BlockObserver { [weak self] event in
             guard !silent else { return }
             self?.emit(event)
+        }
+        // Safety net: a call into a group that isn't loaded yet loads the group
+        // and asks for the call again — it isn't run blind, since the model
+        // hadn't seen that tool's parameters.
+        var early: [Int: AgentToolResult] = [:]
+        for (i, call) in toolCalls.enumerated() {
+            guard let group = unloadedGroup(ofTool: call.name) else { continue }
+            _ = loadToolGroups([group.id])
+            early[i] = .error(toolCallId: call.id, toolName: call.name, message:
+                "\(call.name) belongs to the \(group.id) tools, which weren't loaded. They are loaded now — call \(call.name) again.")
+        }
+        if !early.isEmpty {
+            let rest = toolCalls.enumerated().filter { early[$0.offset] == nil }
+            let ran = await dispatcher.dispatch(
+                calls: rest.map(\.element), state: state, turn: turn, query: query, callbacks: callbacks,
+                parallel: config.parallelToolCalls, actions: actions, observer: dispatcherObserver)
+            var byIndex = early
+            for (k, entry) in rest.enumerated() where k < ran.count { byIndex[entry.offset] = ran[k] }
+            return toolCalls.indices.compactMap { byIndex[$0] }
         }
         return await dispatcher.dispatch(
             calls: toolCalls,

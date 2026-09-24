@@ -12,8 +12,15 @@ public enum MCPClientConfig: Sendable {
 public struct MCPServerInfo: Sendable {
     public let name: String
     public let version: String
-    public init(name: String, version: String) {
+    /// Human-readable name, when the server gives one.
+    public let title: String?
+    /// The server's own usage notes (MCP `instructions`), when it gives them.
+    /// Useful for describing the server in one line; many servers send none.
+    public let instructions: String?
+    public init(name: String, version: String, title: String? = nil, instructions: String? = nil) {
         self.name = name
         self.version = version
+        self.title = title
+        self.instructions = instructions
     }
 }
