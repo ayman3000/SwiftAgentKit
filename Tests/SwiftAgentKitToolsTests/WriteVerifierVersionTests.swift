@@ -54,7 +54,8 @@ struct WriteVerifierVersionTests {
     /// The end-to-end claim, on this machine only: modern Python must survive
     /// the verifier. Skipped where no python3 exists.
     @Test func modernPythonIsNotCalledCorrupt() async throws {
-        try #require(WriteVerifier.parserAvailable(forExtension: "py"))
+        // Probes spawn processes and wait: off the cooperative pool (BlockingWork).
+        try #require(await BlockingWork.run { WriteVerifier.parserAvailable(forExtension: "py") })
         let source = """
         type Pair[T] = tuple[T, T]
 
@@ -67,11 +68,13 @@ struct WriteVerifierVersionTests {
         """
         // Only meaningful when this machine actually has a Python new enough
         // to accept it; otherwise there is nothing for the fix to find.
-        let newEnough = WriteVerifier.newest(
-            among: ["/usr/bin/python3", "/usr/local/bin/python3", "/opt/homebrew/bin/python3"]
-                .filter { FileManager.default.isExecutableFile(atPath: $0) },
-            versionArgs: ["-V"]
-        ).map { WriteVerifier.parseVersion(WriteVerifier.versionString(of: $0, versionArgs: ["-V"]) ?? "") }
+        let newEnough = await BlockingWork.run {
+            WriteVerifier.newest(
+                among: ["/usr/bin/python3", "/usr/local/bin/python3", "/opt/homebrew/bin/python3"]
+                    .filter { FileManager.default.isExecutableFile(atPath: $0) },
+                versionArgs: ["-V"]
+            ).map { WriteVerifier.parseVersion(WriteVerifier.versionString(of: $0, versionArgs: ["-V"]) ?? "") }
+        }
         try #require(newEnough.map { !WriteVerifier.lexicographicallyPrecedes($0, [3, 12]) } ?? false,
                      "no Python 3.12+ on this machine")
         let reason = await WriteVerifier.corruptionReason(path: "/tmp/x.py", content: source)
@@ -80,7 +83,7 @@ struct WriteVerifierVersionTests {
 
     /// The gate still catches genuinely broken Python.
     @Test func brokenPythonIsStillCaught() async throws {
-        try #require(WriteVerifier.parserAvailable(forExtension: "py"))
+        try #require(await BlockingWork.run { WriteVerifier.parserAvailable(forExtension: "py") })
         let reason = await WriteVerifier.corruptionReason(path: "/tmp/x.py", content: "def f(:\n  pass\n")
         #expect(reason != nil)
         #expect(reason!.contains("python3"), "the rejection names the interpreter that made it")
@@ -109,8 +112,10 @@ struct WriteVerifierJudgeTests {
     /// modern file must be rejected again.
     @Test func theHostsInterpreterWins() async throws {
         try #require(FileManager.default.isExecutableFile(atPath: Self.appleSystemPython))
-        let systemVersion = WriteVerifier.parseVersion(
-            WriteVerifier.versionString(of: Self.appleSystemPython, versionArgs: ["-V"]) ?? "")
+        let python = Self.appleSystemPython
+        let systemVersion = await BlockingWork.run {
+            WriteVerifier.parseVersion(WriteVerifier.versionString(of: python, versionArgs: ["-V"]) ?? "")
+        }
         try #require(WriteVerifier.lexicographicallyPrecedes(systemVersion, [3, 10]),
                      "this test needs an older /usr/bin/python3 to point at")
 
@@ -122,7 +127,7 @@ struct WriteVerifierJudgeTests {
 
     /// A path that is not executable is ignored rather than failing the write.
     @Test func aMissingHostedInterpreterFallsBack() async throws {
-        try #require(WriteVerifier.parserAvailable(forExtension: "py"))
+        try #require(await BlockingWork.run { WriteVerifier.parserAvailable(forExtension: "py") })
         let config = WriteVerifierConfig(interpreters: ["py": "/nowhere/bin/python3"])
         let verdict = await WriteVerifier.rejection(path: "/tmp/x.py", content: "x = 1\n", config: config)
         #expect(verdict == nil)
@@ -132,7 +137,7 @@ struct WriteVerifierJudgeTests {
     /// or ask for a resend, and must name the judge so the model can write for
     /// the version that will run it.
     @Test func aSyntaxRejectionDoesNotAskForAResend() async throws {
-        try #require(WriteVerifier.parserAvailable(forExtension: "py"))
+        try #require(await BlockingWork.run { WriteVerifier.parserAvailable(forExtension: "py") })
         let verdict = await WriteVerifier.rejection(path: "/tmp/x.py", content: "def f(:\n  pass\n")
         let rejection = try #require(verdict)
         guard case .syntax = rejection else {

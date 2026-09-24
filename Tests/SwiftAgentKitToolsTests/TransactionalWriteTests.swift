@@ -44,14 +44,14 @@ struct TransactionalWriteTests {
     }
 
     @Test func brokenDartIsCaughtWhenDartAvailable() async {
-        guard WriteVerifier.parserAvailable(forExtension: "dart") else { return }  // env-dependent
+        guard await BlockingWork.run({ WriteVerifier.parserAvailable(forExtension: "dart") }) else { return }  // env-dependent; probes off the pool
         let reason = await WriteVerifier.corruptionReason(
             path: "x.dart", content: "void main( { print('missing paren'; }")
         #expect(reason != nil)
     }
 
     @Test func validDartPassesWhenDartAvailable() async {
-        guard WriteVerifier.parserAvailable(forExtension: "dart") else { return }
+        guard await BlockingWork.run({ WriteVerifier.parserAvailable(forExtension: "dart") }) else { return }
         let reason = await WriteVerifier.corruptionReason(
             path: "x.dart", content: "void main() { print('ok'); }\n")
         #expect(reason == nil)
