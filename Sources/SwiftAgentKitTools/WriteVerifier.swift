@@ -127,7 +127,15 @@ public enum WriteVerifier {
         }
 
         // 3. Language parser, when available. Fail open on any infrastructure
-        //    problem (missing binary, timeout, crash).
+        //    problem (missing binary, timeout, crash). Everything below waits on
+        //    child processes (interpreter probes, the parser itself — up to 10 s),
+        //    so it runs off the cooperative pool (see BlockingWork).
+        return await BlockingWork.run { parserRejection(ext: ext, content: content, config: config) }
+    }
+
+    /// The blocking part of `rejection`: resolve an interpreter, run its parser.
+    private static func parserRejection(ext: String, content: String,
+                                        config: WriteVerifierConfig) -> WriteRejection? {
         // The host's interpreter wins: it is the one that will run the file.
         // Only when it is absent (or unusable) do we guess at the machine's own.
         let hosted = config.interpreters[ext].flatMap {

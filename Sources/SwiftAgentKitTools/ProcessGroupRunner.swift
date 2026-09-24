@@ -43,7 +43,9 @@ enum ProcessGroupRunner {
         try? pipe.fileHandleForWriting.close()
 
         let handle = pipe.fileHandleForReading
-        let readTask = Task.detached { handle.readDataToEndOfFile() }
+        // Task.detached still runs on the cooperative pool; a blocking read there
+        // holds a pool thread for the whole run. BlockingWork moves it to GCD.
+        let readTask = Task { await BlockingWork.run { handle.readDataToEndOfFile() } }
 
         enum Stop { case finished, timedOut }
         let stop: Stop = await withTaskCancellationHandler {
@@ -66,8 +68,11 @@ enum ProcessGroupRunner {
         }
 
         let data = await readTask.value
-        var raw: Int32 = 0
-        while waitpid(pid, &raw, 0) == -1 && errno == EINTR {}
+        let raw: Int32 = await BlockingWork.run {
+            var raw: Int32 = 0
+            while waitpid(pid, &raw, 0) == -1 && errno == EINTR {}
+            return raw
+        }
         let exitCode: Int32 = (raw & 0x7f) == 0 ? (raw >> 8) & 0xff : 128 + (raw & 0x7f)
 
         return Outcome(
