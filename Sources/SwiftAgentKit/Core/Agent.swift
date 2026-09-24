@@ -139,6 +139,10 @@ public struct AgentConfig: Sendable {
     /// your registered tools are safe to interleave.
     public var parallelToolCalls: Bool
 
+    /// Stalled-stream policy for streamed model calls: a call with no progress
+    /// for the policy's limit is retried once, then reported. nil = off.
+    public var stallPolicy: StreamStallPolicy?
+
     public init(
         provider: any LLMProvider,
         model: String? = nil,
@@ -165,7 +169,8 @@ public struct AgentConfig: Sendable {
         maxVerificationRetries: Int = 3,
         loopDetection: LoopDetectionConfig? = .default,
         parallelToolCalls: Bool = false,
-        progressNudgeFractions: [Double] = [0.5, 0.8]
+        progressNudgeFractions: [Double] = [0.5, 0.8],
+        stallPolicy: StreamStallPolicy? = nil
     ) {
         self.provider = provider
         self.model = model
@@ -192,6 +197,7 @@ public struct AgentConfig: Sendable {
         self.maxVerificationRetries = maxVerificationRetries
         self.loopDetection = loopDetection
         self.parallelToolCalls = parallelToolCalls
+        self.stallPolicy = stallPolicy
         self.progressNudgeFractions = progressNudgeFractions
     }
 }
@@ -647,6 +653,9 @@ public actor Agent {
     }
 
     static func isRetryableLLMError(_ error: Error) -> Bool {
+        // A stall already got its one retry in executeTurn; the generic
+        // backoff would turn it into six stalls in a row.
+        if error is LLMStreamStalled { return false }
         switch error {
         case let llm as LLMError:
             switch llm {
@@ -1382,6 +1391,37 @@ public actor Agent {
             return AgentLLMResponse.from(response)
         }
 
+        var request = request
+        if let policy = config.stallPolicy { request.stallTimeout = policy.limit(for: request) }
+        let started = Date()
+        do {
+            return try await streamTurn(request: request, onText: onText, onReasoning: onReasoning)
+        } catch let stall as LLMStreamStalled where !textShown {
+            // Nothing the user saw is lost: ask again, once.
+            logger.warning("\(type(of: config.provider).name) made no progress for \(Int(stall.seconds)) s; retrying the call once.")
+            return try await streamTurn(request: request, onText: onText, onReasoning: onReasoning)
+        } catch {
+            let seconds = Date().timeIntervalSince(started)
+            if seconds > 120 { logger.info("A streamed model call ended after \(Int(seconds)) s with: \(error.localizedDescription)") }
+            throw error
+        }
+    }
+
+    /// Whether the current turn's answer text has reached the caller — after
+    /// that a retry would repeat what the user already read.
+    private var textShown = false
+
+    private func streamTurn(
+        request: LLMRequest,
+        onText: @escaping @Sendable (String) -> Void,
+        onReasoning: (@Sendable (String) -> Void)?
+    ) async throws -> AgentLLMResponse {
+        textShown = false
+        let started = Date()
+        defer {
+            let seconds = Date().timeIntervalSince(started)
+            if seconds > 120 { logger.info("A streamed model call took \(Int(seconds)) s (\(type(of: config.provider).name)).") }
+        }
         var streamedText = ""
         // Separated reasoning (Ollama `thinking`, OpenAI `reasoning_content`,
         // Anthropic thinking deltas). Kept OUT of streamedText so it never
@@ -1399,6 +1439,7 @@ public actor Agent {
             switch chunk {
             case .text(let text):
                 streamedText += text
+                textShown = true
                 onText(text)
                 emit(.streamChunk(text))
             case .reasoning(let delta):
