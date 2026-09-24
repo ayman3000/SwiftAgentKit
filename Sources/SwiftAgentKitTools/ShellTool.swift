@@ -158,7 +158,7 @@ public struct ShellTool: AgentTool {
         }
 
         let data = await readTask.value              // unblocked; collects partial output
-        let status = reap(pid)
+        let status = await reap(pid)
         let cancelled = Task.isCancelled
 
         var output = decode(data)
@@ -267,20 +267,19 @@ public struct ShellTool: AgentTool {
 
     /// Blocking read-to-EOF moved off the cooperative thread pool.
     private static func readToEnd(_ handle: FileHandle) async -> Data {
-        await withCheckedContinuation { cont in
-            DispatchQueue.global(qos: .userInitiated).async {
-                cont.resume(returning: handle.readDataToEndOfFile())
-            }
-        }
+        await BlockingWork.run { handle.readDataToEndOfFile() }
     }
 
     private struct ExitStatus { let exitCode: Int32 }
 
     /// Block until our direct child is reaped; grandchildren reparent to launchd
     /// and are reaped there. Returns its exit/signal code.
-    private func reap(_ pid: pid_t) -> ExitStatus {
-        var raw: Int32 = 0
-        while waitpid(pid, &raw, 0) == -1 && errno == EINTR {}
+    private func reap(_ pid: pid_t) async -> ExitStatus {
+        let raw: Int32 = await BlockingWork.run {
+            var raw: Int32 = 0
+            while waitpid(pid, &raw, 0) == -1 && errno == EINTR {}
+            return raw
+        }
         return ExitStatus(exitCode: decodeWaitStatus(raw))
     }
 
