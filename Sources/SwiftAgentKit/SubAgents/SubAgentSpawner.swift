@@ -78,7 +78,14 @@ public final class SubAgentSpawner: @unchecked Sendable {
     }
 
     /// Build a child agent per the inheritance rules in the sub-agents spec.
-    public func makeChild() async -> Agent {
+    /// Whether children run on a model of their own (so a failure there can
+    /// fall back to the parent's).
+    public var hasDedicatedModel: Bool { parent.config.subAgentProvider != nil }
+
+    /// - Parameter onParentModel: ignore the dedicated sub-agent model and run
+    ///   on the parent's provider, model and effort — the fallback when the
+    ///   dedicated model failed.
+    public func makeChild(onParentModel: Bool = false) async -> Agent {
         // Ensure any fire-and-forget tool/skill registrations from the parent
         // have completed before we snapshot its registries.
         await parent.flushRegistrations()
@@ -88,12 +95,16 @@ public final class SubAgentSpawner: @unchecked Sendable {
         // A dedicated sub-agent provider/model, when the app set one; the
         // parent's otherwise. Cleared on the child so a grandchild can't
         // inherit a stale pair (children can't spawn anyway).
-        if let childProvider = config.subAgentProvider {
-            config.provider = childProvider
-            config.model = config.subAgentModel
+        if !onParentModel {
+            if let childProvider = config.subAgentProvider {
+                config.provider = childProvider
+                config.model = config.subAgentModel
+            }
+            if let effort = config.subAgentReasoningEffort { config.reasoningEffort = effort }
         }
         config.subAgentProvider = nil
         config.subAgentModel = nil
+        config.subAgentReasoningEffort = nil
         config.enableSubAgents = false   // defense in depth vs. recursion
         config.maxTurns = min(config.maxTurns, max(1, config.maxSubAgentTurns))
         config.tools = []                       // registered explicitly below

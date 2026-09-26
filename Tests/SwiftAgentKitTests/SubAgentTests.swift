@@ -645,3 +645,67 @@ private struct ViewImageStub: AgentTool {
     agent.requestCancel()                       // no await, from a nonisolated context
     #expect(agent.isCancelled, "the flag is readable immediately after the synchronous call")
 }
+
+// MARK: - Sub-agent effort, reported model, fallback (model roles, 2026-09-26)
+
+@Test func testChildUsesTheSubAgentEffortWhenSet() async throws {
+    let agent = Agent(config: AgentConfig(
+        provider: PlainAnswerProvider(text: "x"), model: "strong-1", reasoningEffort: .high,
+        subAgentProvider: PlainAnswerProvider(text: "c"), subAgentModel: "cheap-1",
+        subAgentReasoningEffort: .low))
+    #expect(await SubAgentSpawner(parent: agent).makeChild().config.reasoningEffort == .low)
+    // Unset: the child keeps the parent's effort.
+    let same = Agent(config: AgentConfig(provider: PlainAnswerProvider(text: "x"), reasoningEffort: .high))
+    #expect(await SubAgentSpawner(parent: same).makeChild().config.reasoningEffort == .high)
+    // Falling back to the parent's model also takes the parent's effort.
+    let fallback = await SubAgentSpawner(parent: agent).makeChild(onParentModel: true)
+    #expect(fallback.config.model == "strong-1")
+    #expect(fallback.config.reasoningEffort == .high)
+}
+
+@Test func testDelegateTaskReportsTheModelTheChildRanOn() async throws {
+    let parent = SequenceProvider(steps: [
+        .toolCall(name: "delegate_task", arguments: delegateArgs),
+        .text("final")
+    ])
+    let agent = Agent(config: AgentConfig(
+        provider: parent, model: "strong-1", maxTurns: 6, tools: [EchoTool()], enableSubAgents: true,
+        subAgentProvider: PlainAnswerProvider(text: "CHILD"), subAgentModel: "cheap-1"))
+    let recorder = EventRecorder()
+    agent.addObserver(recorder)
+    _ = try await agent.run("do it")
+    let models = recorder.events.compactMap { e -> (String?, Bool)? in
+        if case .subAgentModel(_, let m, let fell) = e { return (m, fell) }; return nil
+    }
+    #expect(models.count == 1)
+    #expect(models.first?.0 == "cheap-1")
+    #expect(models.first?.1 == false)
+}
+
+@Test func testAFailingSubAgentModelFallsBackToTheParentsOnce() async throws {
+    // The dedicated model refuses permanently; the child is rebuilt on the
+    // parent's model and answers from there.
+    let parent = SequenceProvider(steps: [
+        .toolCall(name: "delegate_task", arguments: delegateArgs),  // parent turn 1
+        .text("CHILD ON PARENT"),                                   // fallback child
+        .text("final")                                              // parent turn 2
+    ])
+    let broken = FlakyProvider(failures: 10, error: LLMError.httpError(400, nil), then: [.text("never")])
+    let agent = Agent(config: AgentConfig(
+        provider: parent, model: "strong-1", maxTurns: 6, tools: [EchoTool()], enableSubAgents: true,
+        subAgentProvider: broken, subAgentModel: "cheap-1"))
+    await agent.setLlmRetryBaseDelay(0.01)
+    let recorder = EventRecorder()
+    agent.addObserver(recorder)
+    _ = try await agent.run("do it")
+    let models = recorder.events.compactMap { e -> (String?, Bool)? in
+        if case .subAgentModel(_, let m, let fell) = e { return (m, fell) }; return nil
+    }
+    #expect(models.map(\.0) == ["cheap-1", "strong-1"])
+    #expect(models.map(\.1) == [false, true])
+    let finished = recorder.events.compactMap { e -> (String, Bool)? in
+        if case .subAgentFinished(_, let s, let f) = e { return (s, f) }; return nil
+    }
+    #expect(finished.first?.0 == "CHILD ON PARENT")
+    #expect(finished.first?.1 == false)
+}
