@@ -76,16 +76,44 @@ public final class DelegateTaskTool: AgentTool, @unchecked Sendable {
         await spawner.gate.acquire()
         defer { Task { await spawner.gate.release() } }
 
-        let child = await spawner.makeChild()
+        emit(.subAgentStarted(id: id, label: label))
+        // One try on the sub-agent model; if that model itself fails (not a
+        // stop, not out of turns), one more on the parent's — a broken or
+        // exhausted cheap model must not sink the task (model roles, 2026-09-26).
+        var onParentModel = false
+        while true {
+            let child = await spawner.makeChild(onParentModel: onParentModel)
+            emit(.subAgentModel(id: id, model: child.config.model, fellBack: onParentModel))
+            let outcome = await runChild(child, id: id, prompt: prompt)
+            switch outcome {
+            case .done(let result):
+                return result
+            case .failed(let error):
+                let canFallBack = !onParentModel && spawner.hasDedicatedModel && !Self.isStop(error)
+                if canFallBack { onParentModel = true; continue }
+                emit(.subAgentFinished(id: id, summary: "error: \(error.localizedDescription)", failed: true))
+                return .error(toolCallId: "", toolName: name,
+                              message: "Sub-agent failed: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private enum ChildOutcome { case done(AgentToolResult), failed(any Error) }
+
+    /// A user stop or a cancelled parent is not a model failure — never retried.
+    static func isStop(_ error: any Error) -> Bool {
+        if error is CancellationError || Task.isCancelled { return true }
+        if case AgentError.cancelled = error { return true }
+        return false
+    }
+
+    private func runChild(_ child: Agent, id: UUID, prompt: String) async -> ChildOutcome {
         spawner.track(id, child)
         defer { spawner.untrack(id) }
-
         let forwarder = child.onEvent { [emit] event in
             emit(.subAgentEvent(id: id, event: event))
         }
         defer { child.removeObserver(forwarder) }
-
-        emit(.subAgentStarted(id: id, label: label))
         do {
             // Task cancellation (parent stream cancelled mid-tool) must reach
             // the child's loop, not just this await.
@@ -98,11 +126,10 @@ public final class DelegateTaskTool: AgentTool, @unchecked Sendable {
             let trimmed = answer.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else {
                 emit(.subAgentFinished(id: id, summary: "(no answer)", failed: true))
-                return .error(toolCallId: "", toolName: name,
-                              message: "Sub-agent returned no answer.")
+                return .done(.error(toolCallId: "", toolName: name, message: "Sub-agent returned no answer."))
             }
             emit(.subAgentFinished(id: id, summary: String(trimmed.prefix(200))))
-            return .success(toolCallId: "", toolName: name, result: trimmed)
+            return .done(.success(toolCallId: "", toolName: name, result: trimmed))
         } catch let error as AgentError {
             // Out of turns is NOT a failed task: the child did real work and may
             // have written its output already. Returning a bare error made the
@@ -112,15 +139,11 @@ public final class DelegateTaskTool: AgentTool, @unchecked Sendable {
             if case .maxTurnsReached(let turns) = error {
                 let partial = Self.partialReport(child: child, turns: turns)
                 emit(.subAgentFinished(id: id, summary: "partial (out of turns)"))
-                return .success(toolCallId: "", toolName: name, result: partial)
+                return .done(.success(toolCallId: "", toolName: name, result: partial))
             }
-            emit(.subAgentFinished(id: id, summary: "error: \(error.localizedDescription)", failed: true))
-            return .error(toolCallId: "", toolName: name,
-                          message: "Sub-agent failed: \(error.localizedDescription)")
+            return .failed(error)
         } catch {
-            emit(.subAgentFinished(id: id, summary: "error: \(error.localizedDescription)", failed: true))
-            return .error(toolCallId: "", toolName: name,
-                          message: "Sub-agent failed: \(error.localizedDescription)")
+            return .failed(error)
         }
     }
 }

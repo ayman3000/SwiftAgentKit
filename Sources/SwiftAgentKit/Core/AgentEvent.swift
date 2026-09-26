@@ -128,6 +128,12 @@ public enum AgentEvent: Sendable {
     /// sub-agents, so wrapped events are never themselves `subAgentEvent`.
     indirect case subAgentEvent(id: UUID, event: AgentEvent)
 
+    /// Which model a sub-agent runs on — emitted right after `subAgentStarted`
+    /// and again when its own model failed and it was re-run on the parent's
+    /// (`fellBack`). nil = the provider's default model. Lets a host say who
+    /// did the work, and bill it to the right model.
+    case subAgentModel(id: UUID, model: String?, fellBack: Bool)
+
     /// A sub-agent run finished; `summary` is a truncated form of its final answer.
     /// `failed` is true when the child errored or answered nothing — a host
     /// should not draw a tick beside the word "error".

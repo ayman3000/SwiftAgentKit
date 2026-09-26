@@ -118,6 +118,9 @@ public struct AgentConfig: Sendable {
     /// model, execute the bulk of tool calls on the cheap one).
     public var subAgentProvider: (any LLMProvider)?
     public var subAgentModel: String?
+    /// Reasoning effort for CHILD agents. nil = the parent's. Delegated
+    /// pieces rarely need the parent's depth; a lower level saves tokens.
+    public var subAgentReasoningEffort: LLMReasoningEffort?
     /// Whether the sub-agent model accepts images. When false the child is not
     /// given vision tools and is told so — a text-only child handed
     /// `view_image` fails the whole delegation the first time it tries.
@@ -169,6 +172,7 @@ public struct AgentConfig: Sendable {
         maxSubAgentTurns: Int = SubAgentSpawner.maxChildTurns,
         subAgentProvider: (any LLMProvider)? = nil,
         subAgentModel: String? = nil,
+        subAgentReasoningEffort: LLMReasoningEffort? = nil,
         subAgentCanSeeImages: Bool = true,
         maxVerificationRetries: Int = 3,
         loopDetection: LoopDetectionConfig? = .default,
@@ -198,6 +202,7 @@ public struct AgentConfig: Sendable {
         self.maxSubAgentTurns = maxSubAgentTurns
         self.subAgentProvider = subAgentProvider
         self.subAgentModel = subAgentModel
+        self.subAgentReasoningEffort = subAgentReasoningEffort
         self.subAgentCanSeeImages = subAgentCanSeeImages
         self.maxVerificationRetries = maxVerificationRetries
         self.loopDetection = loopDetection
