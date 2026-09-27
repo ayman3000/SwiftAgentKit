@@ -709,3 +709,13 @@ private struct ViewImageStub: AgentTool {
     #expect(finished.first?.0 == "CHILD ON PARENT")
     #expect(finished.first?.1 == false)
 }
+
+
+@Test func testChildInheritsTheHostsBeforeToolCheck() async throws {
+    let agent = Agent(config: AgentConfig(provider: PlainAnswerProvider(text: "x")))
+    var callbacks = AgentCallbacks()
+    callbacks.beforeTool = { _, _ in nil }
+    try await agent.setCallbacks(callbacks)
+    let child = await SubAgentSpawner(parent: agent).makeChild()
+    #expect(await child.callbacks?.beforeTool != nil)
+}
