@@ -97,6 +97,28 @@ actor GateCounter { private(set) var n = 0; func bump() { n += 1 } }
     #expect(await child.tools.contains("learn_skill") == false)
 }
 
+/// A tool that only makes sense in the parent (the host's planner, say).
+struct ParentOnlyTool: AgentTool {
+    let name = "make_plan"
+    let description = "Plan the task."
+    let parameters = ToolParameters(properties: [:], required: [])
+    var isParentOnly: Bool { true }
+    func execute(parameters: [String: Any]) async throws -> AgentToolResult {
+        .success(toolCallId: "", toolName: name, result: "plan")
+    }
+}
+
+@Test func testChildDoesNotInheritParentOnlyTools() async throws {
+    let agent = Agent(config: AgentConfig(
+        provider: PlainAnswerProvider(text: "x"),
+        tools: [EchoTool(), ParentOnlyTool()]))
+    let child = await SubAgentSpawner(parent: agent).makeChild()
+
+    #expect(await agent.tools.contains("make_plan"))
+    #expect(await child.tools.contains("echo"))
+    #expect(await child.tools.contains("make_plan") == false)
+}
+
 @Test func testChildInheritsGateNotVerifier() async throws {
     let agent = Agent(config: AgentConfig(provider: PlainAnswerProvider(text: "x")))
     let counter = GateCounter()

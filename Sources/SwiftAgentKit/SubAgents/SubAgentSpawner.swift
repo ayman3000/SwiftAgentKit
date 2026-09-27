@@ -159,7 +159,7 @@ public final class SubAgentSpawner: @unchecked Sendable {
         // Direct actor calls (not Agent's fire-and-forget register) so the
         // child is fully wired when this method returns.
         let inherited = await parent.tools.allTools()
-            .filter { !Self.excludedToolNames.contains($0.name) }
+            .filter { !Self.excludedToolNames.contains($0.name) && !$0.isParentOnly }
             .filter { childCanSee || !Self.visionToolNames.contains($0.name) }
             // When the child has its own ContextManager it registers artifact_read /
             // artifact_search over the same shared store — skip the parent's copies.
