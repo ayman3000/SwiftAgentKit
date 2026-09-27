@@ -88,6 +88,12 @@ public protocol AgentTool: Sendable {
     /// routinely emit order-dependent steps (write then read, click then type).
     var isReadOnly: Bool { get }
 
+    /// Whether only the agent it was registered on may use it — sub-agents do
+    /// not inherit it. Default `false`. For host tools that belong to the whole
+    /// task, not to one delegated step (a planner: the user approved one plan,
+    /// a sub-agent must not plan and ask again).
+    var isParentOnly: Bool { get }
+
     /// Execute the tool with the given parameters.
     ///
     /// - Parameters:
@@ -116,6 +122,7 @@ public extension AgentTool {
     var requiresConfirmation: Bool { false }
     var requiresConfirmationEvenWhenAutonomous: Bool { false }
     var isReadOnly: Bool { false }
+    var isParentOnly: Bool { false }
     var inputExamples: [String] { [] }
 
     /// The description the model actually receives: the prose, plus any
