@@ -175,6 +175,9 @@ public final class SubAgentSpawner: @unchecked Sendable {
         var childCallbacks = AgentCallbacks()
         if let parentCallbacks = await parent.callbacks {
             childCallbacks.onToolConfirmation = parentCallbacks.onToolConfirmation
+            // The host's pre-execution checks (safety guards, change tracking)
+            // must see a child's tool calls too, or delegation is a way around them.
+            childCallbacks.beforeTool = parentCallbacks.beforeTool
             childCallbacks.onToolError = parentCallbacks.onToolError
             childCallbacks.onModelError = parentCallbacks.onModelError
             // verifyCompletion deliberately NOT inherited: the parent verifies
