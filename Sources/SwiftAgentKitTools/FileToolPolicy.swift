@@ -24,8 +24,22 @@ public struct FileToolPolicy: Sendable {
     /// contained inside one.
     public let allowedRoots: [String]
 
-    public init(allowedRoots: [URL]) {
+    /// Where a relative path is resolved: the project, not the app's own
+    /// working directory (which refused `naseem/rules.md` as "outside the
+    /// allowed workspace roots", xontel review 2026-09-28). Defaults to the
+    /// first allowed root.
+    public let baseDirectory: String?
+
+    public init(allowedRoots: [URL], baseDirectory: URL? = nil) {
         self.allowedRoots = allowedRoots.map { Self.canonicalize($0.path) }
+        self.baseDirectory = (baseDirectory ?? allowedRoots.first).map { Self.canonicalize($0.path) }
+    }
+
+    /// `~` expanded; a relative path joined to `baseDirectory`.
+    public func resolve(_ path: String) -> String {
+        let expanded = expandPath(path)
+        guard !expanded.hasPrefix("/"), let base = baseDirectory else { return expanded }
+        return URL(fileURLWithPath: base).appendingPathComponent(expanded).standardizedFileURL.path
     }
 
     /// Expand `~`, collapse `.`/`..`, and resolve symlinks. For paths that don't

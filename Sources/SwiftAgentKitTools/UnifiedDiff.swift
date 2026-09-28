@@ -51,7 +51,11 @@ enum UnifiedDiff {
         /// `nearby` is the file's actual, line-numbered content around the
         /// hunk's hint line — handed back so the caller (an LLM) can regenerate
         /// the diff anchored on reality instead of a stale mental copy.
-        case hunkNotFound(index: Int, preview: String, nearby: String)
+        /// `diagnosis` names the first hunk line that broke the match, how it
+        /// was parsed, and what the file has there — the old 3-line preview
+        /// often showed only lines that DID match, so models blamed whitespace
+        /// and resent the same patch (xontel review, 2026-09-28).
+        case hunkNotFound(index: Int, preview: String, nearby: String, diagnosis: String?)
         /// An insertion-only hunk couldn't be anchored (its line number is out of range).
         case cannotAnchor(index: Int)
     }
@@ -142,7 +146,8 @@ enum UnifiedDiff {
 
             guard let (match, core) = resolve(hunk, in: lines, near: hint) else {
                 return .failure(.hunkNotFound(index: i, preview: preview(hunk.before),
-                                              nearby: nearbyRegion(lines, around: hint)))
+                                              nearby: nearbyRegion(lines, around: hint),
+                                              diagnosis: diagnose(hunk, in: lines, near: hint)))
             }
 
             // Rebuild the region from the hunk's line kinds so context lines
@@ -224,6 +229,42 @@ enum UnifiedDiff {
         let lo = max(0, center - radius)
         let hi = min(lines.count - 1, center + radius)
         return (lo...hi).map { "\($0 + 1) | \(lines[$0])" }.joined(separator: "\n")
+    }
+
+    /// Which hunk line broke the match: the longest leading run of the hunk's
+    /// before-lines that exists in the file, then the line after it. Also
+    /// catches the classic trap — a file line that itself starts with "-" or
+    /// "+" (a markdown bullet) written without its own marker, so the dash was
+    /// read as the marker.
+    static func diagnose(_ hunk: Hunk, in lines: [String], near hint: Int) -> String? {
+        let before = hunk.before
+        guard !before.isEmpty else { return nil }
+        var matched = 0, start = 0
+        for k in stride(from: before.count - 1, through: 1, by: -1) {
+            if let m = locate(Array(before.prefix(k)), in: lines, near: hint, tolerant: true) {
+                matched = k; start = m; break
+            }
+        }
+        // The failing before-line, mapped back to its line number in the hunk.
+        var seen = -1, hunkLine = 0, isRemove = false
+        for (n, l) in hunk.lines.enumerated() {
+            switch l {
+            case .context: seen += 1; if seen == matched { hunkLine = n + 1; isRemove = false }
+            case .remove: seen += 1; if seen == matched { hunkLine = n + 1; isRemove = true }
+            case .add: break
+            }
+            if hunkLine > 0 { break }
+        }
+        let text = before[matched]
+        var msg = "Hunk line \(hunkLine) was read as \(isRemove ? "REMOVE" : "CONTEXT") \"\(text.prefix(100))\", which isn't in the file"
+        if matched > 0, start + matched < lines.count {
+            msg += "; at that spot (file line \(start + matched + 1)) the file has \"\(lines[start + matched].prefix(100))\""
+        }
+        msg += "."
+        if let marker = ["-", "+"].first(where: { m in lines.contains { rstrip($0) == rstrip(m + text) } }) {
+            msg += " The file has the line \"\(marker)\(text.prefix(80))\": a line that itself starts with \"\(marker)\" still needs its own marker — remove it with \"-\(marker)…\", keep it with \" \(marker)…\". For edits like this, edit_file is simpler."
+        }
+        return msg
     }
 
     private static func preview(_ block: [String]) -> String {

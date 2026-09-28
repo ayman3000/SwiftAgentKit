@@ -46,7 +46,7 @@ public struct FileReadTool: AgentTool {
         guard let raw = (parameters["path"] as? String), !raw.isEmpty else {
             return .error(toolCallId: "", toolName: name, message: "read_file requires a `path`.")
         }
-        let path = expandPath(raw)
+        let path = policy?.resolve(raw) ?? expandPath(raw)
         if let policy, let reason = policy.blockReason(for: path) {
             return .error(toolCallId: "", toolName: name, message: "Refusing to read \(raw): \(reason).")
         }
@@ -117,7 +117,7 @@ public struct FileWriteTool: AgentTool {
         guard let content = parameters["content"] as? String else {
             return .error(toolCallId: "", toolName: name, message: "write_file requires `content`.")
         }
-        let path = expandPath(raw)
+        let path = policy?.resolve(raw) ?? expandPath(raw)
         if let policy, let reason = policy.blockReason(for: path) {
             return .error(toolCallId: "", toolName: name, message: "Refusing to write \(raw): \(reason).")
         }
@@ -181,7 +181,10 @@ public struct PatchFileTool: AgentTool {
     a few lines of surrounding context; `-` lines are removed, `+` lines added. \
     Line numbers in `@@` headers may be approximate (matched by context, tolerant \
     of whitespace drift). Prefer this over `write_file` for changes to an existing \
-    file. If a hunk fails, the error includes the file's current lines near the \
+    file. Every hunk line starts with its marker, even when the file's own line \
+    starts with `-` or `+`: remove the bullet `- item` with `-- item`, keep it as \
+    context with ` - item`. For small edits and for markdown lists, `edit_file` is \
+    simpler. If a hunk fails, the error includes the file's current lines near the \
     spot — regenerate the diff from those, don't fall back to rewriting the whole \
     file. Requires approval.
     """
@@ -220,7 +223,7 @@ public struct PatchFileTool: AgentTool {
         guard let patch = parameters["patch"] as? String, !patch.isEmpty else {
             return .error(toolCallId: "", toolName: name, message: "apply_patch requires a `patch` (a unified diff).")
         }
-        let path = expandPath(raw)
+        let path = policy?.resolve(raw) ?? expandPath(raw)
         if let policy, let reason = policy.blockReason(for: path) {
             return .error(toolCallId: "", toolName: name, message: "Refusing to patch \(raw): \(reason).")
         }
@@ -239,9 +242,10 @@ public struct PatchFileTool: AgentTool {
         switch UnifiedDiff.apply(hunks, to: source) {
         case .failure(let err):
             switch err {
-            case .hunkNotFound(let index, let preview, let nearby):
+            case .hunkNotFound(let index, let preview, let nearby, let diagnosis):
+                let why = diagnosis.map { " \($0)" } ?? " The surrounding lines weren't found: \"\(preview)\"."
                 return .error(toolCallId: "", toolName: name, message: """
-                Hunk \(index + 1) didn't match \(raw) — the surrounding lines weren't found: "\(preview)". \
+                Hunk \(index + 1) didn't match \(raw).\(why) \
                 Nothing was changed. The file's CURRENT content near that spot is:
 
                 \(nearby)
@@ -278,6 +282,145 @@ public struct PatchFileTool: AgentTool {
     }
 }
 
+/// Replace exact text in a file — no diff markers. Confirmation required.
+/// For small edits and for files whose lines start with `-` or `+` (markdown
+/// lists, notes, YAML), where unified diffs trip models up (xontel review,
+/// 2026-09-28: three identical failed patches on a roadmap).
+public struct EditFileTool: AgentTool {
+    public let name = "edit_file"
+    public let description = """
+    Edit an existing file by replacing exact text: `old_text` → `new_text`. \
+    Preferred for small edits, and for any file whose lines start with `-` or `+` \
+    (markdown lists, notes, YAML): no diff markers needed. `old_text` must occur \
+    exactly once — include a few surrounding lines to make it unique — or set \
+    `replace_all`. Trailing whitespace is tolerated. If it isn't found, the error \
+    shows the file's current lines near the closest match. Requires approval.
+    """
+    public let parameters = ToolParameters(
+        properties: [
+            "path": ToolParameterProperty(type: "string", description: "File to edit (a leading ~ is expanded)."),
+            "old_text": ToolParameterProperty(type: "string", description: "The exact text to replace, copied from the file."),
+            "new_text": ToolParameterProperty(type: "string", description: "The replacement text."),
+            "replace_all": ToolParameterProperty(type: "boolean", description: "Replace every occurrence (default false: exactly one)."),
+        ],
+        required: ["path", "old_text", "new_text"]
+    )
+
+    public var inputExamples: [String] { [
+        #"""
+        {"path": "~/proj/app/naseem/roadmap.md", "old_text": "- Step 3 — session queue", "new_text": "- Step 3 — session queue (done)"}
+        """#
+    ] }
+
+    public var requiresConfirmation: Bool { true }
+
+    let policy: FileToolPolicy?
+    let verifier: WriteVerifierConfig
+
+    public init(policy: FileToolPolicy? = nil, verifier: WriteVerifierConfig = .default) {
+        self.policy = policy
+        self.verifier = verifier
+    }
+
+    public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
+        guard let raw = (parameters["path"] as? String), !raw.isEmpty else {
+            return .error(toolCallId: "", toolName: name, message: "edit_file requires a `path`.")
+        }
+        guard let old = parameters["old_text"] as? String, !old.isEmpty else {
+            return .error(toolCallId: "", toolName: name, message: "edit_file requires `old_text` (the exact text to replace).")
+        }
+        guard let new = parameters["new_text"] as? String else {
+            return .error(toolCallId: "", toolName: name, message: "edit_file requires `new_text`.")
+        }
+        let replaceAll = boolValue(parameters["replace_all"]) ?? false
+        let path = policy?.resolve(raw) ?? expandPath(raw)
+        if let policy, let reason = policy.blockReason(for: path) {
+            return .error(toolCallId: "", toolName: name, message: "Refusing to edit \(raw): \(reason).")
+        }
+        guard let data = FileManager.default.contents(atPath: path) else {
+            return .error(toolCallId: "", toolName: name,
+                message: "Cannot read file to edit: \(raw). Use write_file to create a new file.")
+        }
+        guard let source = String(data: data, encoding: .utf8) else {
+            return .error(toolCallId: "", toolName: name, message: "Not a UTF-8 text file: \(raw)")
+        }
+
+        var edited: String
+        var count = source.components(separatedBy: old).count - 1
+        if count > 0 {
+            if count > 1 && !replaceAll {
+                return .error(toolCallId: "", toolName: name, message: """
+                `old_text` occurs \(count) times in \(raw). Include more surrounding lines to make it unique, \
+                or set replace_all to change every occurrence. Nothing was changed.
+                """)
+            }
+            edited = replaceAll ? source.replacingOccurrences(of: old, with: new)
+                                : source.replacingCharacters(in: source.range(of: old)!, with: new)
+        } else if let tolerant = Self.replaceIgnoringTrailingWhitespace(old, with: new, in: source, all: replaceAll) {
+            if tolerant.count > 1 && !replaceAll {
+                return .error(toolCallId: "", toolName: name, message: """
+                `old_text` occurs \(tolerant.count) times in \(raw). Include more surrounding lines to make it unique, \
+                or set replace_all. Nothing was changed.
+                """)
+            }
+            edited = tolerant.result
+            count = tolerant.count
+        } else {
+            return .error(toolCallId: "", toolName: name, message: """
+            `old_text` was not found in \(raw). Nothing was changed. \(Self.nearby(old, in: source))
+            """)
+        }
+
+        if let rejection = await WriteVerifier.rejection(path: path, content: edited, config: verifier) {
+            return .error(toolCallId: "", toolName: name, message: """
+            Edit to \(raw) REJECTED — it would leave the file broken: \(rejection.reason).
+
+            \(rejection.guidance)
+            """)
+        }
+        do {
+            try Data(edited.utf8).write(to: URL(fileURLWithPath: path), options: .atomic)
+        } catch {
+            return .error(toolCallId: "", toolName: name, message: "Write failed: \(error.localizedDescription)")
+        }
+        return .success(toolCallId: "", toolName: name,
+            result: "Replaced \(count) occurrence\(count == 1 ? "" : "s") in \(raw).")
+    }
+
+    /// Line-wise match with trailing whitespace ignored. Returns the edited
+    /// text and how many blocks matched, or nil when none did.
+    static func replaceIgnoringTrailingWhitespace(_ old: String, with new: String, in source: String,
+                                                  all: Bool) -> (result: String, count: Int)? {
+        func rstrip(_ s: Substring) -> Substring {
+            var v = s; while let l = v.last, l == " " || l == "\t" { v.removeLast() }; return v
+        }
+        var lines = source.components(separatedBy: "\n")
+        let want = old.split(separator: "\n", omittingEmptySubsequences: false).map(rstrip)
+        guard !want.isEmpty, want.count <= lines.count else { return nil }
+        var starts: [Int] = []
+        var i = 0
+        while i + want.count <= lines.count {
+            if (0..<want.count).allSatisfy({ rstrip(Substring(lines[i + $0])) == want[$0] }) { starts.append(i); i += want.count } else { i += 1 }
+        }
+        guard !starts.isEmpty else { return nil }
+        if starts.count > 1 && !all { return ("", starts.count) }
+        let replacement = new.components(separatedBy: "\n")
+        for s in starts.reversed() { lines.replaceSubrange(s..<(s + want.count), with: replacement) }
+        return (lines.joined(separator: "\n"), starts.count)
+    }
+
+    /// The file's lines around the closest match of `old`'s first line.
+    static func nearby(_ old: String, in source: String) -> String {
+        let lines = source.components(separatedBy: "\n")
+        let first = old.split(separator: "\n").first.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+        guard !first.isEmpty, let hit = lines.firstIndex(where: { $0.contains(first) || (first.count > 12 && $0.trimmingCharacters(in: .whitespaces).hasPrefix(String(first.prefix(12)))) }) else {
+            return "Read the file and copy the text exactly."
+        }
+        let lo = max(0, hit - 4), hi = min(lines.count - 1, hit + 6)
+        return "The file's CURRENT lines near the closest match:\n\n" + (lo...hi).map { "\($0 + 1) | \(lines[$0])" }.joined(separator: "\n")
+    }
+}
+
 /// List a directory's entries. Unconfirmed (read-only).
 public struct ListDirTool: AgentTool {
     public let name = "list_dir"
@@ -297,7 +440,7 @@ public struct ListDirTool: AgentTool {
 
     public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
         let raw = (parameters["path"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "."
-        let path = expandPath(raw)
+        let path = policy?.resolve(raw) ?? expandPath(raw)
         if let policy, let reason = policy.blockReason(for: path) {
             return .error(toolCallId: "", toolName: name, message: "Refusing to list \(raw): \(reason).")
         }
@@ -332,7 +475,8 @@ public struct SearchFilesTool: AgentTool {
     public var isReadOnly: Bool { true }
     public let description = """
     Find files under a directory. Filter by `name` (substring of the filename) \
-    and/or `contains` (substring within file text). Returns matching paths.
+    and/or `contains` (substring within file text). Returns absolute paths that \
+    read_file opens as they are.
     """
     public let parameters = ToolParameters(
         properties: [
@@ -363,7 +507,7 @@ public struct SearchFilesTool: AgentTool {
         guard let rawDir = (parameters["directory"] as? String), !rawDir.isEmpty else {
             return .error(toolCallId: "", toolName: name, message: "search_files requires a `directory`.")
         }
-        let root = expandPath(rawDir)
+        let root = policy?.resolve(rawDir) ?? expandPath(rawDir)
         if let policy, let reason = policy.blockReason(for: root) {
             return .error(toolCallId: "", toolName: name, message: "Refusing to search \(rawDir): \(reason).")
         }
@@ -401,7 +545,9 @@ public struct SearchFilesTool: AgentTool {
                 else { continue }
             }
 
-            matches.append(rel)
+            // Absolute: a path relative to the searched folder got joined to
+            // the wrong base and failed to open (xontel review, 2026-09-28).
+            matches.append(full)
             if matches.count >= maxResults { break }
         }
 
