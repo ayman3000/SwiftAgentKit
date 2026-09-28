@@ -512,6 +512,13 @@ public actor Agent {
         return lines.joined(separator: "\n")
     }
 
+    /// The deferred groups a list of tool names or group ids points at (a
+    /// skill's `tools`). Names this agent doesn't have match nothing.
+    func toolGroupIDs(matching entries: [String]) -> [String] {
+        let wanted = Set(entries)
+        return deferredGroups.filter { wanted.contains($0.id) || !wanted.isDisjoint(with: $0.toolNames) }.map(\.id)
+    }
+
     /// Carry a parent's loaded groups into a child agent.
     func setLoadedToolGroups(_ ids: [String]) { loadedToolGroupIDs = ids }
 
@@ -568,7 +575,7 @@ public actor Agent {
         skillStore = store
         guard let store = store else { return }
         register(LearnSkillTool(store: store, registry: skillRegistry))
-        register(UseSkillTool(registry: skillRegistry))
+        register(UseSkillTool(registry: skillRegistry, handle: AgentHandle(self)))
         trackRegistrationTask(Task { [skillRegistry] in
             if let skills = try? await store.loadAll() {
                 await skillRegistry.registerAll(skills)
