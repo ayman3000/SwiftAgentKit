@@ -145,6 +145,11 @@ public struct AgentConfig: Sendable {
     /// Stalled-stream policy for streamed model calls: a call with no progress
     /// for the policy's limit is retried once, then reported. nil = off.
     public var stallPolicy: StreamStallPolicy?
+    /// Longest a single streamed call may only reason — no answer text, no
+    /// tool call — before it is stopped and the model is told to act. nil = no
+    /// limit. Long single thinks (11–23 min, some after the work was done)
+    /// looked like a frozen app (xontel review, 2026-09-28).
+    public var maxReasoningSeconds: TimeInterval?
 
     /// Tool groups whose definitions are sent only after the model loads them
     /// with `load_tools` (MCP servers, say). Empty = every tool always sent.
@@ -179,7 +184,8 @@ public struct AgentConfig: Sendable {
         parallelToolCalls: Bool = false,
         progressNudgeFractions: [Double] = [0.5, 0.8],
         stallPolicy: StreamStallPolicy? = nil,
-        toolGroups: [DeferredToolGroup] = []
+        toolGroups: [DeferredToolGroup] = [],
+        maxReasoningSeconds: TimeInterval? = nil
     ) {
         self.provider = provider
         self.model = model
@@ -209,6 +215,7 @@ public struct AgentConfig: Sendable {
         self.parallelToolCalls = parallelToolCalls
         self.stallPolicy = stallPolicy
         self.toolGroups = toolGroups
+        self.maxReasoningSeconds = maxReasoningSeconds
         self.progressNudgeFractions = progressNudgeFractions
     }
 }
@@ -1118,8 +1125,9 @@ public actor Agent {
                        !reasoning.isEmpty,
                        reasoningContinuations < Self.maxReasoningContinuations {
                         conversation.append(.assistant(agentResponse.text))
-                        conversation.append(.user(
-                            "You produced internal reasoning but no answer and no tool calls. Continue: call tools if you need information, then give your final answer."))
+                        conversation.append(.user(reasoningTimedOut
+                            ? "You have been reasoning for a long time without acting, so that step was stopped. Stop deliberating: check what you need with a tool call, or give your answer now."
+                            : "You produced internal reasoning but no answer and no tool calls. Continue: call tools if you need information, then give your final answer."))
                         reasoningContinuations += 1
                         emit(.reasoningOnlyContinuation(attempt: reasoningContinuations))
                         continue
@@ -1325,6 +1333,13 @@ public actor Agent {
             var agentResponse: AgentLLMResponse
             do {
                 agentResponse = try await executeTurn(request: request, onText: onText, onReasoning: onReasoning)
+                // Time-boxed think with nothing said: ask once more, to answer now.
+                if reasoningTimedOut, agentResponse.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    conversation.append(.assistant(""))
+                    conversation.append(.user("You have been reasoning for a long time without answering, so that step was stopped. Give your answer now."))
+                    let again = await makeLLMRequest(messagesForLLM: conversation.messagesForLLMCall())
+                    agentResponse = try await executeTurn(request: again, onText: onText, onReasoning: onReasoning)
+                }
             } catch {
                 if let onModelError = callbacks?.onModelError {
                     if let fallback = await onModelError(error, state) {
@@ -1496,6 +1511,8 @@ public actor Agent {
     /// Whether the current turn's answer text has reached the caller — after
     /// that a retry would repeat what the user already read.
     private var textShown = false
+    /// The last streamed call was stopped for reasoning past the time box.
+    private var reasoningTimedOut = false
 
     private func streamTurn(
         request: LLMRequest,
@@ -1503,6 +1520,7 @@ public actor Agent {
         onReasoning: (@Sendable (String) -> Void)?
     ) async throws -> AgentLLMResponse {
         textShown = false
+        reasoningTimedOut = false
         let started = Date()
         defer {
             let seconds = Date().timeIntervalSince(started)
@@ -1521,7 +1539,7 @@ public actor Agent {
         // consumed tokens rather than dropping them (which forced cost/context
         // onto a local estimate).
         var streamedUsage: LLMUsage? = nil
-        for try await chunk in config.provider.stream(request) {
+        streamLoop: for try await chunk in config.provider.stream(request) {
             switch chunk {
             case .text(let text):
                 streamedText += text
@@ -1532,6 +1550,15 @@ public actor Agent {
                 streamedReasoning += delta
                 onReasoning?(delta)
                 emit(.reasoningChunk(delta))
+                // Time box: only reasoning so far, past the limit → stop this
+                // call. The empty answer then takes the reasoning-only
+                // continuation below, which tells the model to act.
+                if let limit = config.maxReasoningSeconds, streamedText.isEmpty, streamedToolCalls.isEmpty,
+                   Date().timeIntervalSince(started) > limit {
+                    logger.info("A call reasoned for \(Int(Date().timeIntervalSince(started))) s without acting; stopping it and asking the model to act.")
+                    reasoningTimedOut = true
+                    break streamLoop
+                }
             case .toolCall(let call):
                 streamedToolCalls.append(call)
                 sawNativeToolSignal = true
