@@ -49,6 +49,12 @@ public struct AgentSkill: Sendable, Identifiable, Equatable {
     /// file tools. Nothing here fetches or parses them.
     public var resourcesPath: String?
 
+    /// Tools this skill's procedure needs. Loading the skill (`use_skill`)
+    /// loads the deferred tool groups holding them — progressive disclosure
+    /// for tools, not just instructions. Entries may be tool names or group
+    /// ids; names this app doesn't have are ignored.
+    public var tools: [String]
+
     public init(
         id: String = UUID().uuidString,
         name: String,
@@ -56,7 +62,8 @@ public struct AgentSkill: Sendable, Identifiable, Equatable {
         triggerKeywords: [String] = [],
         instructions: String,
         tier: String? = nil,
-        resourcesPath: String? = nil
+        resourcesPath: String? = nil,
+        tools: [String] = []
     ) {
         self.id = id
         self.name = name
@@ -67,6 +74,7 @@ public struct AgentSkill: Sendable, Identifiable, Equatable {
         self.instructions = instructions
         self.tier = tier
         self.resourcesPath = resourcesPath
+        self.tools = tools
     }
 
     /// Fallback description for skills authored before the field existed:

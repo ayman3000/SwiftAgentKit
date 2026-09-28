@@ -75,7 +75,7 @@ struct UnifiedDiffTests {
         let hunks = UnifiedDiff.parse(patch)!
         let result = UnifiedDiff.apply(hunks, to: source)
         guard case .failure(let err) = result else { Issue.record("expected failure"); return }
-        if case .hunkNotFound(let index, _, _) = err { #expect(index == 0) }
+        if case .hunkNotFound(let index, _, _, _) = err { #expect(index == 0) }
         else { Issue.record("expected hunkNotFound, got \(err)") }
     }
 
@@ -143,7 +143,7 @@ struct UnifiedDiffTests {
         let patch = "@@ -10,2 +10,2 @@\n stale-context\n-gone\n+replacement\n"
         let hunks = UnifiedDiff.parse(patch)!
         let result = UnifiedDiff.apply(hunks, to: source)
-        guard case .failure(.hunkNotFound(_, _, let nearby)) = result else {
+        guard case .failure(.hunkNotFound(_, _, let nearby, _)) = result else {
             Issue.record("expected hunkNotFound"); return
         }
         #expect(nearby.contains("line10"))

@@ -33,9 +33,16 @@ public final class UseSkillTool: AgentTool, @unchecked Sendable {
     )
 
     private let registry: SkillRegistry
+    private let handle: AgentHandle?
 
     public init(registry: SkillRegistry) {
         self.registry = registry
+        self.handle = nil
+    }
+
+    init(registry: SkillRegistry, handle: AgentHandle) {
+        self.registry = registry
+        self.handle = handle
     }
 
     public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
@@ -44,7 +51,14 @@ public final class UseSkillTool: AgentTool, @unchecked Sendable {
             return .error(toolCallId: "", toolName: name, message: "use_skill requires `name`.")
         }
         if let skill = await registry.skill(named: skillName) {
-            return .success(toolCallId: "", toolName: name, result: skill.render())
+            var result = skill.render()
+            // Tools the skill names arrive with it: their deferred groups load
+            // now, so its first step can use them without a load_tools turn.
+            if !skill.tools.isEmpty, let agent = handle?.agent {
+                let ids = await agent.toolGroupIDs(matching: skill.tools)
+                if !ids.isEmpty { result += "\n\n" + (await agent.loadToolGroups(ids)) }
+            }
+            return .success(toolCallId: "", toolName: name, result: result)
         }
         // Unknown name: return the index so the model self-corrects in one step.
         let available = await registry.allSkills()

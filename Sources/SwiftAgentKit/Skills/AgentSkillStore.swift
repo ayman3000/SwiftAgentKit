@@ -64,6 +64,9 @@ public final class FileAgentSkillStore: AgentSkillStore, @unchecked Sendable {
             if !skill.triggerKeywords.isEmpty {
                 header += "Triggers: \(skill.triggerKeywords.joined(separator: ", "))\n"
             }
+            if !skill.tools.isEmpty {
+                header += "Tools: \(skill.tools.joined(separator: ", "))\n"
+            }
             try (header + "\n\(skill.instructions)\n").write(to: url, atomically: true, encoding: .utf8)
         }
     }
@@ -129,6 +132,7 @@ public final class FileAgentSkillStore: AgentSkillStore, @unchecked Sendable {
         var name: String?
         var description = ""
         var triggers: [String] = []
+        var tools: [String] = []
         var instructionLines: [String] = []
         var inBody = false
 
@@ -150,6 +154,11 @@ public final class FileAgentSkillStore: AgentSkillStore, @unchecked Sendable {
                     triggers = raw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
                     continue
                 }
+                if trimmed.lowercased().hasPrefix("tools:") {
+                    let raw = trimmed.dropFirst("tools:".count)
+                    tools = raw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+                    continue
+                }
                 inBody = true   // first non-header line starts the body
             }
             instructionLines.append(line)
@@ -161,7 +170,7 @@ public final class FileAgentSkillStore: AgentSkillStore, @unchecked Sendable {
         // Legacy files have no Description: line — AgentSkill.init derives one
         // from the body's first line so every skill is index-visible.
         return AgentSkill(name: name, description: description,
-                          triggerKeywords: triggers, instructions: instructions)
+                          triggerKeywords: triggers, instructions: instructions, tools: tools)
     }
 
     static func slugify(_ s: String) -> String {

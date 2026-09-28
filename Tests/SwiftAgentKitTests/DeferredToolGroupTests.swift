@@ -122,4 +122,34 @@ struct DeferredToolGroupTests {
         let tool = await a.tools.tool(named: "load_tools")
         #expect(tool?.isReadOnly == true)
     }
+
+    // MARK: Skills bring their tools (progressive disclosure for tools)
+
+    private func skillStore(_ skills: [AgentSkill]) async throws -> FileAgentSkillStore {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("skills-\(UUID().uuidString)")
+        let store = FileAgentSkillStore(directory: dir)
+        for s in skills { try await store.save(s) }
+        return store
+    }
+
+    @Test func aSkillsToolListSurvivesTheStore() async throws {
+        let store = try await skillStore([AgentSkill(name: "web", description: "browse", instructions: "Do it.",
+                                                     tools: ["browser_open", "read_file"])])
+        let loaded = try await store.loadAll()
+        #expect(loaded.first?.tools == ["browser_open", "read_file"])
+    }
+
+    @Test func usingASkillLoadsTheGroupsOfTheToolsItNames() async throws {
+        let counter = RunCounter()
+        let p = ScriptedToolProvider([.call("use_skill", #"{"name":"web"}"#), .call("browser_click", "{}"), .text("done")])
+        let a = await agent(p, groups: [browser], counter: counter)
+        // A tool it names by group id, by tool name, and one this app doesn't have.
+        try await a.setSkillStore(try await skillStore([
+            AgentSkill(name: "web", description: "browse", instructions: "Open the page.", tools: ["browser_open", "Bash"])]))
+        _ = try await a.run("browse")
+        #expect(p.toolNamesPerCall.count == 3)
+        #expect(!p.toolNamesPerCall[0].contains("browser_click"))
+        #expect(p.toolNamesPerCall[1].contains("browser_click"), "\(p.toolNamesPerCall[1])")
+        #expect(counter.runs == 1)   // ran on the first try: no safety-net retry needed
+    }
 }
