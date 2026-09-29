@@ -63,6 +63,7 @@ public struct FileReadTool: AgentTool {
                               offset: intValue(parameters["offset"]),
                               limit: intValue(parameters["limit"]))
         let body = String(chars[slice.start..<slice.end])
+        FileStateRegistry.shared.noteSeen(path: path)
         ToolTrace.read(tool: name, path: path, offset: slice.start,
                        requested: intValue(parameters["limit"]),
                        served: slice.end - slice.start, total: chars.count,
@@ -124,6 +125,15 @@ public struct FileWriteTool: AgentTool {
         let url = URL(fileURLWithPath: path)
         let append = boolValue(parameters["append"]) ?? false
 
+        // Appending adds to whatever is there; overwriting a file that changed
+        // since this agent last saw it would throw that change away.
+        if !append, let stale = FileStateRegistry.shared.staleReason(path: path) {
+            return .error(toolCallId: "", toolName: name, message: """
+            Not written: \(raw) — \(stale). Read it again, then write a version \
+            that keeps those changes (or use edit_file for a targeted change).
+            """)
+        }
+
         // TRANSACTION: snapshot the original so a corrupted write can be
         // rolled back — content sometimes arrives damaged in transit (see
         // WriteVerifier). A broken write must never persist.
@@ -164,6 +174,7 @@ public struct FileWriteTool: AgentTool {
             """)
         }
 
+        FileStateRegistry.shared.noteSeen(path: path)
         let verb = append ? "Appended" : "Wrote"
         return .success(toolCallId: "", toolName: name, result: "\(verb) \(content.utf8.count) bytes to \(raw).")
     }
@@ -274,6 +285,7 @@ public struct PatchFileTool: AgentTool {
             } catch {
                 return .error(toolCallId: "", toolName: name, message: "Write failed: \(error.localizedDescription)")
             }
+            FileStateRegistry.shared.noteSeen(path: path)
             let added = hunks.reduce(0) { $0 + $1.lines.filter { if case .add = $0 { return true }; return false }.count }
             let removed = hunks.reduce(0) { $0 + $1.lines.filter { if case .remove = $0 { return true }; return false }.count }
             return .success(toolCallId: "", toolName: name,
@@ -383,6 +395,7 @@ public struct EditFileTool: AgentTool {
         } catch {
             return .error(toolCallId: "", toolName: name, message: "Write failed: \(error.localizedDescription)")
         }
+        FileStateRegistry.shared.noteSeen(path: path)
         return .success(toolCallId: "", toolName: name,
             result: "Replaced \(count) occurrence\(count == 1 ? "" : "s") in \(raw).")
     }

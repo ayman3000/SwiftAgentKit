@@ -15,15 +15,29 @@ public final class DelegateTaskTool: AgentTool, @unchecked Sendable {
 
     public let name = "delegate_task"
 
+    /// Several in one reply run side by side: the spawner's gate holds them to
+    /// the host's limit, and the file tools refuse to overwrite a file another
+    /// agent changed.
+    public var isConcurrencySafe: Bool { true }
+
     public let description = """
     Delegate a bounded, self-contained task to a sub-agent that runs it in a \
     fresh context and returns only its final answer. Use for multi-step side \
     tasks (research sweeps, multi-file analysis) whose intermediate steps you \
     don't need to see — they won't consume your context. The sub-agent has \
     your tools but cannot delegate further, and it sees NONE of this \
-    conversation: put everything it needs in `prompt`. You may call this \
-    multiple times in one turn to run independent tasks in parallel. If the \
-    sub-agent model cannot see images, describe any image yourself in the \
+    conversation: put everything it needs in `prompt`.
+
+    Several delegate_task calls in ONE reply run in parallel (as many at once \
+    as the app allows; the rest wait their turn). Run tasks in parallel when \
+    they are independent: separate research topics, separate analyses, or work \
+    on files that don't overlap. Run them one after another, in separate \
+    replies, when a task needs another's result or two tasks would change the \
+    same files. For a mix, delegate the independent tasks together first, then \
+    the dependent one with their results in its prompt. A reply that also \
+    contains a tool that changes things runs one call at a time.
+
+    If the sub-agent model cannot see images, describe any image yourself in the \
     prompt rather than asking the sub-agent to look at it. When a document \
     has been read with document_digest, give the sub-agent the notes path, \
     not the document.
@@ -70,9 +84,9 @@ public final class DelegateTaskTool: AgentTool, @unchecked Sendable {
 
         let id = UUID()
 
-        // Serialize sub-agent execution (default limit 1): parallel children
-        // hammering a single model backend cause a load-storm that fails them
-        // all. Acquire the gate before spawning/running; release when done.
+        // Hold children to the host's limit (default 1): too many children on
+        // one model backend cause a load-storm that fails them all. Acquire
+        // the gate before spawning/running; release when done.
         await spawner.gate.acquire()
         defer { Task { await spawner.gate.release() } }
 

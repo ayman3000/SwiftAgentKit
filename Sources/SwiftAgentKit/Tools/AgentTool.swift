@@ -84,9 +84,18 @@ public protocol AgentTool: Sendable {
     /// Whether this tool only observes (reads a file, searches, inspects a
     /// window) and never changes anything. Default `false`. A batch of calls the
     /// model issues in one turn runs concurrently only when EVERY call is
-    /// read-only; any other batch runs in the model's order, because models
-    /// routinely emit order-dependent steps (write then read, click then type).
+    /// concurrency-safe (read-only, by default); any other batch runs in the
+    /// model's order, because models routinely emit order-dependent steps
+    /// (write then read, click then type).
     var isReadOnly: Bool { get }
+
+    /// Whether a batch may run this call at the same time as the others in
+    /// the same reply. Default: `isReadOnly`. A tool that changes things but
+    /// guards its own shared state may opt in — `delegate_task` does: its
+    /// children run behind the host's concurrency limit, and the file tools
+    /// refuse to overwrite a file another agent changed. A batch runs
+    /// concurrently only when EVERY call in it is concurrency-safe.
+    var isConcurrencySafe: Bool { get }
 
     /// Whether only the agent it was registered on may use it — sub-agents do
     /// not inherit it. Default `false`. For host tools that belong to the whole
@@ -122,6 +131,7 @@ public extension AgentTool {
     var requiresConfirmation: Bool { false }
     var requiresConfirmationEvenWhenAutonomous: Bool { false }
     var isReadOnly: Bool { false }
+    var isConcurrencySafe: Bool { isReadOnly }
     var isParentOnly: Bool { false }
     var inputExamples: [String] { [] }
 

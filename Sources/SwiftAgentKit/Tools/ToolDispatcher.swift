@@ -74,7 +74,7 @@ public actor ToolDispatcher {
         observer: (any AgentObserver)?
     ) async -> [AgentToolResult] {
         var concurrentSafe = false
-        if parallel, calls.count > 1 { concurrentSafe = await allReadOnly(calls) }
+        if parallel, calls.count > 1 { concurrentSafe = await allConcurrencySafe(calls) }
         if concurrentSafe {
             return await dispatchParallel(calls: calls, state: state, turn: turn, query: query, callbacks: callbacks, actions: actions, observer: observer)
         } else {
@@ -82,11 +82,12 @@ public actor ToolDispatcher {
         }
     }
 
-    /// Concurrency is safe only for pure observations. Unknown tool names count
-    /// as not read-only (they fail in order, with a clear error).
-    private func allReadOnly(_ calls: [AgentToolCall]) async -> Bool {
+    /// Concurrency is safe only when every call is: pure observations, plus
+    /// tools that guard themselves (`isConcurrencySafe`). Unknown tool names
+    /// count as unsafe (they fail in order, with a clear error).
+    private func allConcurrencySafe(_ calls: [AgentToolCall]) async -> Bool {
         for call in calls {
-            guard let tool = await registry.tool(named: call.name), tool.isReadOnly else { return false }
+            guard let tool = await registry.tool(named: call.name), tool.isConcurrencySafe else { return false }
         }
         return true
     }
