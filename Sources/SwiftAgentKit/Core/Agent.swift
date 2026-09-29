@@ -280,6 +280,9 @@ public actor Agent {
 
     public nonisolated let config: AgentConfig
 
+    /// Who this agent is to the file tools (`FileStateRegistry`).
+    nonisolated let fileIdentity = UUID()
+
     /// Tool registry (thread-safe).
     public nonisolated let tools: ToolRegistry
 
@@ -424,6 +427,8 @@ public actor Agent {
     func setLlmRetryBaseDelay(_ delay: TimeInterval) { llmRetryBaseDelay = delay }
 
     // MARK: - Init
+
+    deinit { FileStateRegistry.shared.forget(agent: fileIdentity) }
 
     public init(config: AgentConfig) {
         self.config = config
@@ -861,6 +866,15 @@ public actor Agent {
     /// streamed and assistant text deltas are delivered to `onText` as they
     /// arrive — including the final answer, token-by-token.
     private func runLoop(query: String, images: [LLMImage], onText: (@Sendable (String) -> Void)?, onReasoning: (@Sendable (String) -> Void)? = nil, onTurnCompleted: (@Sendable (String, Bool) -> Void)? = nil) async throws -> String {
+        // The file tools tell agents apart by this, so one agent can't
+        // overwrite a file another changed since it last looked.
+        try await FileStateRegistry.$currentAgent.withValue(fileIdentity) {
+            try await runLoopBody(query: query, images: images, onText: onText,
+                                  onReasoning: onReasoning, onTurnCompleted: onTurnCompleted)
+        }
+    }
+
+    private func runLoopBody(query: String, images: [LLMImage], onText: (@Sendable (String) -> Void)?, onReasoning: (@Sendable (String) -> Void)?, onTurnCompleted: (@Sendable (String, Bool) -> Void)?) async throws -> String {
         guard beginRunIfIdle() else {
             throw AgentError.runInProgress
         }
