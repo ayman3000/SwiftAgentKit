@@ -19,7 +19,8 @@ public protocol ContextCompactor: Sendable {
 }
 
 public enum ContextCompaction {
-    /// Ends the summary when it is merged into the first kept user message.
+    /// Ended a summary merged into the first kept user message (alpha.109);
+    /// kept so such messages can still be read.
     public static let endOfSummary = "\n\n[End of summary]\n\n"
 
     /// Split non-system messages into the part to summarize and the tail kept
@@ -52,18 +53,20 @@ public enum ContextCompaction {
         return (middle, [all[lastUser]] + all[tailStart...])
     }
 
-    /// The summary rejoins the history as the first message. It is merged into
-    /// the first kept user message (roles keep alternating on every
-    /// provider), or sent as its own user message when the tail starts
-    /// otherwise.
+    /// The assistant's reply after the summary, so roles keep alternating
+    /// on every provider.
+    public static let summaryAcknowledgement = "Understood. I'll use that summary as background and continue from your next message."
+
+    /// The summary rejoins the history as the first message, on its own:
+    /// it is written by the app, so it is never merged into a message of
+    /// the user's — text it carries (say, from a web page) must not read as
+    /// the user's instruction. A short acknowledgement follows when the kept
+    /// part starts with a user message.
     public static func assemble(checkpoint: String, tail: [AgentMessage]) -> [AgentMessage] {
-        guard let first = tail.first else {
-            return [.user(checkpoint), .assistant("Noted — continuing from the summary.")]
+        guard let first = tail.first, first.role != .user else {
+            return [.user(checkpoint), .assistant(summaryAcknowledgement)] + tail
         }
-        guard first.role == .user else { return [.user(checkpoint)] + tail }
-        var merged = first
-        merged.content = checkpoint + endOfSummary + first.content
-        return [merged] + tail.dropFirst()
+        return [.user(checkpoint)] + tail
     }
 
     static let overflowPhrases = [

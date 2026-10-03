@@ -39,10 +39,14 @@ struct ContextCompactionTests {
         #expect(middle.contains { $0.content == "old" })
     }
 
-    @Test func assembleMergesIntoFirstUserOrPrepends() {
-        let merged = ContextCompaction.assemble(checkpoint: "SUM", tail: [.user("hi"), .assistant("yo")])
-        #expect(merged.count == 2)
-        #expect(merged[0].content == "SUM" + ContextCompaction.endOfSummary + "hi")
+    /// The summary is reference material written by the app, never part of
+    /// the user's own message: text it carries must not read as the user's.
+    @Test func assembleKeepsTheSummaryApartFromTheUsersMessage() {
+        let apart = ContextCompaction.assemble(checkpoint: "SUM", tail: [.user("hi"), .assistant("yo")])
+        #expect(apart.map(\.role) == [.user, .assistant, .user, .assistant])
+        #expect(apart[0].content == "SUM")
+        #expect(apart[1].content == ContextCompaction.summaryAcknowledgement)
+        #expect(apart[2].content == "hi")
         let prepended = ContextCompaction.assemble(checkpoint: "SUM", tail: [.assistant("yo")])
         #expect(prepended.map(\.role) == [.user, .assistant])
         let empty = ContextCompaction.assemble(checkpoint: "SUM", tail: [])
