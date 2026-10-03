@@ -107,6 +107,9 @@ public enum AgentEvent: Sendable {
     /// History was trimmed to fit the context window.
     case historyTrimmed(removedCount: Int, remainingCount: Int)
 
+    /// The older part of the history was replaced by a summary.
+    case contextCompacted(tokensBefore: Int, tokensAfter: Int, reason: CompactionReason)
+
     // MARK: - Streaming
 
     /// A streaming text chunk was received.
