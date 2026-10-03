@@ -146,6 +146,14 @@ public class Conversation: @unchecked Sendable {
         messages = messages.map { $0.role == .system ? $0 : transform($0) }
     }
 
+    /// Replace every NON-system message with `newMessages` (compaction). The
+    /// system message stays first.
+    public func replaceNonSystemMessages(_ newMessages: [AgentMessage]) {
+        lock.lock()
+        defer { lock.unlock() }
+        messages = messages.filter { $0.role == .system } + newMessages.filter { $0.role != .system }
+    }
+
     /// Replace the system message(s) with a new one.
     public func setSystemMessage(_ message: AgentMessage) {
         lock.lock()
