@@ -155,6 +155,13 @@ public struct AgentConfig: Sendable {
     /// with `load_tools` (MCP servers, say). Empty = every tool always sent.
     public var toolGroups: [DeferredToolGroup]
 
+    /// Writes the summary when the history is compacted (mid-run near the
+    /// limit, or after a context-length error). nil = never compact.
+    public var contextCompactor: (any ContextCompactor)?
+    /// Compact before the next call once the last prompt passes this share of
+    /// the window. nil = only on a context-length error.
+    public var compactAtFraction: Double?
+
     public init(
         provider: any LLMProvider,
         model: String? = nil,
@@ -185,8 +192,12 @@ public struct AgentConfig: Sendable {
         progressNudgeFractions: [Double] = [0.5, 0.8],
         stallPolicy: StreamStallPolicy? = nil,
         toolGroups: [DeferredToolGroup] = [],
-        maxReasoningSeconds: TimeInterval? = nil
+        maxReasoningSeconds: TimeInterval? = nil,
+        contextCompactor: (any ContextCompactor)? = nil,
+        compactAtFraction: Double? = nil
     ) {
+        self.contextCompactor = contextCompactor
+        self.compactAtFraction = compactAtFraction
         self.provider = provider
         self.model = model
         self.temperature = temperature
@@ -991,6 +1002,13 @@ public actor Agent {
                 }
                 totalTurns += 1
 
+                // Near the limit mid-run: summarize the older part before the
+                // next call (the app saves a proper checkpoint after the run).
+                if let fraction = config.compactAtFraction, config.contextCompactor != nil,
+                   lastPromptTokens > Int(Double(conversation.contextWindow) * fraction) {
+                    await compactHistory(reason: .nearLimit)
+                }
+
                 // Get messages for LLM call (trimmed to context window)
                 var messagesForLLM = conversation.messagesForLLMCall()
                 // Budget checkpoint: transient system note for THIS call only
@@ -1061,7 +1079,7 @@ public actor Agent {
 
                 // Build LLM request (with state-templated system prompt)
                 let llmToolDefs = makeLLMToolDefinitions(from: visibleTools(registeredTools))
-                let request = await makeLLMRequest(messagesForLLM: messagesForLLM, tools: llmToolDefs)
+                var request = await makeLLMRequest(messagesForLLM: messagesForLLM, tools: llmToolDefs)
 
                 // Call the provider (streamed when onText is set). Transient
                 // provider errors — network blips, proxy 5xx, Ollama cloud
@@ -1069,6 +1087,7 @@ public actor Agent {
                 // before failing the run.
                 var agentResponse: AgentLLMResponse
                 var llmAttempt = 0
+                var overflowCompacted = false
                 while true {
                     do {
                         agentResponse = try await executeTurn(request: request, onText: onText, onReasoning: onReasoning)
@@ -1076,6 +1095,16 @@ public actor Agent {
                     } catch is CancellationError {
                         throw AgentError.cancelled
                     } catch {
+                        // Too long for the model: compact once and ask again.
+                        // Checked before the transient-retry path, which would
+                        // otherwise resend the same oversized request.
+                        if !overflowCompacted, !isCancelled, ContextCompaction.isContextOverflow(error),
+                           await compactHistory(reason: .overflow) != nil {
+                            overflowCompacted = true
+                            messagesForLLM = conversation.messagesForLLMCall()
+                            request = await makeLLMRequest(messagesForLLM: messagesForLLM, tools: llmToolDefs)
+                            continue
+                        }
                         llmAttempt += 1
                         // Only retry TRANSIENT failures. A permanent client error
                         // (HTTP 4xx except 429 rate-limit, bad request, unsupported)
@@ -1655,6 +1684,24 @@ public actor Agent {
         if error is CancellationError { return .cancelled }
         let reported = error.llmUserMessage
         return .providerRefused(summary: reported.summary, details: reported.details)
+    }
+
+    /// Replace the older part of the stored history with a summary. The tail
+    /// (a third of the trigger size, whole units, the latest user message
+    /// always) is kept word-for-word.
+    @discardableResult
+    func compactHistory(reason: CompactionReason) async -> (before: Int, after: Int)? {
+        guard let compactor = config.contextCompactor else { return nil }
+        let all = conversation.allMessages()
+        let before = conversation.estimateTotalTokens(all)
+        let trigger = Double(conversation.contextWindow) * (config.compactAtFraction ?? 0.9)
+        let (middle, tail) = ContextCompaction.split(all, tailBudget: max(1, Int(trigger / 3)),
+                                                     estimate: conversation.estimateTokens)
+        guard !middle.isEmpty, let checkpoint = await compactor.summarize(middle: middle, reason: reason) else { return nil }
+        conversation.replaceNonSystemMessages(ContextCompaction.assemble(checkpoint: checkpoint, tail: tail))
+        let after = conversation.estimateTotalTokens(conversation.allMessages())
+        emit(.contextCompacted(tokensBefore: before, tokensAfter: after, reason: reason))
+        return (before, after)
     }
 
     private func makeLLMRequest(
