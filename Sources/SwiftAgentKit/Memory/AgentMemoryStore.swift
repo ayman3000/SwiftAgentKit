@@ -229,7 +229,9 @@ public final class FileAgentMemoryStore: AgentMemoryStore, @unchecked Sendable {
                 // principles. "Agent Soul" is the title `loadAll()` gives the
                 // whole file, so saving that entry back is ignored — a
                 // loadAll → save round-trip can never fold AGENT.md into bullets.
-                let title = entry.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                // One line: the title prefixes each principle, so a break in
+                // it would add lines (even a heading) to AGENT.md.
+                let title = MemoryDocuments.oneLineTitle(entry.title)
                 if title.lowercased() == Self.wholeAgentFileTitle.lowercased() { return }
                 let named = AgentProfileSection(rawValue: title.lowercased())
                 let change: String
@@ -548,6 +550,8 @@ public final class FileAgentMemoryStore: AgentMemoryStore, @unchecked Sendable {
     }
 
     private func _upsertFact(title: String, body: String, project: String?, slug: String) throws -> MemoryChange {
+        // One line: the title becomes the file's heading and a MEMORY.md line.
+        let title = MemoryDocuments.oneLineTitle(title)
         let url = factURL(slug: slug, project: project)
         let before = try? String(contentsOf: url, encoding: .utf8)
         let after = MemoryDocuments.factMarkdown(title: title, body: body)
@@ -583,7 +587,8 @@ public final class FileAgentMemoryStore: AgentMemoryStore, @unchecked Sendable {
         let fallback = project == nil ? Self.defaultIndex : "# \(project!)\n"
         var text = (try? String(contentsOf: url, encoding: .utf8)) ?? fallback
         var lines = text.components(separatedBy: "\n").filter { !$0.contains("(\(link))") }
-        lines.append("- [\(title)](\(link))")
+        // MEMORY.md goes into every prompt: a title never adds a line to it.
+        lines.append("- [\(MemoryDocuments.oneLineTitle(title))](\(link))")
         text = lines.joined(separator: "\n")
         try? fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? text.write(to: url, atomically: true, encoding: .utf8)
