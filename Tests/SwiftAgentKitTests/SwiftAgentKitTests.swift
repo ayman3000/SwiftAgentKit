@@ -2483,6 +2483,24 @@ func liveAgentRecallsToolConclusionAfterCompaction() async throws {
     #expect(toolMsg?.content.contains("middle truncated") == true)           // cut is in the middle
 }
 
+/// The cut must say what is missing and how to get exactly that: a bare
+/// "middle truncated" sent kimi re-reading two files until the no-progress
+/// guard stopped it (2026-10-04).
+@Test func testTruncationNamesTheMissingRangeAndTheCallThatFetchesIt() async {
+    let manager = ContextManager(maxActiveResultChars: 120, inlineBudgetChars: 0)
+    let file = String(repeating: "x", count: 1_000)
+    let messages: [AgentMessage] = [
+        .user("read it"),
+        .assistant(content: "", toolCalls: [AgentToolCall(id: "c1", name: "read_file")]),
+        .tool(results: [.success(toolCallId: "c1", toolName: "read_file", result: file)]),
+    ]
+    let out = await manager.modelMessages(messages) { $0 }
+    let text = out.first { $0.role == .tool }?.content ?? ""
+    // head 40 + tail 80 of 1,000: characters 1–40 and 921–1,000 shown.
+    #expect(text.contains("characters 1–40 and 921–1,000 of 1,000"))
+    #expect(text.contains("offset: 40, limit: 880"))
+}
+
 @Test func testArtifactSearchBatchesMultipleQueriesWithContext() async throws {
     let store = InMemoryArtifactStore()
     let content = (1...20).map { "line \($0)" }.joined(separator: "\n")
