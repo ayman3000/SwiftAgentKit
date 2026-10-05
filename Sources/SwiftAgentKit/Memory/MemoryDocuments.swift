@@ -119,6 +119,14 @@ public enum MemoryDocuments {
         return nil
     }
 
+    /// A title as one line: every line break (\n, \r, \r\n, U+2028…) becomes a
+    /// space, ends trimmed. Titles land in MEMORY.md (read into every prompt),
+    /// fact headings and principle prefixes, where a break would add lines.
+    public static func oneLineTitle(_ title: String) -> String {
+        title.components(separatedBy: .newlines).joined(separator: " ")
+            .trimmingCharacters(in: .whitespaces)
+    }
+
     private static func oneLine(_ text: String) -> String {
         text.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespaces)
     }
@@ -221,7 +229,8 @@ public enum MemoryDocuments {
     // MARK: - Facts — `# Title`, blank line, body
 
     public static func factMarkdown(title: String, body: String) -> String {
-        "# \(title)\n\n\(factBody(body, title: title))\n"
+        let title = oneLineTitle(title)
+        return "# \(title)\n\n\(factBody(body, title: title))\n"
     }
 
     /// The body without its own heading. Repeated copies of the same heading
