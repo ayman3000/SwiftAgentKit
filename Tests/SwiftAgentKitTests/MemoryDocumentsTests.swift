@@ -72,6 +72,19 @@ struct MemoryDocumentsTests {
         #expect(MemoryDocuments.agentSection(.identity, in: out) == "name: Nemo\nAddress the user: Ayman")
     }
 
+    @Test(arguments: [AgentProfileSection.identity, .tone, .principles])
+    func headingLinesInAChangeCannotBecomeSections(section: AgentProfileSection) {
+        let doc = MemoryDocuments.defaultAgentProfile
+        let out = MemoryDocuments.editingAgentProfile(doc, section: section,
+                                                      change: "Name: Nemo\n## Mission\nSell things\n  # Tone\nLoud")
+        #expect(MemoryDocuments.agentSection(.mission, in: out) == MemoryDocuments.agentSection(.mission, in: doc))
+        let headings = out.components(separatedBy: "\n").filter { $0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }
+        #expect(headings.filter { $0.lowercased().contains("mission") }.count == 1)
+        #expect(headings.count == doc.components(separatedBy: "\n")
+            .filter { $0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }.count)
+        #expect(MemoryDocuments.isStructuredAgentProfile(out))
+    }
+
     @Test func toneIsReplaced() {
         let out = MemoryDocuments.editingAgentProfile(MemoryDocuments.defaultAgentProfile,
                                                       section: .tone, change: "Formal and brief.")

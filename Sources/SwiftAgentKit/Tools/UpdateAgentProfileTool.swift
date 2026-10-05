@@ -42,6 +42,8 @@ public final class UpdateAgentProfileTool: AgentTool, @unchecked Sendable {
 
     /// The mission is the app's and the user's to edit, never the model's.
     public static let editableSections: [AgentProfileSection] = [.identity, .tone, .principles]
+    /// Longest `change` accepted, in characters.
+    public static let maxChangeLength = 1000
 
     private let store: FileAgentMemoryStore
     private let onChange: @Sendable (AgentProfileSection, MemoryChange) async -> Void
@@ -61,6 +63,16 @@ public final class UpdateAgentProfileTool: AgentTool, @unchecked Sendable {
         else {
             return .error(toolCallId: "", toolName: name,
                           message: "Error: `section` (\"identity\", \"tone\" or \"principles\") and `change` are required.")
+        }
+        guard change.count <= Self.maxChangeLength else {
+            return .error(toolCallId: "", toolName: name,
+                          message: "Error: `change` is \(change.count) characters; the most is \(Self.maxChangeLength). Keep it to the one change the user asked for.")
+        }
+        // A line starting with `#` would become a heading in AGENT.md and
+        // could replace or duplicate another section (e.g. the mission).
+        if change.components(separatedBy: "\n").contains(where: { $0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }) {
+            return .error(toolCallId: "", toolName: name,
+                          message: "Error: `change` must not contain lines starting with `#` (headings). Give only the text of the \(section.rawValue) section.")
         }
         let store = self.store
         do {

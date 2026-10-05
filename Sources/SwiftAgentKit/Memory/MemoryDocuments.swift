@@ -159,7 +159,11 @@ public enum MemoryDocuments {
     /// - identity: `Label: value` lines replace the line with the same label; other lines stay.
     /// - mission, tone: the text is replaced.
     /// - principles: each line becomes one bullet, added once.
-    public static func editingAgentProfile(_ doc: String, section: AgentProfileSection, change: String) -> String {
+    ///
+    /// Heading markers in `change` are removed first, so its text can never
+    /// start, replace or duplicate a section.
+    public static func editingAgentProfile(_ doc: String, section: AgentProfileSection, change rawChange: String) -> String {
+        let change = withoutHeadingMarkers(rawChange)
         let current = agentSection(section, in: doc) ?? ""
         let body: String
         switch section {
@@ -178,6 +182,15 @@ public enum MemoryDocuments {
             body = lines.joined(separator: "\n")
         }
         return replacingAgentSection(section, with: body, in: doc)
+    }
+
+    /// `## Mission` → `Mission`: a line of section text never reads as a heading.
+    static func withoutHeadingMarkers(_ text: String) -> String {
+        text.components(separatedBy: "\n").map { line -> String in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("#") else { return line }
+            return String(trimmed.drop { $0 == "#" }).trimmingCharacters(in: .whitespaces)
+        }.joined(separator: "\n")
     }
 
     static func mergingKeyedLines(_ change: String, into body: String) -> String {
