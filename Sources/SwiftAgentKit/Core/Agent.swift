@@ -316,6 +316,11 @@ public actor Agent {
     /// Notes `remember` made during runs, waiting for the app to file them.
     public private(set) var memoryInbox: MemoryInbox?
 
+    /// Text appended to the system prompt on every run, right after memory —
+    /// the app's per-run context (Naseem: lessons for this project and these
+    /// tools). Given the names of the tools registered on this agent.
+    private var runContextProvider: (@Sendable ([String]) async -> String)?
+
     /// Optional persistent goal store. When set, `run(_:trackGoal:)` persists goal
     /// progress and results.
     public private(set) var goalStore: (any AgentGoalStore)?
@@ -610,6 +615,12 @@ public actor Agent {
         register(RememberTool(inbox: notes, activeProject: project))
     }
     public func setGoalStore(_ store: (any AgentGoalStore)?) throws { try requireIdle(); goalStore = store }
+
+    /// Set (or clear) the per-run context provider. Idle-only, like the other setters.
+    public func setRunContextProvider(_ provider: (@Sendable ([String]) async -> String)?) throws {
+        try requireIdle()
+        runContextProvider = provider
+    }
     public func setSkillStore(_ store: (any AgentSkillStore)?) throws {
         try requireIdle()
         skillStore = store
@@ -950,6 +961,16 @@ public actor Agent {
                     effectiveSystemPrompt += "\n\n"
                 }
                 effectiveSystemPrompt += memoryContext
+            }
+        }
+
+        // The app's per-run context (built now, so what changed since the last
+        // run — a lesson filed after it — is used from this one).
+        if let runContextProvider {
+            let extra = await runContextProvider(registeredToolsEarly.map(\.name))
+            if !extra.isEmpty {
+                if !effectiveSystemPrompt.isEmpty { effectiveSystemPrompt += "\n\n" }
+                effectiveSystemPrompt += extra
             }
         }
 

@@ -76,11 +76,17 @@ public struct FetchURLTool: AgentTool {
 
         let data: Data, response: URLResponse
         do { (data, response) = try await session.data(for: request) }
-        catch { return .error(toolCallId: "", toolName: name, message: "Could not reach \(url.absoluteString): \(error.localizedDescription)") }
+        catch {
+            return .failure(toolCallId: "", toolName: name,
+                            message: "Could not reach \(url.absoluteString): \(error.localizedDescription)", error: error)
+        }
 
         let http = response as? HTTPURLResponse
         if let code = http?.statusCode, !(200..<300).contains(code) {
-            return .error(toolCallId: "", toolName: name, message: "\(url.absoluteString) returned HTTP \(code).")
+            let message = "\(url.absoluteString) returned HTTP \(code)."
+            return Self.isTransientStatus(code)
+                ? .transientError(toolCallId: "", toolName: name, message: message)
+                : .error(toolCallId: "", toolName: name, message: message)
         }
         guard data.count <= Self.maxDownloadBytes else {
             return .error(toolCallId: "", toolName: name,
@@ -114,6 +120,9 @@ public struct FetchURLTool: AgentTool {
     // MARK: - Guards
 
     struct FetchRefusal: Error { let message: String }
+
+    /// A busy or briefly failing server: worth the one automatic retry.
+    static func isTransientStatus(_ code: Int) -> Bool { [429, 502, 503, 504].contains(code) }
 
     /// Public http(s) only. Everything else is refused with the reason, because
     /// a fetch is the natural shape of an attempt to reach inside the machine.

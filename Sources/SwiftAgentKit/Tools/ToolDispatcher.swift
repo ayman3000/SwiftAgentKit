@@ -36,6 +36,9 @@ public actor ToolDispatcher {
     /// e.g. ["dir": "path", "cmd": "command"]
     public var parameterAliases: [String: String] = [:]
 
+    /// Pause before the one automatic retry of a transient failure.
+    public var transientRetryDelay: Duration = .seconds(1)
+
     public init(registry: ToolRegistry) {
         self.registry = registry
     }
@@ -48,6 +51,10 @@ public actor ToolDispatcher {
     /// Enable/disable autonomous mode (skips the `requiresConfirmation` gate).
     public func setAutonomousMode(_ enabled: Bool) {
         autonomousMode = enabled
+    }
+
+    public func setTransientRetryDelay(_ delay: Duration) {
+        transientRetryDelay = delay
     }
 
     // MARK: - Dispatch
@@ -297,7 +304,7 @@ public actor ToolDispatcher {
 
         let result: AgentToolResult
         do {
-            let raw = try await tool.execute(context: context)
+            let raw = try await executeRetryingTransient(tool, context: context, call: call, observer: observer)
             // afterTool callback — can modify
             if let afterTool = callbacks?.afterTool {
                 if let modified = await afterTool(call, raw, context) {
@@ -331,6 +338,35 @@ public actor ToolDispatcher {
         return result
     }
 
+    /// Run `tool` once; when it opts in and the failure is transient, wait
+    /// `transientRetryDelay` and run it exactly once more. A recovered
+    /// success is marked `retryRecovered`; a failed retry returns (or
+    /// rethrows) the FIRST attempt's outcome, so the model sees the original
+    /// error unchanged.
+    private func executeRetryingTransient(_ tool: any AgentTool, context: ToolContext, call: AgentToolCall,
+                                          observer: (any AgentObserver)?) async throws -> AgentToolResult {
+        let first: Result<AgentToolResult, Error>
+        do { first = .success(try await tool.execute(context: context)) } catch { first = .failure(error) }
+        guard tool.retriesTransientFailures, ToolRetry.isTransient(first), !Task.isCancelled else {
+            return try first.get()
+        }
+        try? await Task.sleep(for: transientRetryDelay)
+        guard !Task.isCancelled else { return try first.get() }
+        let firstError = ToolRetry.describe(first)
+        do {
+            let second = try await tool.execute(context: context)
+            guard !second.isError else {
+                observer?.onEvent(.toolCallRetried(call: call, firstError: firstError, recovered: false))
+                return try first.get()
+            }
+            observer?.onEvent(.toolCallRetried(call: call, firstError: firstError, recovered: true))
+            return second.markingRetryRecovered()
+        } catch {
+            observer?.onEvent(.toolCallRetried(call: call, firstError: firstError, recovered: false))
+            return try first.get()
+        }
+    }
+
     /// Force tool results to carry the model-provided call identity.
     ///
     /// Individual tools may return placeholder IDs (many examples use an empty
@@ -346,7 +382,9 @@ public actor ToolDispatcher {
             toolName: result.toolName ?? call.name,
             result: result.result,
             isError: result.isError,
-            images: result.images
+            images: result.images,
+            isTransient: result.isTransient,
+            retryRecovered: result.retryRecovered
         )
     }
 

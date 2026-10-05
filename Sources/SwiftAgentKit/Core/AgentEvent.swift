@@ -74,6 +74,9 @@ public enum AgentEvent: Sendable {
 
     /// A tool finished executing.
     case toolExecutionFinished(call: AgentToolCall, result: AgentToolResult)
+    /// A read-only tool failed transiently and was run once more.
+    /// `recovered`: the second attempt succeeded (the model saw only that).
+    case toolCallRetried(call: AgentToolCall, firstError: String, recovered: Bool)
 
     /// A tool that requires confirmation is awaiting an approval decision.
     /// The decision itself is made via `AgentCallbacks.onToolConfirmation`;

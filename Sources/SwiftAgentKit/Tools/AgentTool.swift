@@ -97,6 +97,13 @@ public protocol AgentTool: Sendable {
     /// concurrently only when EVERY call in it is concurrency-safe.
     var isConcurrencySafe: Bool { get }
 
+    /// Whether the dispatcher may run this call a second time, once, after a
+    /// transient failure (a timeout, a dropped connection — see `ToolRetry`).
+    /// Default: `isReadOnly`. A read-only tool whose call still has an effect
+    /// a repeat would duplicate (starting a log stream, asking the user)
+    /// returns `false`.
+    var retriesTransientFailures: Bool { get }
+
     /// Whether only the agent it was registered on may use it — sub-agents do
     /// not inherit it. Default `false`. For host tools that belong to the whole
     /// task, not to one delegated step (a planner: the user approved one plan,
@@ -132,6 +139,7 @@ public extension AgentTool {
     var requiresConfirmationEvenWhenAutonomous: Bool { false }
     var isReadOnly: Bool { false }
     var isConcurrencySafe: Bool { isReadOnly }
+    var retriesTransientFailures: Bool { isReadOnly }
     var isParentOnly: Bool { false }
     var inputExamples: [String] { [] }
 
