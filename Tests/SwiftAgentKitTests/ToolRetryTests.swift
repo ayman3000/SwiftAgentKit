@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import LLMProviderKit
 @testable import SwiftAgentKit
 
 /// Answers each call from a script, in order, and counts the calls.
@@ -144,5 +145,109 @@ private final class Events: @unchecked Sendable {
         #expect(!result.isTransient)
         #expect(!result.retryRecovered)
         #expect(result.result == "r")
+    }
+
+    // MARK: Cancel and parallel calls
+
+    /// The agent's own Stop flag (requestCancel) is not Task cancellation:
+    /// a retry must check it too after the wait.
+    @Test func theAgentsCancelFlagDuringTheWaitStopsTheRetry() async {
+        let script = Script([Self.transient("timed out"), Self.ok("page")])
+        let tool = ScriptedTool(name: "read", readOnly: true, script: script)
+        let registry = ToolRegistry()
+        await registry.register(tool)
+        let dispatcher = ToolDispatcher(registry: registry)
+        await dispatcher.setTransientRetryDelay(.milliseconds(300))
+        let flag = Flag()
+        Task {
+            try? await Task.sleep(for: .milliseconds(50))
+            flag.set()
+        }
+        let results = await dispatcher.dispatch(calls: [AgentToolCall(name: "read")], state: AgentState(),
+                                                observer: nil, isCancelled: { flag.value })
+        #expect(results[0].isError)
+        #expect(results[0].result == "timed out")
+        #expect(script.callCount == 1)
+    }
+
+    @Test func anAgentStoppedDuringTheRetryWaitRunsTheToolOnce() async throws {
+        let provider = OneCallProvider()
+        let agent = Agent(config: AgentConfig(provider: provider, model: "m", maxTurns: 3))
+        await agent.dispatcher.setTransientRetryDelay(.milliseconds(300))
+        let script = Script([Self.transient("timed out"), Self.ok("page")])
+        let holder = AgentHolder()
+        holder.agent = agent
+        await agent.register(CancellingTool(script: script, holder: holder))
+        _ = try? await agent.run("read it")
+        #expect(script.callCount == 1, "Stop during the wait means no second attempt")
+    }
+
+    @Test func twoParallelReadsThatBothFailTransientlyEachRetryOnce() async {
+        let first = Script([Self.transient("a timed out"), Self.ok("a")])
+        let second = Script([Self.transient("b timed out"), Self.ok("b")])
+        let registry = ToolRegistry()
+        await registry.register(ScriptedTool(name: "read_a", readOnly: true, script: first))
+        await registry.register(ScriptedTool(name: "read_b", readOnly: true, script: second))
+        let dispatcher = ToolDispatcher(registry: registry)
+        await dispatcher.setTransientRetryDelay(.zero)
+        let events = Events()
+        let results = await dispatcher.dispatch(calls: [AgentToolCall(name: "read_a"), AgentToolCall(name: "read_b")],
+                                                state: AgentState(), parallel: true,
+                                                observer: BlockObserver { events.add($0) })
+        #expect(results.map(\.result) == ["a", "b"])
+        #expect(results.allSatisfy { $0.retryRecovered && !$0.isError })
+        #expect(first.callCount == 2)
+        #expect(second.callCount == 2)
+        #expect(events.retried.map(\.recovered) == [true, true])
+        #expect(Set(events.retried.map(\.firstError)) == ["a timed out", "b timed out"])
+    }
+}
+
+private final class Flag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var on = false
+    var value: Bool { lock.withLock { on } }
+    func set() { lock.withLock { on = true } }
+}
+
+private final class AgentHolder: @unchecked Sendable {
+    weak var agent: Agent?
+}
+
+/// Fails transiently the first time and presses Stop (requestCancel) while
+/// the dispatcher waits to retry.
+private struct CancellingTool: AgentTool {
+    let name = "read"
+    let description = "reads"
+    let parameters = ToolParameters(properties: [:], required: [])
+    let script: Script
+    let holder: AgentHolder
+    var isReadOnly: Bool { true }
+    func execute(parameters: [String: Any]) async throws -> AgentToolResult {
+        let result = try script.next()
+        if script.callCount == 1, let agent = holder.agent {
+            Task {
+                try? await Task.sleep(for: .milliseconds(50))
+                agent.requestCancel()
+            }
+        }
+        return result
+    }
+}
+
+/// Calls `read` once, then answers.
+private final class OneCallProvider: LLMProvider, @unchecked Sendable {
+    static let name = "one-call"
+    let configuration = LLMProviderConfiguration(name: OneCallProvider.name, baseURL: URL(string: "inproc://x")!)
+    private let lock = NSLock()
+    private var called = false
+    func complete(_ request: LLMRequest) async throws -> LLMResponse {
+        let first = lock.withLock { () -> Bool in defer { called = true }; return !called }
+        if first {
+            return LLMResponse(text: "", finishReason: .toolCalls,
+                               toolCalls: [LLMToolCall(id: UUID().uuidString, name: "read", arguments: "{}")],
+                               request: request, providerName: Self.name)
+        }
+        return LLMResponse(text: "done", finishReason: .stop, request: request, providerName: Self.name)
     }
 }

@@ -78,14 +78,15 @@ public actor ToolDispatcher {
         callbacks: AgentCallbacks? = nil,
         parallel: Bool = true,
         actions: ToolActions? = nil,
-        observer: (any AgentObserver)?
+        observer: (any AgentObserver)?,
+        isCancelled: @escaping @Sendable () -> Bool = { false }
     ) async -> [AgentToolResult] {
         var concurrentSafe = false
         if parallel, calls.count > 1 { concurrentSafe = await allConcurrencySafe(calls) }
         if concurrentSafe {
-            return await dispatchParallel(calls: calls, state: state, turn: turn, query: query, callbacks: callbacks, actions: actions, observer: observer)
+            return await dispatchParallel(calls: calls, state: state, turn: turn, query: query, callbacks: callbacks, actions: actions, observer: observer, isCancelled: isCancelled)
         } else {
-            return await dispatchSequential(calls: calls, state: state, turn: turn, query: query, callbacks: callbacks, actions: actions, observer: observer)
+            return await dispatchSequential(calls: calls, state: state, turn: turn, query: query, callbacks: callbacks, actions: actions, observer: observer, isCancelled: isCancelled)
         }
     }
 
@@ -108,7 +109,8 @@ public actor ToolDispatcher {
         query: String,
         callbacks: AgentCallbacks?,
         actions: ToolActions?,
-        observer: (any AgentObserver)?
+        observer: (any AgentObserver)?,
+        isCancelled: @escaping @Sendable () -> Bool
     ) async -> [AgentToolResult] {
         var results: [AgentToolResult] = []
         var seenKeys = Set<String>()
@@ -122,7 +124,8 @@ public actor ToolDispatcher {
                 callbacks: callbacks,
                 actions: actions,
                 observer: observer,
-                seenKeys: &seenKeys
+                seenKeys: &seenKeys,
+                isCancelled: isCancelled
             )
             results.append(result)
         }
@@ -138,7 +141,8 @@ public actor ToolDispatcher {
         query: String,
         callbacks: AgentCallbacks?,
         actions: ToolActions?,
-        observer: (any AgentObserver)?
+        observer: (any AgentObserver)?,
+        isCancelled: @escaping @Sendable () -> Bool
     ) async -> [AgentToolResult] {
         // Dedup first, then run unique calls in parallel
         var seenKeys = Set<String>()
@@ -175,7 +179,8 @@ public actor ToolDispatcher {
                         callbacks: callbacks,
                         actions: actions,
                         observer: observer,
-                        seenKeys: &localSeen
+                        seenKeys: &localSeen,
+                        isCancelled: isCancelled
                     )
                     return (i, result)
                 }
@@ -227,7 +232,8 @@ public actor ToolDispatcher {
         callbacks: AgentCallbacks?,
         actions: ToolActions?,
         observer: (any AgentObserver)?,
-        seenKeys: inout Set<String>
+        seenKeys: inout Set<String>,
+        isCancelled: @escaping @Sendable () -> Bool = { false }
     ) async -> AgentToolResult {
 
         // Dedup within the same turn
@@ -304,7 +310,8 @@ public actor ToolDispatcher {
 
         let result: AgentToolResult
         do {
-            let raw = try await executeRetryingTransient(tool, context: context, call: call, observer: observer)
+            let raw = try await executeRetryingTransient(tool, context: context, call: call, observer: observer,
+                                                     isCancelled: isCancelled)
             // afterTool callback — can modify
             if let afterTool = callbacks?.afterTool {
                 if let modified = await afterTool(call, raw, context) {
@@ -343,15 +350,18 @@ public actor ToolDispatcher {
     /// success is marked `retryRecovered`; a failed retry returns (or
     /// rethrows) the FIRST attempt's outcome, so the model sees the original
     /// error unchanged.
+    /// `isCancelled` is the agent's own Stop flag (`requestCancel`), which
+    /// is not Task cancellation: either one stops the retry.
     private func executeRetryingTransient(_ tool: any AgentTool, context: ToolContext, call: AgentToolCall,
-                                          observer: (any AgentObserver)?) async throws -> AgentToolResult {
+                                          observer: (any AgentObserver)?,
+                                          isCancelled: @Sendable () -> Bool) async throws -> AgentToolResult {
         let first: Result<AgentToolResult, Error>
         do { first = .success(try await tool.execute(context: context)) } catch { first = .failure(error) }
-        guard tool.retriesTransientFailures, ToolRetry.isTransient(first), !Task.isCancelled else {
+        guard tool.retriesTransientFailures, ToolRetry.isTransient(first), !Task.isCancelled, !isCancelled() else {
             return try first.get()
         }
         try? await Task.sleep(for: transientRetryDelay)
-        guard !Task.isCancelled else { return try first.get() }
+        guard !Task.isCancelled, !isCancelled() else { return try first.get() }
         let firstError = ToolRetry.describe(first)
         do {
             let second = try await tool.execute(context: context)

@@ -1820,6 +1820,8 @@ public actor Agent {
             guard !silent else { return }
             self?.emit(event)
         }
+        // The Stop flag, read by the dispatcher before an automatic retry.
+        let stopRequested: @Sendable () -> Bool = { [weak self] in self?.isCancelled ?? true }
         // Safety net: a call into a group that isn't loaded yet loads the group
         // and asks for the call again — it isn't run blind, since the model
         // hadn't seen that tool's parameters.
@@ -1834,7 +1836,8 @@ public actor Agent {
             let rest = toolCalls.enumerated().filter { early[$0.offset] == nil }
             let ran = await dispatcher.dispatch(
                 calls: rest.map(\.element), state: state, turn: turn, query: query, callbacks: callbacks,
-                parallel: config.parallelToolCalls, actions: actions, observer: dispatcherObserver)
+                parallel: config.parallelToolCalls, actions: actions, observer: dispatcherObserver,
+                isCancelled: stopRequested)
             var byIndex = early
             for (k, entry) in rest.enumerated() where k < ran.count { byIndex[entry.offset] = ran[k] }
             return toolCalls.indices.compactMap { byIndex[$0] }
@@ -1847,7 +1850,8 @@ public actor Agent {
             callbacks: callbacks,
             parallel: config.parallelToolCalls,
             actions: actions,
-            observer: dispatcherObserver
+            observer: dispatcherObserver,
+            isCancelled: stopRequested
         )
     }
 
