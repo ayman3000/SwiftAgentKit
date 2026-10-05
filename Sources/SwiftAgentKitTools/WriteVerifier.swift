@@ -117,11 +117,18 @@ public enum WriteVerifier {
             }
         }
 
-        // 2. JSON: parse in-process (fast, always available).
-        if ext == "json" {
-            if (try? JSONSerialization.jsonObject(with: Data(content.utf8),
+        // 2. JSON: parse in-process (fast, always available). Config files
+        //    that allow comments (tsconfig, VS Code settings, .jsonc) are
+        //    parsed as JSON with comments: refusing them cost a React run four
+        //    steps (2026-10-05). A truly broken one is still refused.
+        if ext == "json" || ext == "jsonc" {
+            let commentsAllowed = allowsJSONComments(path: path)
+            let text = commentsAllowed ? strippingJSONComments(content) : content
+            if (try? JSONSerialization.jsonObject(with: Data(text.utf8),
                                                   options: [.fragmentsAllowed])) == nil {
-                return .syntax(reason: "content is not valid JSON", judgedBy: "the JSON parser")
+                return .syntax(reason: commentsAllowed ? "content is not valid JSON (comments and trailing commas are fine in this file)"
+                                                       : "content is not valid JSON",
+                               judgedBy: "the JSON parser")
             }
             return nil
         }
@@ -131,6 +138,58 @@ public enum WriteVerifier {
         //    child processes (interpreter probes, the parser itself — up to 10 s),
         //    so it runs off the cooperative pool (see BlockingWork).
         return await BlockingWork.run { parserRejection(ext: ext, content: content, config: config) }
+    }
+
+    /// Files whose format is "JSON with comments" by convention.
+    static func allowsJSONComments(path: String) -> Bool {
+        let name = (path as NSString).lastPathComponent.lowercased()
+        if name.hasSuffix(".jsonc") { return true }
+        if (name.hasPrefix("tsconfig") || name.hasPrefix("jsconfig")) && name.hasSuffix(".json") { return true }
+        if ["devcontainer.json", ".devcontainer.json", ".eslintrc.json", "deno.json", ".babelrc.json"].contains(name) { return true }
+        return path.contains("/.vscode/") && name.hasSuffix(".json")
+    }
+
+    /// JSON with comments → JSON: drops // and /* */ comments outside strings
+    /// and commas right before } or ].
+    static func strippingJSONComments(_ text: String) -> String {
+        var out = ""
+        var chars = Array(text)
+        var i = 0, inString = false
+        while i < chars.count {
+            let c = chars[i]
+            if inString {
+                out.append(c)
+                if c == "\\", i + 1 < chars.count { out.append(chars[i + 1]); i += 2; continue }
+                if c == "\"" { inString = false }
+                i += 1
+            } else if c == "\"" {
+                inString = true; out.append(c); i += 1
+            } else if c == "/", i + 1 < chars.count, chars[i + 1] == "/" {
+                while i < chars.count, chars[i] != "\n" { i += 1 }
+            } else if c == "/", i + 1 < chars.count, chars[i + 1] == "*" {
+                i += 2
+                while i + 1 < chars.count, !(chars[i] == "*" && chars[i + 1] == "/") { i += 1 }
+                i += 2
+            } else {
+                out.append(c); i += 1
+            }
+        }
+        chars = Array(out)
+        var result = ""
+        var quoted = false, escaped = false
+        for (j, c) in chars.enumerated() {
+            if quoted {
+                if escaped { escaped = false } else if c == "\\" { escaped = true } else if c == "\"" { quoted = false }
+            } else if c == "\"" {
+                quoted = true
+            } else if c == "," {
+                var k = j + 1
+                while k < chars.count, chars[k].isWhitespace { k += 1 }
+                if k < chars.count, chars[k] == "}" || chars[k] == "]" { continue }
+            }
+            result.append(c)
+        }
+        return result
     }
 
     /// The blocking part of `rejection`: resolve an interpreter, run its parser.
