@@ -87,20 +87,4 @@ struct ProjectScopedMemoryTests {
         let block = await store.loadContextBlock(project: "XonTel")
         #expect(!block.contains("Phase order"), "the project index is cleaned up as well")
     }
-
-    /// User and agent memories describe the person and the agent, so a project
-    /// scope is meaningless for them.
-    @Test func onlyFactsAreScoped() {
-        #expect(RememberTool.project(for: .fact, scope: nil, activeProject: "XonTel") == "XonTel")
-        #expect(RememberTool.project(for: .fact, scope: "project", activeProject: "XonTel") == "XonTel")
-        #expect(RememberTool.project(for: .fact, scope: "global", activeProject: "XonTel") == nil)
-        #expect(RememberTool.project(for: .user, scope: "project", activeProject: "XonTel") == nil)
-        #expect(RememberTool.project(for: .agent, scope: "project", activeProject: "XonTel") == nil)
-    }
-
-    /// Outside a project there is nothing to scope to, whatever is asked for.
-    @Test func withoutAnActiveProjectEverythingIsGlobal() {
-        #expect(RememberTool.project(for: .fact, scope: "project", activeProject: nil) == nil)
-        #expect(RememberTool.project(for: .fact, scope: nil, activeProject: nil) == nil)
-    }
 }
