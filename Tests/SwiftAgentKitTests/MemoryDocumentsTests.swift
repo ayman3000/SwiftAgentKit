@@ -113,11 +113,14 @@ struct MemoryDocumentsTests {
         #expect(MemoryDocuments.userValue("Name", in: out) == "Ayman H")
     }
 
-    @Test func aPlainKeyLineIsTheSameKey() {
-        let doc = "# User\n\n- Name: Ayman\n- **Role:** Developer\n"
-        let out = MemoryDocuments.settingUserKey("Name", value: "Ayman H", in: doc)
-        #expect(MemoryDocuments.userKeys(out).map { $0.key } == ["Name", "Role"])
-        #expect(MemoryDocuments.userValue("Name", in: out) == "Ayman H")
+    @Test func aPlainLabelledBulletIsProseNotAKey() {
+        // Only the bold forms are keys. A plain "- Tip: …" bullet is prose the
+        // user wrote; setting a key next to it must never rewrite or remove it.
+        let doc = "# User\n\n- Tip: keep answers short\n- **Role:** Developer\n"
+        #expect(MemoryDocuments.userKeys(doc).map { $0.key } == ["Role"])
+        let out = MemoryDocuments.settingUserKey("Tip", value: "x", in: doc)
+        #expect(out.contains("- Tip: keep answers short"))
+        #expect(MemoryDocuments.removingUserKey("Tip", in: doc).contains("- Tip: keep answers short"))
     }
 
     @Test func linesThatAreNotKeyLinesStayUntouched() {

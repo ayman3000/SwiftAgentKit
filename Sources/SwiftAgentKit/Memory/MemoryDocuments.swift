@@ -90,12 +90,8 @@ public enum MemoryDocuments {
         return normalized(lines.joined(separator: "\n"))
     }
 
-    /// A key line in any of the forms people write by hand:
-    /// `- **Key:** value` (the form the store writes), `- **Key**: value`
-    /// and `- Key: value`. A plain line counts only when the text before its
-    /// first colon is short and looks like a label (no markup, not the start
-    /// of a URL) and something follows the colon; anything else is prose and
-    /// is never touched.
+    /// A key line: `- **Key:** value` (the form the store writes) or the
+    /// hand-edited `- **Key**: value`. Plain bullets are prose and never touched.
     static func parseUserLine(_ line: String) -> (key: String, value: String)? {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
         guard trimmed.hasPrefix("- ") else { return nil }
@@ -118,17 +114,9 @@ public enum MemoryDocuments {
             let k = key.trimmingCharacters(in: .whitespaces)
             return k.isEmpty ? nil : (k, value.trimmingCharacters(in: .whitespaces))
         }
-        // - Key: value
-        let rest = trimmed.dropFirst(2)
-        guard let colon = rest.firstIndex(of: ":") else { return nil }
-        let key = rest[..<colon].trimmingCharacters(in: .whitespaces)
-        let rawValue = rest[rest.index(after: colon)...]
-        let value = rawValue.trimmingCharacters(in: .whitespaces)
-        guard !key.isEmpty, key.count <= 40, !value.isEmpty,
-              !rawValue.hasPrefix("//"),
-              key.rangeOfCharacter(from: CharacterSet(charactersIn: "*[]()`<>")) == nil
-        else { return nil }
-        return (key, value)
+        // A plain "- Label: text" bullet is the user's own prose, never a key:
+        // guessing which ones are keys would rewrite or delete their lines.
+        return nil
     }
 
     private static func oneLine(_ text: String) -> String {
