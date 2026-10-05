@@ -120,6 +120,11 @@ struct FetchURLToolTests {
         #expect(!untouched)
     }
 
+    @Test func busyOrFlakyServersAreTransientButMissingPagesAreNot() {
+        for code in [429, 502, 503, 504] { #expect(FetchURLTool.isTransientStatus(code), "\(code)") }
+        for code in [400, 401, 403, 404, 410, 500] { #expect(!FetchURLTool.isTransientStatus(code), "\(code)") }
+    }
+
     // MARK: - Live
 
     /// Hits the network. Proves the tool reads a real server-rendered page and

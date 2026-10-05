@@ -95,7 +95,7 @@ public struct SimUITool: AgentTool {
             return .error(toolCallId: "", toolName: name,
                 message: e.localizedDescription + (e.tree.map { "\n\nCurrent UI:\n" + $0.renderCompact() } ?? ""))
         } catch {
-            return .error(toolCallId: "", toolName: name, message: "Unexpected error: \(error.localizedDescription)")
+            return .failure(toolCallId: "", toolName: name, message: "Unexpected error: \(error.localizedDescription)", error: error)
         }
     }
 }
@@ -169,7 +169,7 @@ public struct SimTapTool: AgentTool {
             return .error(toolCallId: "", toolName: name,
                 message: e.localizedDescription + (e.tree.map { "\n\nCurrent UI:\n" + $0.renderCompact() } ?? ""))
         } catch {
-            return .error(toolCallId: "", toolName: name, message: "Unexpected error: \(error.localizedDescription)")
+            return .failure(toolCallId: "", toolName: name, message: "Unexpected error: \(error.localizedDescription)", error: error)
         }
     }
 }
@@ -220,7 +220,7 @@ public struct SimTypeTool: AgentTool {
             return .error(toolCallId: "", toolName: name,
                 message: e.localizedDescription + (e.tree.map { "\n\nCurrent UI:\n" + $0.renderCompact() } ?? ""))
         } catch {
-            return .error(toolCallId: "", toolName: name, message: "Unexpected error: \(error.localizedDescription)")
+            return .failure(toolCallId: "", toolName: name, message: "Unexpected error: \(error.localizedDescription)", error: error)
         }
     }
 }
@@ -272,7 +272,7 @@ public struct SimSwipeTool: AgentTool {
             return .error(toolCallId: "", toolName: name,
                 message: e.localizedDescription + (e.tree.map { "\n\nCurrent UI:\n" + $0.renderCompact() } ?? ""))
         } catch {
-            return .error(toolCallId: "", toolName: name, message: "Unexpected error: \(error.localizedDescription)")
+            return .failure(toolCallId: "", toolName: name, message: "Unexpected error: \(error.localizedDescription)", error: error)
         }
     }
 }
@@ -324,7 +324,7 @@ public struct SimRotateTool: AgentTool {
             return .error(toolCallId: "", toolName: name,
                 message: e.localizedDescription + (e.tree.map { "\n\nCurrent UI:\n" + $0.renderCompact() } ?? ""))
         } catch {
-            return .error(toolCallId: "", toolName: name, message: "Unexpected error: \(error.localizedDescription)")
+            return .failure(toolCallId: "", toolName: name, message: "Unexpected error: \(error.localizedDescription)", error: error)
         }
     }
 }
@@ -360,7 +360,7 @@ public struct SimPressTool: AgentTool {
             return .error(toolCallId: "", toolName: name,
                 message: e.localizedDescription + (e.tree.map { "\n\nCurrent UI:\n" + $0.renderCompact() } ?? ""))
         } catch {
-            return .error(toolCallId: "", toolName: name, message: "Unexpected error: \(error.localizedDescription)")
+            return .failure(toolCallId: "", toolName: name, message: "Unexpected error: \(error.localizedDescription)", error: error)
         }
     }
 }
@@ -406,7 +406,7 @@ public struct SimWaitTool: AgentTool {
             return .error(toolCallId: "", toolName: name,
                 message: e.localizedDescription + (e.tree.map { "\n\nCurrent UI:\n" + $0.renderCompact() } ?? ""))
         } catch {
-            return .error(toolCallId: "", toolName: name, message: "Unexpected error: \(error.localizedDescription)")
+            return .failure(toolCallId: "", toolName: name, message: "Unexpected error: \(error.localizedDescription)", error: error)
         }
     }
 }
@@ -440,7 +440,7 @@ public struct SimAlertTool: AgentTool {
             return .error(toolCallId: "", toolName: name,
                 message: e.localizedDescription + (e.tree.map { "\n\nCurrent UI:\n" + $0.renderCompact() } ?? ""))
         } catch {
-            return .error(toolCallId: "", toolName: name, message: "Unexpected error: \(error.localizedDescription)")
+            return .failure(toolCallId: "", toolName: name, message: "Unexpected error: \(error.localizedDescription)", error: error)
         }
     }
 }
@@ -491,7 +491,7 @@ public struct SimFindTool: AgentTool {
             return .error(toolCallId: "", toolName: name,
                 message: e.localizedDescription + (e.tree.map { "\n\nCurrent UI:\n" + $0.renderCompact() } ?? ""))
         } catch {
-            return .error(toolCallId: "", toolName: name, message: "Unexpected error: \(error.localizedDescription)")
+            return .failure(toolCallId: "", toolName: name, message: "Unexpected error: \(error.localizedDescription)", error: error)
         }
     }
 

@@ -39,7 +39,7 @@ public struct SimListTool: AgentTool {
             }
             return .success(toolCallId: "", toolName: name, result: lines.joined(separator: "\n"))
         } catch {
-            return .error(toolCallId: "", toolName: name, message: "simctl list failed: \(error.localizedDescription)")
+            return .failure(toolCallId: "", toolName: name, message: "simctl list failed: \(error.localizedDescription)", error: error)
         }
     }
 }

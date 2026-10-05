@@ -202,6 +202,9 @@ public struct SimLogsTool: AgentTool {
         required: [])
     /// Read-only log tap — no destructive side effects.
     public var requiresConfirmation: Bool { false }
+    /// Read-only, but each call starts (or stops) a background stream: an
+    /// automatic second attempt would start a second stream.
+    public var retriesTransientFailures: Bool { false }
 
     let session: SimSession
     public init(session: SimSession) { self.session = session }

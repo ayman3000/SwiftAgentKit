@@ -23,7 +23,7 @@ public struct SimScreenshotTool: AgentTool {
             return .success(toolCallId: "", toolName: name, result: "Screenshot captured.",
                             images: [LLMImage(data: png, mimeType: "image/png")])
         } catch {
-            return .error(toolCallId: "", toolName: name, message: "screenshot failed: \(error.localizedDescription)")
+            return .failure(toolCallId: "", toolName: name, message: "screenshot failed: \(error.localizedDescription)", error: error)
         }
     }
 }

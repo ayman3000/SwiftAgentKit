@@ -226,6 +226,12 @@ public struct AgentToolResult: Sendable, Identifiable, Equatable, Codable {
     public let isError: Bool
     /// Images the tool returned (e.g. a screenshot), for vision-capable models.
     public let images: [LLMImage]
+    /// The tool says this error may pass if the call is tried again shortly
+    /// (a timeout, a dropped connection). See `ToolRetry`.
+    public let isTransient: Bool
+    /// This success came from the dispatcher's automatic retry after a
+    /// transient first failure. Diagnostics only — the model never sees it.
+    public let retryRecovered: Bool
 
     public init(
         id: String = UUID().uuidString,
@@ -233,7 +239,9 @@ public struct AgentToolResult: Sendable, Identifiable, Equatable, Codable {
         toolName: String? = nil,
         result: String,
         isError: Bool = false,
-        images: [LLMImage] = []
+        images: [LLMImage] = [],
+        isTransient: Bool = false,
+        retryRecovered: Bool = false
     ) {
         self.id = id
         self.toolCallId = toolCallId
@@ -241,6 +249,8 @@ public struct AgentToolResult: Sendable, Identifiable, Equatable, Codable {
         self.result = result
         self.isError = isError
         self.images = images
+        self.isTransient = isTransient
+        self.retryRecovered = retryRecovered
     }
 
     /// Create a successful result.
@@ -251,6 +261,43 @@ public struct AgentToolResult: Sendable, Identifiable, Equatable, Codable {
     /// Create an error result.
     public static func error(toolCallId: String, toolName: String?, message: String, images: [LLMImage] = []) -> AgentToolResult {
         AgentToolResult(toolCallId: toolCallId, toolName: toolName, result: message, isError: true, images: images)
+    }
+
+    /// An error the tool knows may pass on a second try (a timeout, HTTP 503).
+    public static func transientError(toolCallId: String, toolName: String?, message: String,
+                                      images: [LLMImage] = []) -> AgentToolResult {
+        AgentToolResult(toolCallId: toolCallId, toolName: toolName, result: message, isError: true,
+                        images: images, isTransient: true)
+    }
+
+    /// An error result for a caught `error`, marked transient when its type is (see `ToolRetry`).
+    public static func failure(toolCallId: String, toolName: String?, message: String, error: Error,
+                               images: [LLMImage] = []) -> AgentToolResult {
+        AgentToolResult(toolCallId: toolCallId, toolName: toolName, result: message, isError: true,
+                        images: images, isTransient: ToolRetry.isTransient(error))
+    }
+
+    /// The same result, marked as recovered by the automatic retry.
+    public func markingRetryRecovered() -> AgentToolResult {
+        AgentToolResult(id: id, toolCallId: toolCallId, toolName: toolName, result: result, isError: isError,
+                        images: images, isTransient: isTransient, retryRecovered: true)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, toolCallId, toolName, result, isError, images, isTransient, retryRecovered
+    }
+
+    /// Results saved before `isTransient`/`retryRecovered` existed still decode.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        toolCallId = try c.decode(String.self, forKey: .toolCallId)
+        toolName = try c.decodeIfPresent(String.self, forKey: .toolName)
+        result = try c.decode(String.self, forKey: .result)
+        isError = try c.decode(Bool.self, forKey: .isError)
+        images = try c.decodeIfPresent([LLMImage].self, forKey: .images) ?? []
+        isTransient = try c.decodeIfPresent(Bool.self, forKey: .isTransient) ?? false
+        retryRecovered = try c.decodeIfPresent(Bool.self, forKey: .retryRecovered) ?? false
     }
 }
 

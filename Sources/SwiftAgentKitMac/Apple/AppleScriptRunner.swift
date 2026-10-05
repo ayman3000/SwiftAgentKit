@@ -15,6 +15,7 @@
 
 #if os(macOS)
 import Foundation
+import SwiftAgentKit
 
 /// Runs AppleScript source and returns its string result. Mockable.
 public protocol AppleScripting: Sendable {
@@ -34,6 +35,13 @@ public struct AppleScriptError: LocalizedError, Equatable {
             return message
         }
     }
+}
+
+/// -1712: the Apple Event timed out (a slow mailbox); -609: the app was
+/// still launching. Both pass on a second try; -1743 (not allowed) and
+/// -600 (not running) do not.
+extension AppleScriptError: TransientToolError {
+    public var isTransient: Bool { code == -1712 || code == -609 }
 }
 
 /// The real runner: NSAppleScript on a private serial queue.
