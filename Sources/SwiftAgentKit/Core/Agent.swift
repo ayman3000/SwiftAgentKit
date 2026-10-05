@@ -306,11 +306,15 @@ public actor Agent {
     /// Agent state — cross-turn mutable key-value store.
     public nonisolated let state: AgentState
 
-    /// Optional persistent memory store. When set, the agent auto-registers
-    /// `RememberTool` and injects the memory context block into the system prompt.
+    /// Optional persistent memory store. When set, the agent injects the memory
+    /// context block into the system prompt and auto-registers `RememberTool`,
+    /// which only notes into `memoryInbox`. `UpdateAgentProfileTool` is never
+    /// auto-registered: the app registers it where it wants it.
     public private(set) var memoryStore: (any AgentMemoryStore)?
     /// The project whose memory joins the global set for this agent's runs.
     public private(set) var memoryProject: String?
+    /// Notes `remember` made during runs, waiting for the app to file them.
+    public private(set) var memoryInbox: MemoryInbox?
 
     /// Optional persistent goal store. When set, `run(_:trackGoal:)` persists goal
     /// progress and results.
@@ -582,15 +586,19 @@ public actor Agent {
     }
 
     /// Attach a memory store, optionally naming the project this agent is
-    /// working in. Facts the model saves default to that project, and only
-    /// that project's memory joins the global set in the system prompt.
-    public func setMemoryStore(_ store: (any AgentMemoryStore)?, project: String? = nil) throws {
+    /// working in (only that project's memory joins the global set in the
+    /// system prompt) and the inbox `remember` notes into. Pass the same
+    /// inbox to every agent of one conversation so notes survive a rebuild;
+    /// without one the agent makes its own.
+    public func setMemoryStore(_ store: (any AgentMemoryStore)?, project: String? = nil,
+                               inbox: MemoryInbox? = nil) throws {
         try requireIdle()
         memoryStore = store
         memoryProject = project
-        if let store = store {
-            register(RememberTool(store: store, activeProject: project))
-        }
+        guard store != nil else { memoryInbox = nil; return }
+        let notes = inbox ?? MemoryInbox()
+        memoryInbox = notes
+        register(RememberTool(inbox: notes, activeProject: project))
     }
     public func setGoalStore(_ store: (any AgentGoalStore)?) throws { try requireIdle(); goalStore = store }
     public func setSkillStore(_ store: (any AgentSkillStore)?) throws {

@@ -1418,35 +1418,26 @@ struct TestTools {
     try FileManager.default.removeItem(at: tempDir)
 }
 
-@Test func testRememberToolExecutes() async throws {
+@Test func testRememberToolNotesInsteadOfSaving() async throws {
     let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     let store = FileAgentMemoryStore(directory: tempDir)
-    let tool = RememberTool(store: store)
+    let inbox = MemoryInbox()
+    let tool = RememberTool(inbox: inbox)
 
-    let result = try await tool.execute(parameters: [
-        "kind": "user",
-        "title": "Name",
-        "content": "Ayman"
-    ])
+    let result = try await tool.execute(parameters: ["text": "The user's name is Ayman"])
 
     #expect(!result.isError)
-    #expect(result.result.contains("Remembered"))
-
-    let userEntries = try await store.load(kind: .user)
-    #expect(userEntries.count == 1)
+    #expect(result.result.contains("Noted"))
+    #expect(await inbox.count == 1)
+    #expect(MemoryDocuments.userKeys(store.snapshot().userProfile).isEmpty)
 
     try FileManager.default.removeItem(at: tempDir)
 }
 
 @Test func testRememberToolRejectsMissingFields() async throws {
-    let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-    let store = FileAgentMemoryStore(directory: tempDir)
-    let tool = RememberTool(store: store)
-
-    let result = try await tool.execute(parameters: ["kind": "user"])
+    let tool = RememberTool(inbox: MemoryInbox())
+    let result = try await tool.execute(parameters: ["about": "me"])
     #expect(result.isError)
-
-    try FileManager.default.removeItem(at: tempDir)
 }
 
 // MARK: - AgentGoal Tests
@@ -2332,10 +2323,11 @@ func liveCrossConversationMemory() async throws {
     let store = FileAgentMemoryStore(directory: dir)
     defer { try? FileManager.default.removeItem(at: dir) }
 
+    let inbox = MemoryInbox()
     func makeAgent() async throws -> Agent {
         let provider = OllamaProvider(configuration: OllamaProvider.local(model: "glm-5.2:cloud"))
         let agent = Agent(config: AgentConfig(provider: provider, model: "glm-5.2:cloud", maxTurns: 4))
-        try await agent.setMemoryStore(store)
+        try await agent.setMemoryStore(store, inbox: inbox)
         return agent
     }
 
@@ -2343,9 +2335,11 @@ func liveCrossConversationMemory() async throws {
     let convo1 = try await makeAgent()
     _ = try await convo1.run("My name is Ayman and I prefer Swift. Please remember this about me.")
 
-    // The remember tool should have persisted the user fact.
-    let userDoc = try await store.load(kind: .user).first?.content ?? ""
-    #expect(userDoc.localizedCaseInsensitiveContains("Ayman"))
+    // The remember tool only notes; the app files notes after the run.
+    // File this one the way a keeper would.
+    let notes = await inbox.drain()
+    #expect(notes.contains { $0.text.localizedCaseInsensitiveContains("Ayman") })
+    try store.setUserKey("Name", value: "Ayman")
 
     // Conversation 2 — a brand-new agent, same store, no shared conversation history.
     let convo2 = try await makeAgent()
