@@ -462,7 +462,27 @@ public final class ContextManager: @unchecked Sendable {
         let tailLen = maxActiveResultChars - headLen
         let head = String(result.result.prefix(headLen))
         let tail = String(result.result.suffix(tailLen))
-        return "[Tool: \(name)] \(status)\n\(head)\n… [middle truncated — full output in artifact \(artifactID); use artifact_read or artifact_search] …\n\(tail)"
+        // Say exactly what is missing and the one call that fetches it: a bare
+        // "middle truncated" sent a model re-reading the same files until the
+        // no-progress guard stopped it (2026-10-04).
+        let total = result.result.count
+        let gap = total - headLen - tailLen
+        let cut = "… [middle truncated: showing characters 1–\(Self.grouped(headLen)) and "
+            + "\(Self.grouped(total - tailLen + 1))–\(Self.grouped(total)) of \(Self.grouped(total)). "
+            + "The missing \(Self.grouped(gap)) characters: artifact_read(artifact_id: \"\(artifactID)\", "
+            + "offset: \(headLen), limit: \(gap)); or artifact_search it] …"
+        return "[Tool: \(name)] \(status)\n\(head)\n\(cut)\n\(tail)"
+    }
+
+    /// 18090 → "18,090" — fixed separator, whatever the user's locale.
+    static func grouped(_ n: Int) -> String {
+        let digits = Array(String(n))
+        var out = ""
+        for (i, d) in digits.enumerated() {
+            if i > 0, (digits.count - i) % 3 == 0 { out.append(",") }
+            out.append(d)
+        }
+        return out
     }
 
     private func cachedActiveArtifact(_ callID: String) -> String? {
