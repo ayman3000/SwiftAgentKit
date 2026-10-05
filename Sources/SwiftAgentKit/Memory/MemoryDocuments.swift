@@ -84,19 +84,51 @@ public enum MemoryDocuments {
     }
 
     public static func removingUserKey(_ key: String, in doc: String) -> String {
+        let key = oneLine(key)
         let lines = doc.components(separatedBy: "\n")
             .filter { parseUserLine($0)?.key.lowercased() != key.lowercased() }
         return normalized(lines.joined(separator: "\n"))
     }
 
+    /// A key line in any of the forms people write by hand:
+    /// `- **Key:** value` (the form the store writes), `- **Key**: value`
+    /// and `- Key: value`. A plain line counts only when the text before its
+    /// first colon is short and looks like a label (no markup, not the start
+    /// of a URL) and something follows the colon; anything else is prose and
+    /// is never touched.
     static func parseUserLine(_ line: String) -> (key: String, value: String)? {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
-        guard trimmed.hasPrefix("- **") else { return nil }
-        let rest = trimmed.dropFirst(4)
-        guard let close = rest.range(of: ":**") else { return nil }
-        let key = rest[..<close.lowerBound].trimmingCharacters(in: .whitespaces)
-        let value = rest[close.upperBound...].trimmingCharacters(in: .whitespaces)
-        return key.isEmpty ? nil : (key, value)
+        guard trimmed.hasPrefix("- ") else { return nil }
+        if trimmed.hasPrefix("- **") {
+            let rest = trimmed.dropFirst(4)
+            guard let close = rest.range(of: "**") else { return nil }
+            let inside = rest[..<close.lowerBound]
+            let after = rest[close.upperBound...]
+            let key: Substring
+            let value: Substring
+            if inside.hasSuffix(":") {                  // - **Key:** value
+                key = inside.dropLast()
+                value = after
+            } else if after.hasPrefix(":") {            // - **Key**: value
+                key = inside
+                value = after.dropFirst()
+            } else {
+                return nil
+            }
+            let k = key.trimmingCharacters(in: .whitespaces)
+            return k.isEmpty ? nil : (k, value.trimmingCharacters(in: .whitespaces))
+        }
+        // - Key: value
+        let rest = trimmed.dropFirst(2)
+        guard let colon = rest.firstIndex(of: ":") else { return nil }
+        let key = rest[..<colon].trimmingCharacters(in: .whitespaces)
+        let rawValue = rest[rest.index(after: colon)...]
+        let value = rawValue.trimmingCharacters(in: .whitespaces)
+        guard !key.isEmpty, key.count <= 40, !value.isEmpty,
+              !rawValue.hasPrefix("//"),
+              key.rangeOfCharacter(from: CharacterSet(charactersIn: "*[]()`<>")) == nil
+        else { return nil }
+        return (key, value)
     }
 
     private static func oneLine(_ text: String) -> String {

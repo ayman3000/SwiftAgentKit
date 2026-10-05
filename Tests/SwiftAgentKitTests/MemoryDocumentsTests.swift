@@ -102,4 +102,35 @@ struct MemoryDocumentsTests {
     @Test func aBodyThatStartsWithAnotherHeadingIsKept() {
         #expect(MemoryDocuments.factBody("# T\n\n# Other\nx", title: "T") == "# Other\nx")
     }
+
+    // MARK: Fix round 1 — hand-edited USER.md keys
+
+    @Test func aBoldKeyWithTheColonOutsideIsTheSameKey() {
+        let doc = "# User\n\n- **Name**: Ayman\n"
+        #expect(MemoryDocuments.userValue("Name", in: doc) == "Ayman")
+        let out = MemoryDocuments.settingUserKey("name", value: "Ayman H", in: doc)
+        #expect(MemoryDocuments.userKeys(out).map { $0.key } == ["Name"])
+        #expect(MemoryDocuments.userValue("Name", in: out) == "Ayman H")
+    }
+
+    @Test func aPlainKeyLineIsTheSameKey() {
+        let doc = "# User\n\n- Name: Ayman\n- **Role:** Developer\n"
+        let out = MemoryDocuments.settingUserKey("Name", value: "Ayman H", in: doc)
+        #expect(MemoryDocuments.userKeys(out).map { $0.key } == ["Name", "Role"])
+        #expect(MemoryDocuments.userValue("Name", in: out) == "Ayman H")
+    }
+
+    @Test func linesThatAreNotKeyLinesStayUntouched() {
+        let long = "- This is a long sentence that happens to contain a colon much later: here"
+        let doc = "# User\n\nWhat the agent knows about you.\n- Prefers short answers\n- See https://example.com\n\(long)\n- **Name:** A\n"
+        #expect(MemoryDocuments.userKeys(doc).map { $0.key } == ["Name"])
+        let out = MemoryDocuments.settingUserKey("Name", value: "B", in: doc)
+        #expect(out == doc.replacingOccurrences(of: "- **Name:** A", with: "- **Name:** B"))
+    }
+
+    @Test func removingAKeyTrimsItLikeSettingDoes() {
+        let doc = "# User\n\n- **Name:** Ayman\n- **Role:** Dev\n"
+        let out = MemoryDocuments.removingUserKey("  Name \n", in: doc)
+        #expect(MemoryDocuments.userKeys(out).map { $0.key } == ["Role"])
+    }
 }

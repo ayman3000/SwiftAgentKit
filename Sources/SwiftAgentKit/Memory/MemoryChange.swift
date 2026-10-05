@@ -12,7 +12,10 @@ public struct MemoryChange: Sendable, Codable, Equatable {
     public enum Target: Sendable, Codable, Equatable, Hashable {
         case agentProfile
         case userProfile
-        case fact(title: String, project: String?)
+        /// `slug` names the fact's file when it is not the title's own slug
+        /// (a hand-made `notes.md` headed `# My Notes`); nil means
+        /// `slugify(title)`, so the common case compares equal without it.
+        case fact(title: String, project: String?, slug: String? = nil)
     }
     public var target: Target
     /// The file's full text before the write; nil when it did not exist.
@@ -33,12 +36,17 @@ public struct MemoryFact: Sendable, Equatable, Hashable, Identifiable {
     public var body: String
     /// nil = true everywhere.
     public var project: String?
-    public var id: String { (project ?? "") + "\u{1F}" + title.lowercased() }
+    /// The file's name without `.md`. Usually the title's slug, but a file
+    /// made by hand can be named anything; pass this to `deleteFact(slug:)`,
+    /// `moveFact(slug:)` to reach exactly this file.
+    public let slug: String
+    public var id: String { (project ?? "") + "\u{1F}" + slug }
 
-    public init(title: String, body: String, project: String?) {
+    public init(title: String, body: String, project: String?, slug: String? = nil) {
         self.title = title
         self.body = body
         self.project = project
+        self.slug = slug ?? FileAgentMemoryStore.slugify(title)
     }
 }
 
@@ -60,8 +68,13 @@ public enum MemoryStoreError: Error, Equatable {
 
 /// Memory file reads and writes are synchronous. Run them on a GCD thread,
 /// never on Swift's cooperative pool.
-enum MemoryFileWork {
-    static func run<T: Sendable>(_ body: @escaping @Sendable () throws -> T) async throws -> T {
+///
+/// ```swift
+/// let change = try await MemoryFileWork.run { try store.setUserKey("Name", value: "Ayman") }
+/// ```
+public enum MemoryFileWork {
+    /// Run `body` on a global utility queue and resume with its result.
+    public static func run<T: Sendable>(_ body: @escaping @Sendable () throws -> T) async throws -> T {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .utility).async {
                 continuation.resume(with: Result { try body() })

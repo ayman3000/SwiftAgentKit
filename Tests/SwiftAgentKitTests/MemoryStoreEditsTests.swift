@@ -113,4 +113,102 @@ struct MemoryStoreEditsTests {
         let again = try store.setUserKey("Name", value: "Ayman")
         #expect(again.before == again.after)
     }
+
+    // MARK: Fix round 1
+
+    @Test func aFailedMoveLeavesTheSourceInPlace() throws {
+        let (store, dir) = makeStore()
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755],
+                ofItemAtPath: dir.appendingPathComponent("memory/projects/locked").path)
+            try? FileManager.default.removeItem(at: dir)
+        }
+        try store.upsertFact(title: "Keep me", body: "precious", project: nil)
+        let locked = dir.appendingPathComponent("memory/projects/locked", isDirectory: true)
+        try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: locked.path)
+        #expect(throws: (any Error).self) { try store.moveFact(title: "Keep me", from: nil, to: "Locked") }
+        #expect(read(dir.appendingPathComponent("memory/keep-me.md")) == "# Keep me\n\nprecious\n")
+        #expect(store.snapshot().facts.contains { $0.title == "Keep me" && $0.project == nil })
+    }
+
+    @Test func movingWithinTheSameFolderIsANoOp() throws {
+        let (store, dir) = makeStore()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try store.upsertFact(title: "T", body: "body", project: "Quakely")
+        let changes = try store.moveFact(title: "T", from: "Quakely", to: "quakely")
+        #expect(changes.isEmpty)
+        #expect(read(dir.appendingPathComponent("memory/projects/quakely/t.md")) == "# T\n\nbody\n")
+    }
+
+    @Test func anAgentSaveTrimsAndMatchesTheSectionTitle() async throws {
+        let (store, dir) = makeStore()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        store.seedIfNeeded()
+        try await store.save(AgentMemoryEntry(kind: .agent, title: "  Tone \n", content: "Formal."))
+        let doc = read(dir.appendingPathComponent("AGENT.md")) ?? ""
+        #expect(MemoryDocuments.agentSection(.tone, in: doc) == "Formal.")
+        #expect(MemoryDocuments.agentSection(.principles, in: doc) == "")
+    }
+
+    @Test func aMultiLinePrincipleSaveIsOneBulletPerLineEachWithItsTitle() async throws {
+        let (store, dir) = makeStore()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        store.seedIfNeeded()
+        try await store.save(AgentMemoryEntry(kind: .agent, title: "Files", content: "Ask before deleting\n\n- Never overwrite silently"))
+        let doc = read(dir.appendingPathComponent("AGENT.md")) ?? ""
+        #expect(MemoryDocuments.agentSection(.principles, in: doc)
+                == "- Files: Ask before deleting\n- Files: Never overwrite silently")
+    }
+
+    @Test func aLoadAllSaveRoundTripLeavesTheProfileAlone() async throws {
+        let (store, dir) = makeStore()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        store.seedIfNeeded()
+        let before = read(dir.appendingPathComponent("AGENT.md"))
+        for entry in try await store.loadAll() where entry.kind == .agent {
+            try await store.save(entry)
+        }
+        try await store.save(AgentMemoryEntry(kind: .agent, title: "agent soul ", content: "anything"))
+        #expect(read(dir.appendingPathComponent("AGENT.md")) == before)
+    }
+
+    @Test func aTitleWithNoLettersGetsAStableSlug() throws {
+        #expect(FileAgentMemoryStore.slugify("🎉🎉") == FileAgentMemoryStore.slugify("🎉🎉"))
+        #expect(FileAgentMemoryStore.slugify("🎉🎉") != FileAgentMemoryStore.slugify("🚀"))
+        #expect(FileAgentMemoryStore.slugify("🎉🎉").hasPrefix("note-"))
+        let (store, dir) = makeStore()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try store.upsertFact(title: "🎉🎉", body: "party", project: nil)
+        try store.upsertFact(title: "🎉🎉", body: "party 2", project: nil)
+        #expect(store.snapshot().facts.filter { $0.title == "🎉🎉" }.count == 1)
+        try store.deleteFact(title: "🎉🎉", project: nil)
+        #expect(store.snapshot().facts.isEmpty)
+    }
+
+    @Test func aHandMadeFactIsAddressableByItsFileSlug() throws {
+        let (store, dir) = makeStore()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        store.seedIfNeeded()
+        let file = dir.appendingPathComponent("memory/notes.md")
+        try "# My Notes\n\nhand written\n".write(to: file, atomically: true, encoding: .utf8)
+        let fact = try #require(store.snapshot().facts.first)
+        #expect(fact.title == "My Notes")
+        #expect(fact.slug == "notes")
+        #expect(fact.body == "hand written")
+
+        // Move by slug keeps the file name and the heading, and undoes cleanly.
+        let changes = try store.moveFact(slug: fact.slug, from: nil, to: "Quakely")
+        #expect(read(dir.appendingPathComponent("memory/projects/quakely/notes.md")) == "# My Notes\n\nhand written\n")
+        #expect(read(file) == nil)
+        for change in changes.reversed() { try store.restore(change) }
+        #expect(read(file) == "# My Notes\n\nhand written\n")
+        #expect(read(dir.appendingPathComponent("memory/projects/quakely/notes.md")) == nil)
+
+        // Delete by slug, then undo.
+        let deleted = try store.deleteFact(slug: "notes", project: nil)
+        #expect(read(file) == nil)
+        try store.restore(deleted)
+        #expect(read(file) == "# My Notes\n\nhand written\n")
+    }
 }
