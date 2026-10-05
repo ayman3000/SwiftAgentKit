@@ -40,6 +40,9 @@ public final class RememberTool: AgentTool, @unchecked Sendable {
         required: ["text"]
     )
 
+    /// Longest note accepted, in characters.
+    public static let maxTextLength = 1000
+
     private let inbox: MemoryInbox
     private let activeProject: String?
 
@@ -58,6 +61,10 @@ public final class RememberTool: AgentTool, @unchecked Sendable {
         }
         guard !text.isEmpty else {
             return .error(toolCallId: "", toolName: name, message: "Error: `text` is required.")
+        }
+        guard text.count <= Self.maxTextLength else {
+            return .error(toolCallId: "", toolName: name,
+                          message: "Error: `text` is \(text.count) characters; the most is \(Self.maxTextLength). Write the note in one or two plain sentences.")
         }
         let about = (parameters["about"] as? String).flatMap { MemoryNote.About(rawValue: $0.lowercased()) }
         await inbox.add(MemoryNote(text: text, about: about, project: activeProject))

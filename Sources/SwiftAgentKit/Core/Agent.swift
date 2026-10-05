@@ -595,7 +595,16 @@ public actor Agent {
         try requireIdle()
         memoryStore = store
         memoryProject = project
-        guard store != nil else { memoryInbox = nil; return }
+        guard store != nil else {
+            // No stale memory tool may keep writing into an unreachable inbox
+            // or a detached store.
+            memoryInbox = nil
+            trackRegistrationTask(Task { [tools] in
+                await tools.unregister(named: "remember")
+                await tools.unregister(named: "update_agent_profile")
+            })
+            return
+        }
         let notes = inbox ?? MemoryInbox()
         memoryInbox = notes
         register(RememberTool(inbox: notes, activeProject: project))

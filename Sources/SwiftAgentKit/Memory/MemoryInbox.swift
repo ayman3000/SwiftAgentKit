@@ -62,11 +62,14 @@ public actor MemoryInbox {
     }
 
     /// Return notes a filing attempt did not cover, so the next run retries them.
+    /// They were drained before anything now waiting arrived, so they go
+    /// first, in the order given; arrival order is kept, never re-derived
+    /// from `createdAt` (equal or skewed clocks would reorder notes).
     public func putBack(_ failed: [MemoryNote]) {
         let retried = failed
             .map { note -> MemoryNote in var n = note; n.attempts += 1; return n }
             .filter { $0.attempts < Self.maxAttempts }
-        items = (retried + items).sorted { $0.createdAt < $1.createdAt }
+        items = retried + items
         trim()
     }
 
