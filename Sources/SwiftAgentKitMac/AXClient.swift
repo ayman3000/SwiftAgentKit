@@ -1187,10 +1187,23 @@ public actor AXClient: AXDriving {
     @discardableResult
     private func resolvePid(bundleId: String) throws -> pid_t {
         guard let pid = AppResolver.pid(forBundleId: bundleId) else {
+            if bundleId == Bundle.main.bundleIdentifier {
+                try Self.refuseOwnProcess(AppResolver.ownPid, bundleId: bundleId)
+            }
             throw MacDriverError(code: "not_running",
                                  message: "\(bundleId) is not running")
         }
+        try Self.refuseOwnProcess(pid, bundleId: bundleId)
         return pid
+    }
+
+    /// The agent's own window is never read or driven: Accessibility answers
+    /// a call into this process on the calling thread, so its SwiftUI views
+    /// would update off the main thread and the app would trap.
+    static func refuseOwnProcess(_ pid: pid_t, bundleId: String) throws {
+        guard pid == AppResolver.ownPid else { return }
+        throw MacDriverError(code: "own_app",
+                             message: "\(bundleId) is this app's own window — it can't be read or controlled from inside itself. Answer in the chat instead.")
     }
 
     private func checkTrust() throws {
