@@ -158,13 +158,10 @@ private final class Events: @unchecked Sendable {
         await registry.register(tool)
         let dispatcher = ToolDispatcher(registry: registry)
         await dispatcher.setTransientRetryDelay(.milliseconds(300))
-        let flag = Flag()
-        Task {
-            try? await Task.sleep(for: .milliseconds(50))
-            flag.set()
-        }
+        // Stop is pressed once the first attempt has run — during the wait —
+        // without racing a timer against a slow CI machine.
         let results = await dispatcher.dispatch(calls: [AgentToolCall(name: "read")], state: AgentState(),
-                                                observer: nil, isCancelled: { flag.value })
+                                                observer: nil, isCancelled: { script.callCount >= 1 })
         #expect(results[0].isError)
         #expect(results[0].result == "timed out")
         #expect(script.callCount == 1)
@@ -201,13 +198,6 @@ private final class Events: @unchecked Sendable {
         #expect(events.retried.map(\.recovered) == [true, true])
         #expect(Set(events.retried.map(\.firstError)) == ["a timed out", "b timed out"])
     }
-}
-
-private final class Flag: @unchecked Sendable {
-    private let lock = NSLock()
-    private var on = false
-    var value: Bool { lock.withLock { on } }
-    func set() { lock.withLock { on = true } }
 }
 
 private final class AgentHolder: @unchecked Sendable {

@@ -6,7 +6,7 @@ public enum AppResolver {
     public static func runningApps() -> [(name: String, bundleId: String)] {
         var seen = Set<String>()
         return NSWorkspace.shared.runningApplications
-            .filter { $0.activationPolicy == .regular }
+            .filter { $0.activationPolicy == .regular && $0.processIdentifier != ownPid }
             .compactMap { app -> (String, String)? in
                 guard let bid = app.bundleIdentifier else { return nil }
                 let name = app.localizedName ?? bid
@@ -21,8 +21,20 @@ public enum AppResolver {
         apps.filter { allowlist.contains($0.bundleId) }
     }
 
+    /// The agent's own process. Accessibility calls into it are answered
+    /// in-process, on the calling thread: its SwiftUI views would update off
+    /// the main thread, which traps. It is never a target.
+    public static var ownPid: pid_t { ProcessInfo.processInfo.processIdentifier }
+
+    /// A running copy of `bundleId` other than this process — another copy
+    /// with the same bundle id (a Debug build beside the installed app) is a
+    /// separate process and safe to read.
     public static func pid(forBundleId bundleId: String) -> pid_t? {
-        NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first?.processIdentifier
+        pid(in: NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).map(\.processIdentifier))
+    }
+
+    static func pid(in pids: [pid_t], own: pid_t = ownPid) -> pid_t? {
+        pids.first { $0 != own }
     }
 
     /// Whether the app at `path` answers AppleScript: it declares scripting in
