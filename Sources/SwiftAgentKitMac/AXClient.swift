@@ -1203,7 +1203,7 @@ public actor AXClient: AXDriving {
     static func refuseOwnProcess(_ pid: pid_t, bundleId: String) throws {
         guard pid == AppResolver.ownPid else { return }
         throw MacDriverError(code: "own_app",
-                             message: "\(bundleId) is this app's own window — it can't be read or controlled from inside itself. Answer in the chat instead.")
+                             message: "\(bundleId) is this app's own window — it can't be read or controlled from inside itself. Ask the user to do this step in the app themselves (say exactly where to click), then carry on.")
     }
 
     private func checkTrust() throws {
