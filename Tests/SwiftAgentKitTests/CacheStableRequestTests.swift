@@ -157,6 +157,12 @@ extension CacheStableRequestTests {
         return try #require(try provider.prepareRequest(request, stream: false).httpBody)
     }
 
+    /// The same request on the streaming path (`stream: true`).
+    static func streamWireBody(_ request: LLMRequest) throws -> Data {
+        let provider = OpenAIProvider(configuration: OpenAIProvider.openAI(apiKey: "k", model: "mock"))
+        return try #require(try provider.prepareRequest(request, stream: true).httpBody)
+    }
+
     /// The body's bytes up to (not including) the `]` that closes its messages
     /// array — "messages" is the first key of a sorted OpenAI body.
     static func messagesPrefix(_ body: Data) -> Data? {
@@ -254,5 +260,97 @@ extension CacheStableRequestTests {
         // The replayed `limit` is the integer the model sent, not `true`
         // (inside the body the arguments are a JSON string, so quotes are escaped).
         #expect(String(decoding: bodies[3], as: UTF8.self).contains(#"\"limit\":1,"#))
+    }
+}
+
+private struct StepTool: AgentTool {
+    let name = "run_step"
+    let description = "Run one step."
+    let parameters = ToolParameters(properties: [
+        "n": ToolParameterProperty(type: "integer", description: "step"),
+    ], required: ["n"])
+    func execute(parameters: [String: Any]) async throws -> AgentToolResult {
+        .success(toolCallId: "", toolName: name, result: String(repeating: "o", count: 600))
+    }
+}
+
+extension CacheStableRequestTests {
+    static func stepCalls(_ range: ClosedRange<Int>) -> [[LLMToolCall]] {
+        range.map { [LLMToolCall(id: "s\($0)", name: "run_step", arguments: #"{"n":\#($0)}"#)] }
+    }
+
+    /// For each consecutive pair of requests: nil when the later wire body
+    /// starts with the earlier one's messages (append-only); otherwise the
+    /// index of the first message that differs.
+    static func breakIndices(_ requests: [LLMRequest]) throws -> [Int?] {
+        try zip(requests, requests.dropFirst()).map { earlier, later in
+            let prefix = try #require(messagesPrefix(try wireBody(earlier)))
+            if try wireBody(later).starts(with: prefix) { return nil }
+            let pairs = Array(zip(earlier.messages, later.messages))
+            return pairs.firstIndex { $0.0 != $0.1 } ?? pairs.count
+        }
+    }
+
+    /// With a ContextSift batch between two calls, exactly that pair breaks,
+    /// and only from the first evicted step on: the system prompt and the
+    /// task are the same bytes, and the tool definitions never change.
+    @Test func anEvictionBatchBreaksThePrefixOnlyFromItsFirstEvictedStep() async throws {
+        let provider = ScriptedProvider(turns: Self.stepCalls(1...6) + [[]])
+        // Progress notes off: each is a tail-only break of its own (see
+        // aProgressNoteChangesOnlyTheTail), and this test counts batch breaks.
+        let agent = Agent(config: AgentConfig(provider: provider, model: "mock", systemPrompt: "BASE",
+                                              maxTurns: 8, tools: [StepTool()],
+                                              contextManager: ContextManager(inlineBudgetChars: 2_500),
+                                              loopDetection: nil, progressNudgeFractions: []))
+        _ = try await agent.run("do six steps")
+
+        let requests = provider.captured
+        #expect(requests.count == 7)
+        let breaks = try Self.breakIndices(requests)
+        // Budget ≈ 2,500 − the system prompt (about 470 characters): the fifth
+        // call is the first over it, and one batch evicts steps 1–3.
+        #expect(breaks.compactMap { $0 } == [2], "one batch, starting at the first step")
+        let batch = try #require(breaks.firstIndex { $0 != nil })
+        let later = requests[batch + 1]
+        #expect(later.messages[2].content.hasPrefix(ContextManager.receiptHeader))
+        // Byte level: both bodies start with the same system prompt and task.
+        let shared = try #require(Self.messagesPrefix(try Self.wireBody(
+            LLMRequest(model: "mock", messages: Array(later.messages.prefix(2)), tools: later.tools))))
+        #expect(try Self.wireBody(requests[batch]).starts(with: shared))
+        #expect(try Self.wireBody(later).starts(with: shared))
+        let tools = try requests.map { Self.toolsSection(try Self.wireBody($0)) }
+        #expect(Set(tools.compactMap { $0 }).count == 1)
+
+        // The streaming body (`stream: true`) holds the same promise: append-only
+        // between batches, and the batch call keeps the system prompt and task.
+        let streamed = try requests.map(Self.streamWireBody)
+        for (pair, index) in breaks.enumerated() {
+            let prefix = try #require(Self.messagesPrefix(streamed[pair]))
+            #expect(streamed[pair + 1].starts(with: prefix) == (index == nil), "streamed pair \(pair)")
+        }
+        #expect(streamed[batch].starts(with: shared) && streamed[batch + 1].starts(with: shared))
+    }
+
+    /// A progress note is for its call only: the next call drops it, so that
+    /// pair breaks exactly at the note — the earlier request's last message —
+    /// and nothing before it changes. (Default nudges: turns 4 and 6 of 8.)
+    @Test func aProgressNoteChangesOnlyTheTail() async throws {
+        let provider = ScriptedProvider(turns: Self.stepCalls(1...6) + [[]])
+        let agent = Agent(config: AgentConfig(provider: provider, model: "mock", systemPrompt: "BASE",
+                                              maxTurns: 8, tools: [StepTool()],
+                                              contextManager: ContextManager(inlineBudgetChars: 100_000),
+                                              loopDetection: nil))
+        _ = try await agent.run("do six steps")
+        let requests = provider.captured
+        #expect(requests.count == 7)
+        let breaks = try Self.breakIndices(requests)
+        #expect(breaks.compactMap { $0 }.count == 2)
+        for (pair, index) in breaks.enumerated() {
+            guard let index else { continue }
+            let noted = requests[pair].messages
+            #expect(index == noted.count - 1)
+            #expect(noted.last?.role == .user)
+            #expect(noted.last?.content.hasPrefix("[Progress check]") == true)
+        }
     }
 }
