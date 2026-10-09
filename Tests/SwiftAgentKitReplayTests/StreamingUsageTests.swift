@@ -28,3 +28,13 @@ import SwiftAgentKit
     #expect(usage?.promptTokens == 123)
     #expect(usage?.completionTokens == 45)
 }
+
+/// Cache writes (Anthropic) reach the host apart from reads, so it can price
+/// them at their own rate.
+@Test func usageCarriesCacheWritesFromTheProvider() {
+    let u = AgentTokenUsage.from(LLMUsage(promptTokens: 990, completionTokens: 3, totalTokens: 993,
+                                          cachedTokens: 900, cacheWriteTokens: 40))
+    #expect(u?.cachedTokens == 900)
+    #expect(u?.cacheWriteTokens == 40)
+    #expect(AgentTokenUsage.from(LLMUsage(promptTokens: 5))?.cacheWriteTokens == nil)
+}
