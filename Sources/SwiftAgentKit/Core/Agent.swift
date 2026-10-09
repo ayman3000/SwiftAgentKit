@@ -1090,8 +1090,8 @@ public actor Agent {
                     await compactHistory(reason: .nearLimit)
                 }
 
-                // Get messages for LLM call (trimmed to context window)
-                var messagesForLLM = conversation.messagesForLLMCall()
+                // The history this call starts from (see historyForCall)
+                var messagesForLLM = historyForCall()
                 // Budget checkpoint: transient system note for THIS call only
                 // (not appended to the conversation), nudging the model to
                 // reassess instead of grinding one subproblem to the turn cap.
@@ -1138,7 +1138,7 @@ public actor Agent {
                                 plan: plan,
                                 startTime: startTime
                             )
-                            _ = conversation.trim()
+                            trimAfterStep()
                             continue
                         }
                         onText?(intercepted.text)
@@ -1182,7 +1182,7 @@ public actor Agent {
                         if !overflowCompacted, !isCancelled, ContextCompaction.isContextOverflow(error),
                            await compactHistory(reason: .overflow) != nil {
                             overflowCompacted = true
-                            messagesForLLM = conversation.messagesForLLMCall()
+                            messagesForLLM = historyForCall()
                             request = await makeLLMRequest(messagesForLLM: messagesForLLM, tools: llmToolDefs)
                             continue
                         }
@@ -1401,7 +1401,7 @@ public actor Agent {
                 )
 
                 // Trim conversation
-                _ = conversation.trim()
+                trimAfterStep()
             }
 
             // Max turns reached
@@ -1419,7 +1419,7 @@ public actor Agent {
 
         } else {
             // Single-shot or multi-turn chat (no tools)
-            let messagesForLLM = conversation.messagesForLLMCall()
+            let messagesForLLM = historyForCall()
             let request = await makeLLMRequest(messagesForLLM: messagesForLLM)
 
             emit(.llmCallStarted(turn: 1))
@@ -1461,7 +1461,7 @@ public actor Agent {
                 if reasoningTimedOut, agentResponse.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     conversation.append(.assistant(""))
                     conversation.append(.user("You have been reasoning for a long time without answering, so that step was stopped. Give your answer now."))
-                    let again = await makeLLMRequest(messagesForLLM: conversation.messagesForLLMCall())
+                    let again = await makeLLMRequest(messagesForLLM: historyForCall())
                     agentResponse = try await executeTurn(request: again, onText: onText, onReasoning: onReasoning)
                 }
             } catch {
@@ -1785,15 +1785,96 @@ public actor Agent {
         return (before, after)
     }
 
+    /// The stored history a call starts from. With a ContextManager, all of
+    /// it: ContextSift bounds what is sent, and trimming the stored history
+    /// first slid the window on every call once it passed 80% of the window.
+    /// Without one, trimmed to fit, as before.
+    private func historyForCall() -> [AgentMessage] {
+        config.contextManager == nil ? conversation.messagesForLLMCall() : conversation.allMessages()
+    }
+
+    /// After a step: the message-count cap, and — only without a
+    /// ContextManager — the token trim. Every removal is reported.
+    private func trimAfterStep() {
+        let result = conversation.trim(byTokens: config.contextManager == nil)
+        if result.removed > 0 {
+            emit(.historyTrimmed(removedCount: result.removed, remainingCount: result.remaining))
+        }
+    }
+
+    /// The estimator's token count for a request: characters ÷ 3.5 plus 4 per message.
+    static func estimatedTokens(_ messages: [LLMMessage]) -> Int {
+        let chars = messages.reduce(0) { $0 + $1.content.count }
+        return Int((Double(chars) / 3.5).rounded()) + messages.count * 4
+    }
+
+    /// The old fit's estimate (`Conversation.estimateTokens`: the
+    /// conversation's tokenCounter, or characters ÷ charsPerToken with a fixed
+    /// budget per tool-result image) of what one call sends: the sifted
+    /// messages AND the tool definitions, which the old fit left to its 20%
+    /// headroom.
+    func estimatedRequestTokens(_ messages: [LLMMessage], tools: [LLMToolDefinition]) -> Int {
+        let asStored = messages.map { message -> AgentMessage in
+            let calls = (message.toolCalls ?? []).map { $0.name + $0.arguments }.joined()
+            switch message.role {
+            case .system:
+                return .system(message.content)
+            case .user:
+                return .user(message.content, images: message.images)
+            case .assistant:
+                return .assistant(message.content + calls)
+            case .tool:
+                return .tool(results: [.success(toolCallId: message.toolCallId ?? "", toolName: nil,
+                                                result: message.content, images: message.images)])
+            }
+        }
+        return conversation.estimateTotalTokens(asStored) + toolDefinitionTokens(tools)
+    }
+
+    /// The tool definitions' share of a request, at the conversation's
+    /// characters per token.
+    func toolDefinitionTokens(_ tools: [LLMToolDefinition]) -> Int {
+        let chars = tools.reduce(0) { $0 + Self.toolDefinitionChars($1) }
+        return Int((Double(chars) / conversation.charsPerToken).rounded(.up))
+    }
+
+    /// A tool definition's size on the wire: name, description and the
+    /// sorted-key JSON of its schema.
+    static func toolDefinitionChars(_ tool: LLMToolDefinition) -> Int {
+        let schema = (try? JSONSerialization.data(withJSONObject: tool.parameters, options: [.sortedKeys]))?.count ?? 0
+        return tool.name.count + tool.description.count + schema
+    }
+
     private func makeLLMRequest(
         messagesForLLM: [AgentMessage],
         tools: [LLMToolDefinition] = []
     ) async -> LLMRequest {
-        let llmMessages: [LLMMessage]
+        var llmMessages: [LLMMessage]
         if let contextManager = config.contextManager {
             // ContextSift-style: externalize completed tool exchanges.
             llmMessages = await contextManager.modelMessages(messagesForLLM) { [state] content in
                 state.template(content)
+            }
+            // Safety net: the sifted request does not fit the old fit's
+            // bound (80% of the window less the output reserve), its tool
+            // definitions counted — compaction off, or a model that would
+            // truncate it silently (local Ollama drops the system prompt and
+            // tools first). This call falls back to the stored history
+            // trimmed to fit beside those definitions; nothing stored is
+            // deleted, and the trim is reported. Messages the caller added
+            // past the stored history for this call only (a progress nudge)
+            // are kept after the trimmed history.
+            if estimatedRequestTokens(llmMessages, tools: tools) > conversation.fitBudgetTokens {
+                let storedCount = conversation.allMessages().count
+                let trimmed = conversation.messagesForLLMCall(reservingTokens: toolDefinitionTokens(tools))
+                if trimmed.count < storedCount {
+                    emit(.historyTrimmed(removedCount: storedCount - trimmed.count,
+                                         remainingCount: trimmed.count))
+                    let transient = messagesForLLM.count > storedCount ? Array(messagesForLLM.dropFirst(storedCount)) : []
+                    llmMessages = await contextManager.modelMessages(trimmed + transient) { [state] content in
+                        state.template(content)
+                    }
+                }
             }
         } else {
             llmMessages = messagesForLLM.flatMap { msg -> [LLMMessage] in
@@ -1806,9 +1887,7 @@ public actor Agent {
 
         // Record the size of what we actually send (post context-management), so
         // an app can show real context usage rather than raw-history size.
-        let promptChars = llmMessages.reduce(0) { $0 + $1.content.count }
-        let estimate = Int((Double(promptChars) / 3.5).rounded()) + llmMessages.count * 4
-        lastPromptTokens = estimate
+        lastPromptTokens = Self.estimatedTokens(llmMessages)
         if firstRequestPending {
             firstRequestPending = false
             firstRequestSystemDigest = PromptDigest.hex(
