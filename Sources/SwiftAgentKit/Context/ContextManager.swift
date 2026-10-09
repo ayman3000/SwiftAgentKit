@@ -112,6 +112,65 @@ public final class ContextManager: @unchecked Sendable {
     /// byte-stable between eviction events so provider prompt caches hit.
     public var evictionTargetFraction: Double = 0.5
 
+    /// A batch happens only when at least this share of the message budget
+    /// can be evicted at once. Between batches the model-facing prefix is
+    /// byte-identical, so provider prompt caches hit — even when what cannot
+    /// be evicted (the floor) already fills the budget, where evicting one
+    /// step per call used to change the prefix on every call.
+    public var minEvictionBatchFraction: Double = 0.25
+
+    /// Headroom above the floor a batch evicts down to, as a share of the
+    /// message budget: the target is `max(budget × evictionTargetFraction,
+    /// floor + budget × evictionSlackFraction)`.
+    public var evictionSlackFraction: Double = 0.10
+
+    /// The messages' budget never drops below this share of
+    /// `inlineBudgetChars`, however long the system prompt is.
+    public var minMessageBudgetFraction: Double = 0.25
+
+    /// What the messages may use: the inline budget less the system prompt,
+    /// so system + messages keep the ceiling `inlineBudgetChars` always
+    /// meant. The system prompt itself is not sifted — it is the same on
+    /// every call and nothing here can shrink it.
+    public func messageBudget(systemChars: Int) -> Int {
+        let floor = Int(Double(inlineBudgetChars) * min(1, max(0, minMessageBudgetFraction)))
+        return max(floor, inlineBudgetChars - systemChars)
+    }
+
+    /// How many of `candidates` (sizes of the evictable steps, oldest first)
+    /// one pass evicts. Pure.
+    /// - `remaining`: message characters still sent inline (earlier
+    ///   evictions already taken off).
+    /// - Nothing goes while `remaining` fits the budget, or while less than a
+    ///   minimum batch is evictable. Otherwise a batch frees at least
+    ///   `max(remaining − target, minimum batch)`, where target is
+    ///   `max(budget × targetFraction, floor + budget × slackFraction)` and
+    ///   the floor is what cannot be evicted.
+    public static func evictionCount(candidates: [Int], remaining: Int, budget: Int,
+                                     targetFraction: Double, minBatchFraction: Double,
+                                     slackFraction: Double) -> Int {
+        guard remaining > budget, !candidates.isEmpty else { return 0 }
+        func share(_ fraction: Double) -> Int { Int((Double(budget) * min(1, max(0, fraction))).rounded(.up)) }
+        let evictable = candidates.reduce(0, +)
+        let minBatch = share(minBatchFraction)
+        guard evictable >= max(1, minBatch) else { return 0 }
+        let floor = remaining - evictable
+        let target = max(Int(Double(budget) * min(1, max(0, targetFraction))), floor + share(slackFraction))
+        let needed = max(remaining - target, minBatch)
+        var freed = 0
+        var count = 0
+        for size in candidates where freed < needed {
+            freed += size
+            count += 1
+        }
+        return count
+    }
+
+    /// What a message weighs for sifting: its text plus its tool results.
+    static func size(of message: AgentMessage) -> Int {
+        message.content.count + (message.toolResults?.reduce(0) { $0 + $1.result.count } ?? 0)
+    }
+
     /// Head-message ids of exchanges evicted by previous calls. Sticky —
     /// never un-evicted — so the prefix cannot flap.
     private var stickyEvicted: Set<UUID> = []
@@ -145,10 +204,7 @@ public final class ContextManager: @unchecked Sendable {
                 indices.append(j)
                 j += 1
             }
-            let chars = indices.reduce(0) { sum, idx in
-                sum + rest[idx].content.count
-                    + (rest[idx].toolResults?.reduce(0) { $0 + $1.result.count } ?? 0)
-            }
+            let chars = indices.reduce(0) { $0 + Self.size(of: rest[$1]) }
             spans.append(ExchangeSpan(head: i, indices: indices, chars: chars))
             i = j
         }
@@ -188,19 +244,23 @@ public final class ContextManager: @unchecked Sendable {
             .filter { $0.role == .system }
             .map { systemTemplate($0.content) }
             .filter { !$0.isEmpty }
+        let systemText = systemBlocks.joined(separator: "\n\n")
 
         let rest = messages.filter { $0.role != .system }
 
-        // Budget gate: while the whole conversation is small, keep everything
-        // inline (full tool calls + results, no ledger) so the model has its
-        // complete recent history. Only externalize once context grows large.
-        let totalChars = messages.reduce(0) { sum, m in
-            sum + m.content.count + (m.toolResults?.reduce(0) { $0 + $1.result.count } ?? 0)
-        }
-        if totalChars <= inlineBudgetChars {
+        // What sifting measures is the messages, not the system prompt: that
+        // is the same on every call and nothing here can shrink it. It comes
+        // off the budget instead (`messageBudget`).
+        let budget = messageBudget(systemChars: systemText.count)
+        let restChars = rest.reduce(0) { $0 + Self.size(of: $1) }
+
+        // Budget gate: while the messages are small, keep everything inline
+        // (full tool calls + results, no receipts) so the model has its
+        // complete recent history. Only externalize once they grow large.
+        if restChars <= budget {
             var inline: [LLMMessage] = []
-            if !systemBlocks.isEmpty { inline.append(.system(systemBlocks.joined(separator: "\n\n"))) }
-            for message in rest where message.role != .system {
+            if !systemText.isEmpty { inline.append(.system(systemText)) }
+            for message in rest {
                 inline.append(contentsOf: message.toLLMMessages())
             }
             return inline
@@ -210,55 +270,47 @@ public final class ContextManager: @unchecked Sendable {
 
         // Map each tool-call id → its call, so a receipt can name the invocation
         // (e.g. the shell command), not just the tool. Built here (before the
-        // eviction loop) so we can look up a read's file path while deciding what
-        // to keep.
+        // eviction pass) so we can look up a read's file path while deciding
+        // what to keep.
         var callsByID: [String: AgentToolCall] = [:]
         for message in rest where message.role == .assistant {
             for call in message.toolCalls ?? [] { callsByID[call.id] = call }
         }
 
-        // The `rest` index of the most-recent read of each distinct file path —
-        // these exchanges are kept inline so the model doesn't re-read the file.
+        // The `rest` index of the most-recent read of each distinct target —
+        // these exchanges are kept inline so the model doesn't re-read it.
         let latestReadIndexByPath = keepLatestReadsInline
             ? latestReadIndices(in: rest, upTo: activeStart, callsByID: callsByID)
             : [:]
         let protectedIndices = Set(latestReadIndexByPath.values)
 
-        // Over budget: externalize whole tool exchanges OLDEST-FIRST, keeping
-        // the most RECENT tool results inline. An exchange is an
-        // assistant-with-toolCalls turn plus its following tool-result messages;
-        // evicting whole exchanges keeps tool_call/result pairing valid.
-        //
-        // CACHE-STABILITY HYSTERESIS: continuous eviction (evict just enough,
-        // every turn) changes the model-facing prefix on every call, so
-        // provider prompt caches never hit. Instead, evictions are STICKY
-        // (remembered by message id, never undone) and a budget breach evicts
-        // down to `evictionTargetFraction` of the budget — then the evicted
-        // set, the ledger, and the whole prefix stay byte-stable until roughly
-        // half a budget of new content accumulates.
-        var externalized = Set<Int>()   // indices in `rest` to move to the ledger
-        var remaining = totalChars
+        // Over budget: externalize whole tool exchanges OLDEST-FIRST, in
+        // BATCHES. An exchange is an assistant-with-toolCalls turn plus its
+        // following tool-result messages; evicting whole exchanges keeps
+        // tool_call/result pairing valid. Evictions are sticky (remembered by
+        // message id, never undone), and a new batch happens only when at
+        // least `minEvictionBatchFraction` of the budget can go at once
+        // (`evictionCount`): between batches the prefix stays byte-identical.
+        var externalized = Set<Int>()   // indices in `rest` that are evicted
+        var remaining = restChars
         let spans = exchangeSpans(in: rest, upTo: activeStart)
         let sticky = currentStickyEvicted()
         for span in spans where sticky.contains(rest[span.head].id) {
             span.indices.forEach { externalized.insert($0) }
             remaining -= span.chars
         }
-        if remaining > inlineBudgetChars {
-            let fraction = min(1, max(0, evictionTargetFraction))
-            let target = Int(Double(inlineBudgetChars) * fraction)
-            var newlyEvicted: [UUID] = []
-            for span in spans where !externalized.contains(span.head) {
-                guard remaining > target else { break }
-                // Keep the whole exchange inline if it holds a latest-per-path
-                // read (preserving tool_call/result pairing); evict the rest.
-                // Sticky evictions above are exempt — never un-evict.
-                if span.indices.contains(where: { protectedIndices.contains($0) }) { continue }
-                span.indices.forEach { externalized.insert($0) }
-                remaining -= span.chars
-                newlyEvicted.append(rest[span.head].id)
-            }
-            if !newlyEvicted.isEmpty { rememberEvicted(newlyEvicted) }
+        // A step holding a latest-per-target read is part of the floor.
+        let candidates = spans.filter { span in
+            !externalized.contains(span.head) && !span.indices.contains { protectedIndices.contains($0) }
+        }
+        let count = Self.evictionCount(
+            candidates: candidates.map(\.chars), remaining: remaining, budget: budget,
+            targetFraction: evictionTargetFraction, minBatchFraction: minEvictionBatchFraction,
+            slackFraction: evictionSlackFraction)
+        if count > 0 {
+            let batch = candidates.prefix(count)
+            for span in batch { span.indices.forEach { externalized.insert($0) } }
+            rememberEvicted(batch.map { rest[$0.head].id })
         }
 
         // Receipts for the externalized (older) tool results only.
