@@ -139,6 +139,23 @@ public final class ContextManager: @unchecked Sendable {
         return max(floor, inlineBudgetChars - systemChars)
     }
 
+    /// A fresh manager over the same store with every setting copied — for a
+    /// sub-agent. Evictions, receipts and spill ids are per conversation and
+    /// start empty.
+    public func childManager() -> ContextManager {
+        let child = ContextManager(store: store, maxActiveResultChars: maxActiveResultChars,
+                                   ledgerEntries: ledgerEntries, summaryLength: summaryLength,
+                                   inlineBudgetChars: inlineBudgetChars,
+                                   keepLatestReadsInline: keepLatestReadsInline,
+                                   readToolNames: readToolNames, readIdentityParams: readIdentityParams)
+        child.eagerPersistMinChars = eagerPersistMinChars
+        child.evictionTargetFraction = evictionTargetFraction
+        child.minEvictionBatchFraction = minEvictionBatchFraction
+        child.evictionSlackFraction = evictionSlackFraction
+        child.minMessageBudgetFraction = minMessageBudgetFraction
+        return child
+    }
+
     /// How many of `candidates` (sizes of the evictable steps, oldest first)
     /// one pass evicts. Pure.
     /// - `remaining`: message characters still sent inline (earlier

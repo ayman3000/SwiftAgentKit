@@ -741,3 +741,18 @@ private struct ViewImageStub: AgentTool {
     let child = await SubAgentSpawner(parent: agent).makeChild()
     #expect(await child.callbacks?.beforeTool != nil)
 }
+
+/// A sub-agent's sim_ui/mac_ui reads are protected like the parent's: the
+/// child manager used to drop readIdentityParams (and fall back to `path`,
+/// which those tools don't have).
+@Test func testChildContextManagerKeepsTheParentsReadProtection() async throws {
+    let parentCM = ContextManager(readToolNames: ["read_file", "sim_ui"], readIdentityParams: ["sim_ui": "bundle_id"])
+    parentCM.minEvictionBatchFraction = 0.3
+    let agent = Agent(config: AgentConfig(provider: PlainAnswerProvider(text: "x"), contextManager: parentCM))
+    let child = await SubAgentSpawner(parent: agent).makeChild()
+    let childCM = try #require(child.config.contextManager)
+    #expect(childCM !== parentCM)
+    #expect(childCM.readToolNames == ["read_file", "sim_ui"])
+    #expect(childCM.readIdentityParams == ["sim_ui": "bundle_id"])
+    #expect(childCM.minEvictionBatchFraction == 0.3)
+}

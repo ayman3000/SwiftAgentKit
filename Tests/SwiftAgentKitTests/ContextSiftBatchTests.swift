@@ -173,3 +173,32 @@ extension ContextSiftBatchTests {
         #expect(batched.contains { $0.role == .assistant && $0.content.hasPrefix(ContextManager.receiptHeader) })
     }
 }
+
+extension ContextSiftBatchTests {
+    @Test func aChildManagerCopiesEverySetting() {
+        let parent = ContextManager(maxActiveResultChars: 1_234, ledgerEntries: 7, summaryLength: 99,
+                                    inlineBudgetChars: 5_555, keepLatestReadsInline: false,
+                                    readToolNames: ["read_file", "sim_ui"],
+                                    readIdentityParams: ["sim_ui": "bundle_id"])
+        parent.eagerPersistMinChars = 42
+        parent.evictionTargetFraction = 0.4
+        parent.minEvictionBatchFraction = 0.3
+        parent.evictionSlackFraction = 0.2
+        parent.minMessageBudgetFraction = 0.35
+        let child = parent.childManager()
+        #expect(child !== parent)
+        #expect(child.store === parent.store)
+        #expect(child.maxActiveResultChars == 1_234)
+        #expect(child.ledgerEntries == 7)
+        #expect(child.summaryLength == 99)
+        #expect(child.inlineBudgetChars == 5_555)
+        #expect(child.keepLatestReadsInline == false)
+        #expect(child.readToolNames == ["read_file", "sim_ui"])
+        #expect(child.readIdentityParams == ["sim_ui": "bundle_id"])
+        #expect(child.eagerPersistMinChars == 42)
+        #expect(child.evictionTargetFraction == 0.4)
+        #expect(child.minEvictionBatchFraction == 0.3)
+        #expect(child.evictionSlackFraction == 0.2)
+        #expect(child.minMessageBudgetFraction == 0.35)
+    }
+}
