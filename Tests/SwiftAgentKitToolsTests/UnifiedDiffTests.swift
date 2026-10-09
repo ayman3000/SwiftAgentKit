@@ -149,4 +149,50 @@ struct UnifiedDiffTests {
         #expect(nearby.contains("line10"))
         #expect(nearby.contains("10 |"))   // numbered, so the model can re-anchor
     }
+
+    // MARK: - One file per call (Naseem, 2026-10-09)
+
+    /// A model put PomoApp.swift's and project.pbxproj's hunks in one patch
+    /// with path=PomoApp.swift; the pbxproj hunk "didn't match" the Swift file.
+    @Test func targetsListsEachFileTheDiffChanges() {
+        let patch = """
+        --- a/Pomo/PomoApp.swift
+        +++ b/Pomo/PomoApp.swift
+        @@ -1,1 +1,1 @@
+        -a
+        +b
+        --- a/Pomo.xcodeproj/project.pbxproj
+        +++ b/Pomo.xcodeproj/project.pbxproj
+        @@ -1,1 +1,1 @@
+        -c
+        +d
+        """
+        #expect(UnifiedDiff.targets(in: patch) == ["Pomo/PomoApp.swift", "Pomo.xcodeproj/project.pbxproj"])
+        #expect(UnifiedDiff.targets(in: "--- a/f.txt\n+++ b/f.txt\n@@ -1 +1 @@\n-a\n+b") == ["f.txt"])
+        #expect(UnifiedDiff.targets(in: "@@ -1 +1 @@\n-a\n+b").isEmpty)
+    }
+
+    @Test func aMultiFilePatchIsRefusedWithBothNames() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("sak-patch-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("a.txt")
+        try "a\n".write(to: file, atomically: true, encoding: .utf8)
+        let patch = "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-a\n+A\n--- a/b.txt\n+++ b/b.txt\n@@ -1 +1 @@\n-b\n+B"
+        let r = try await PatchFileTool().execute(parameters: ["path": file.path, "patch": patch])
+        #expect(r.isError)
+        #expect(r.result.contains("a.txt") && r.result.contains("b.txt"))
+        #expect(r.result.contains("one file per call"))
+        #expect(try String(contentsOf: file, encoding: .utf8) == "a\n")
+    }
+
+    @Test func aFolderPathIsNamedAsAFolder() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("sak-patch-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let r = try await PatchFileTool().execute(parameters: ["path": dir.path, "patch": "@@ -1 +1 @@\n-a\n+b"])
+        #expect(r.isError)
+        #expect(r.result.contains("is a folder"))
+        #expect(!r.result.contains("Use write_file"))
+    }
 }

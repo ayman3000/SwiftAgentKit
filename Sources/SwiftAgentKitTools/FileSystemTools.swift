@@ -188,6 +188,7 @@ public struct PatchFileTool: AgentTool {
     public let name = "apply_patch"
     public let description = """
     Edit an existing file by applying a unified diff (git / `diff -u` format). \
+    One file per call: `path` is that file; to change two files, call it twice. \
     Provide the smallest diff that makes the change — one or more `@@` hunks with \
     a few lines of surrounding context; `-` lines are removed, `+` lines added. \
     Line numbers in `@@` headers may be approximate (matched by context, tolerant \
@@ -237,6 +238,23 @@ public struct PatchFileTool: AgentTool {
         let path = policy?.resolve(raw) ?? expandPath(raw)
         if let policy, let reason = policy.blockReason(for: path) {
             return .error(toolCallId: "", toolName: name, message: "Refusing to patch \(raw): \(reason).")
+        }
+        // One file per call. A diff spanning two files had all its hunks tried
+        // against `path`, and the second file's hunk "didn't match" (Naseem,
+        // 2026-10-09: PomoApp.swift + project.pbxproj in one patch).
+        let targets = UnifiedDiff.targets(in: patch)
+        if targets.count > 1 {
+            return .error(toolCallId: "", toolName: name, message: """
+            This patch changes \(targets.count) files (\(targets.joined(separator: ", "))); apply_patch takes \
+            one file per call. Nothing was changed. Send one apply_patch per file, each with that file's `path`.
+            """)
+        }
+        var isDir: ObjCBool = false
+        if FileManager.default.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue {
+            return .error(toolCallId: "", toolName: name, message: """
+            \(raw) is a folder. `path` must be the file the diff changes\
+            \(targets.first.map { " (this diff names \($0))" } ?? ""). Nothing was changed.
+            """)
         }
         guard let data = FileManager.default.contents(atPath: path) else {
             return .error(toolCallId: "", toolName: name,
