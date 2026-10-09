@@ -963,6 +963,7 @@ public actor Agent {
         await awaitPendingRegistrations()
         resetCancellation()
         firstRequestPending = true
+        firstRequestSystemDigest = nil   // this run's, never the previous run's
         let startTime = Date()
         emit(.started(query: query))
 
