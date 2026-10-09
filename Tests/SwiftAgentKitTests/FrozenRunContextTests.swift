@@ -248,3 +248,19 @@ struct FrozenRunContextTests {
         #expect(Agent.renderSystemPrompt(base: "B", parts: none, toolLine: "\nT", groupIndex: "") == "B\nT")
     }
 }
+
+extension FrozenRunContextTests {
+    /// A child's prompt is new on every spawn and carries memory as it is
+    /// then — a parent's frozen context does not hold it back.
+    @Test func aSubAgentReadsCurrentMemoryAndNeverFreezes() async throws {
+        let memory = TextMemoryStore("MEMORY v1")
+        let parent = Agent(config: AgentConfig(provider: ScriptedProvider(turns: []), model: "mock",
+                                               systemPrompt: "BASE", maxTurns: 1, freezeRunContext: true))
+        try await parent.setMemoryStore(memory)
+        _ = try await parent.run("one")
+        memory.text = "MEMORY v2"
+        let child = await SubAgentSpawner(parent: parent).makeChild()
+        #expect(child.config.systemPrompt?.contains("MEMORY v2") == true)
+        #expect(child.config.freezeRunContext == false)
+    }
+}
