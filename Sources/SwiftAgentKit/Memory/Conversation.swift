@@ -99,15 +99,34 @@ public class Conversation: @unchecked Sendable {
 
     /// Get messages trimmed to fit the context window.
     public func messagesForLLMCall() -> [AgentMessage] {
+        messagesForLLMCall(reservingTokens: 0)
+    }
+
+    /// Messages trimmed to fit `fitBudgetTokens` less `reservedTokens`: what
+    /// the call sends besides the messages (its tool definitions).
+    public func messagesForLLMCall(reservingTokens reservedTokens: Int) -> [AgentMessage] {
         lock.lock()
         defer { lock.unlock() }
-        return ensureContextWindowFits(messages: messages)
+        return ensureContextWindowFits(messages: messages, reserving: reservedTokens)
+    }
+
+    /// The fit's bound: 80% of the window less the output reserve. The 20%
+    /// left over absorbs the estimator's error.
+    public var fitBudgetTokens: Int {
+        max(0, Int(Double(contextWindow - outputReserve) * 0.8))
     }
 
     // MARK: - Trim
 
     /// Trim history to stay within both message-count and token-budget limits.
     public func trim() -> (removed: Int, remaining: Int) {
+        trim(byTokens: true)
+    }
+
+    /// Trim history: the message-count cap, and — when `byTokens` — the
+    /// token budget. An agent with a ContextManager passes false: ContextSift
+    /// bounds what is sent, and the token trim deleted stored history for good.
+    public func trim(byTokens: Bool) -> (removed: Int, remaining: Int) {
         lock.lock()
         defer { lock.unlock() }
 
@@ -122,7 +141,7 @@ public class Conversation: @unchecked Sendable {
         }
 
         // 2. Token-budget trim
-        trimmed = trimByTokens(trimmed)
+        if byTokens { trimmed = trimByTokens(trimmed) }
 
         let removed = messages.count - trimmed.count
         messages = trimmed
@@ -252,9 +271,9 @@ public class Conversation: @unchecked Sendable {
         return trimmed + [lastUser]
     }
 
-    /// Trim to fit within 80% of the context window.
-    private func ensureContextWindowFits(messages: [AgentMessage]) -> [AgentMessage] {
-        let budget = max(0, Int(Double(contextWindow - outputReserve) * 0.8))
+    /// Trim to fit within 80% of the context window, less `reserving` tokens.
+    private func ensureContextWindowFits(messages: [AgentMessage], reserving: Int = 0) -> [AgentMessage] {
+        let budget = max(0, fitBudgetTokens - reserving)
         var trimmed = messages
 
         while estimateTotalTokens(trimmed) > budget && trimmed.contains(where: { $0.role != .system }) {

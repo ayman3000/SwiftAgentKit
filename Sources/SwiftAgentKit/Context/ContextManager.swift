@@ -3,9 +3,9 @@
 //  SwiftAgentKit
 //
 //  ContextSift-style context management: keep the full main conversation, but
-//  move *completed* tool exchanges out of active model context — replaced by a
-//  compact receipt ledger, with full outputs preserved in an `ArtifactStore` and
-//  retrievable on demand via `artifact_read` / `artifact_search`.
+//  move *completed* tool exchanges out of active model context — each replaced,
+//  in its own place, by compact receipts, with full outputs preserved in an
+//  `ArtifactStore` and retrievable on demand via `artifact_read` / `artifact_search`.
 //
 //  Opt-in: set `AgentConfig.contextManager`. When nil, the agent uses its normal
 //  (trim-based) context handling and behaves exactly as before.
@@ -25,7 +25,9 @@ public final class ContextManager: @unchecked Sendable {
     /// shown to the model as a bounded preview + reference — even while active.
     public var maxActiveResultChars: Int
 
-    /// How many recent completed-tool receipts to include in the ledger.
+    /// No longer used (0.4.0-alpha.120): every evicted step keeps its own
+    /// receipts in its own place, so there is no ledger to cap. Kept so
+    /// callers compile; compaction bounds the growth.
     public var ledgerEntries: Int
 
     /// Length of the receipt summary drawn from a tool result.
@@ -112,6 +114,103 @@ public final class ContextManager: @unchecked Sendable {
     /// byte-stable between eviction events so provider prompt caches hit.
     public var evictionTargetFraction: Double = 0.5
 
+    /// A batch happens only when at least this share of the message budget
+    /// can be evicted at once. Between batches the model-facing prefix is
+    /// byte-identical, so provider prompt caches hit — even when what cannot
+    /// be evicted (the floor) already fills the budget, where evicting one
+    /// step per call used to change the prefix on every call.
+    public var minEvictionBatchFraction: Double = 0.25
+
+    /// Headroom above the floor a batch evicts down to, as a share of the
+    /// message budget: the target is `max(budget × evictionTargetFraction,
+    /// floor + budget × evictionSlackFraction)`.
+    public var evictionSlackFraction: Double = 0.10
+
+    /// The messages' budget never drops below this share of
+    /// `inlineBudgetChars`, however long the system prompt is.
+    public var minMessageBudgetFraction: Double = 0.25
+
+    /// The agent's overflow safety net: when the sifted request, tool
+    /// definitions counted, passes this fraction of (context window − output
+    /// reserve), calls leave out the oldest whole steps (stored history is
+    /// kept) and the agent emits `.historyTrimmed(reason: .overflow)`.
+    ///
+    /// An app with its own compaction trigger must set this ABOVE that
+    /// trigger, in the net's terms (the trigger's share of the window plus
+    /// the tool definitions), or the net fires first and compaction never
+    /// does: the net's trimmed request is what `lastPromptTokens` then
+    /// records. 1.0 makes the net a pure overflow guard (the request would
+    /// not fit beside the output reserve). Default 0.8, the old fit's bound.
+    public var overflowFraction: Double = 0.8
+
+    /// Low watermark for the net's cut, as a share of its bound: a breach
+    /// leaves out the fewest oldest steps that bring the request to this,
+    /// and the cut then holds (byte-identical prefix) until the request
+    /// passes the bound again.
+    public var overflowTargetFraction: Double = 0.7
+
+    /// What the messages may use: the inline budget less the system prompt,
+    /// so system + messages keep the ceiling `inlineBudgetChars` always
+    /// meant. The system prompt itself is not sifted — it is the same on
+    /// every call and nothing here can shrink it.
+    public func messageBudget(systemChars: Int) -> Int {
+        let floor = Int(Double(inlineBudgetChars) * min(1, max(0, minMessageBudgetFraction)))
+        return max(floor, inlineBudgetChars - systemChars)
+    }
+
+    /// A fresh manager over the same store with every setting copied — for a
+    /// sub-agent. Evictions, receipts and spill ids are per conversation and
+    /// start empty.
+    public func childManager() -> ContextManager {
+        let child = ContextManager(store: store, maxActiveResultChars: maxActiveResultChars,
+                                   ledgerEntries: ledgerEntries, summaryLength: summaryLength,
+                                   inlineBudgetChars: inlineBudgetChars,
+                                   keepLatestReadsInline: keepLatestReadsInline,
+                                   readToolNames: readToolNames, readIdentityParams: readIdentityParams)
+        child.eagerPersistMinChars = eagerPersistMinChars
+        child.evictionTargetFraction = evictionTargetFraction
+        child.minEvictionBatchFraction = minEvictionBatchFraction
+        child.evictionSlackFraction = evictionSlackFraction
+        child.minMessageBudgetFraction = minMessageBudgetFraction
+        child.overflowFraction = overflowFraction
+        child.overflowTargetFraction = overflowTargetFraction
+        return child
+    }
+
+    /// How many of `candidates` (sizes of the evictable steps, oldest first)
+    /// one pass evicts. Pure.
+    /// - `remaining`: message characters still sent inline (earlier
+    ///   evictions already taken off).
+    /// - Nothing goes while `remaining` fits the budget, or while less than a
+    ///   minimum batch is evictable. Otherwise a batch frees at least
+    ///   `max(remaining − target, minimum batch)`, where target is
+    ///   `max(budget × targetFraction, floor + budget × slackFraction)` and
+    ///   the floor is what cannot be evicted.
+    public static func evictionCount(candidates: [Int], remaining: Int, budget: Int,
+                                     targetFraction: Double, minBatchFraction: Double,
+                                     slackFraction: Double) -> Int {
+        guard remaining > budget, !candidates.isEmpty else { return 0 }
+        func share(_ fraction: Double) -> Int { Int((Double(budget) * min(1, max(0, fraction))).rounded(.up)) }
+        let evictable = candidates.reduce(0, +)
+        let minBatch = share(minBatchFraction)
+        guard evictable >= max(1, minBatch) else { return 0 }
+        let floor = remaining - evictable
+        let target = max(Int(Double(budget) * min(1, max(0, targetFraction))), floor + share(slackFraction))
+        let needed = max(remaining - target, minBatch)
+        var freed = 0
+        var count = 0
+        for size in candidates where freed < needed {
+            freed += size
+            count += 1
+        }
+        return count
+    }
+
+    /// What a message weighs for sifting: its text plus its tool results.
+    static func size(of message: AgentMessage) -> Int {
+        message.content.count + (message.toolResults?.reduce(0) { $0 + $1.result.count } ?? 0)
+    }
+
     /// Head-message ids of exchanges evicted by previous calls. Sticky —
     /// never un-evicted — so the prefix cannot flap.
     private var stickyEvicted: Set<UUID> = []
@@ -145,10 +244,7 @@ public final class ContextManager: @unchecked Sendable {
                 indices.append(j)
                 j += 1
             }
-            let chars = indices.reduce(0) { sum, idx in
-                sum + rest[idx].content.count
-                    + (rest[idx].toolResults?.reduce(0) { $0 + $1.result.count } ?? 0)
-            }
+            let chars = indices.reduce(0) { $0 + Self.size(of: rest[$1]) }
             spans.append(ExchangeSpan(head: i, indices: indices, chars: chars))
             i = j
         }
@@ -177,9 +273,9 @@ public final class ContextManager: @unchecked Sendable {
 
     // MARK: - Build
 
-    /// Build the model-facing messages: identity/system + receipt ledger, then
-    /// main messages (completed assistant turns keep only their text), then the
-    /// active tool exchange (bounded).
+    /// Build the model-facing messages: the system prompt, then the main
+    /// messages (each evicted step replaced in place by its receipts), then
+    /// the active tool exchange (bounded).
     public func modelMessages(
         _ messages: [AgentMessage],
         systemTemplate: (String) -> String
@@ -188,19 +284,23 @@ public final class ContextManager: @unchecked Sendable {
             .filter { $0.role == .system }
             .map { systemTemplate($0.content) }
             .filter { !$0.isEmpty }
+        let systemText = systemBlocks.joined(separator: "\n\n")
 
         let rest = messages.filter { $0.role != .system }
 
-        // Budget gate: while the whole conversation is small, keep everything
-        // inline (full tool calls + results, no ledger) so the model has its
-        // complete recent history. Only externalize once context grows large.
-        let totalChars = messages.reduce(0) { sum, m in
-            sum + m.content.count + (m.toolResults?.reduce(0) { $0 + $1.result.count } ?? 0)
-        }
-        if totalChars <= inlineBudgetChars {
+        // What sifting measures is the messages, not the system prompt: that
+        // is the same on every call and nothing here can shrink it. It comes
+        // off the budget instead (`messageBudget`).
+        let budget = messageBudget(systemChars: systemText.count)
+        let restChars = rest.reduce(0) { $0 + Self.size(of: $1) }
+
+        // Budget gate: while the messages are small, keep everything inline
+        // (full tool calls + results, no receipts) so the model has its
+        // complete recent history. Only externalize once they grow large.
+        if restChars <= budget {
             var inline: [LLMMessage] = []
-            if !systemBlocks.isEmpty { inline.append(.system(systemBlocks.joined(separator: "\n\n"))) }
-            for message in rest where message.role != .system {
+            if !systemText.isEmpty { inline.append(.system(systemText)) }
+            for message in rest {
                 inline.append(contentsOf: message.toLLMMessages())
             }
             return inline
@@ -210,96 +310,75 @@ public final class ContextManager: @unchecked Sendable {
 
         // Map each tool-call id → its call, so a receipt can name the invocation
         // (e.g. the shell command), not just the tool. Built here (before the
-        // eviction loop) so we can look up a read's file path while deciding what
-        // to keep.
+        // eviction pass) so we can look up a read's file path while deciding
+        // what to keep.
         var callsByID: [String: AgentToolCall] = [:]
         for message in rest where message.role == .assistant {
             for call in message.toolCalls ?? [] { callsByID[call.id] = call }
         }
 
-        // The `rest` index of the most-recent read of each distinct file path —
-        // these exchanges are kept inline so the model doesn't re-read the file.
+        // The `rest` index of the most-recent read of each distinct target —
+        // these exchanges are kept inline so the model doesn't re-read it.
         let latestReadIndexByPath = keepLatestReadsInline
             ? latestReadIndices(in: rest, upTo: activeStart, callsByID: callsByID)
             : [:]
         let protectedIndices = Set(latestReadIndexByPath.values)
 
-        // Over budget: externalize whole tool exchanges OLDEST-FIRST, keeping
-        // the most RECENT tool results inline. An exchange is an
-        // assistant-with-toolCalls turn plus its following tool-result messages;
-        // evicting whole exchanges keeps tool_call/result pairing valid.
-        //
-        // CACHE-STABILITY HYSTERESIS: continuous eviction (evict just enough,
-        // every turn) changes the model-facing prefix on every call, so
-        // provider prompt caches never hit. Instead, evictions are STICKY
-        // (remembered by message id, never undone) and a budget breach evicts
-        // down to `evictionTargetFraction` of the budget — then the evicted
-        // set, the ledger, and the whole prefix stay byte-stable until roughly
-        // half a budget of new content accumulates.
-        var externalized = Set<Int>()   // indices in `rest` to move to the ledger
-        var remaining = totalChars
+        // Over budget: externalize whole tool exchanges OLDEST-FIRST, in
+        // BATCHES. An exchange is an assistant-with-toolCalls turn plus its
+        // following tool-result messages; evicting whole exchanges keeps
+        // tool_call/result pairing valid. Evictions are sticky (remembered by
+        // message id, never undone), and a new batch happens only when at
+        // least `minEvictionBatchFraction` of the budget can go at once
+        // (`evictionCount`): between batches the prefix stays byte-identical.
+        var externalized = Set<Int>()   // indices in `rest` that are evicted
+        var remaining = restChars
         let spans = exchangeSpans(in: rest, upTo: activeStart)
         let sticky = currentStickyEvicted()
         for span in spans where sticky.contains(rest[span.head].id) {
             span.indices.forEach { externalized.insert($0) }
             remaining -= span.chars
         }
-        if remaining > inlineBudgetChars {
-            let fraction = min(1, max(0, evictionTargetFraction))
-            let target = Int(Double(inlineBudgetChars) * fraction)
-            var newlyEvicted: [UUID] = []
-            for span in spans where !externalized.contains(span.head) {
-                guard remaining > target else { break }
-                // Keep the whole exchange inline if it holds a latest-per-path
-                // read (preserving tool_call/result pairing); evict the rest.
-                // Sticky evictions above are exempt — never un-evict.
-                if span.indices.contains(where: { protectedIndices.contains($0) }) { continue }
-                span.indices.forEach { externalized.insert($0) }
-                remaining -= span.chars
-                newlyEvicted.append(rest[span.head].id)
-            }
-            if !newlyEvicted.isEmpty { rememberEvicted(newlyEvicted) }
+        // A step holding a latest-per-target read is part of the floor.
+        let candidates = spans.filter { span in
+            !externalized.contains(span.head) && !span.indices.contains { protectedIndices.contains($0) }
+        }
+        let count = Self.evictionCount(
+            candidates: candidates.map(\.chars), remaining: remaining, budget: budget,
+            targetFraction: evictionTargetFraction, minBatchFraction: minEvictionBatchFraction,
+            slackFraction: evictionSlackFraction)
+        if count > 0 {
+            let batch = candidates.prefix(count)
+            for span in batch { span.indices.forEach { externalized.insert($0) } }
+            rememberEvicted(batch.map { rest[$0.head].id })
         }
 
-        // Receipts for the externalized (older) tool results only.
-        var receipts: [ToolReceipt] = []
-        for index in externalized.sorted() where rest[index].role == .tool {
-            for result in rest[index].toolResults ?? [] {
-                receipts.append(await receipt(for: result, call: callsByID[result.toolCallId]))
+        // Receipts, per evicted step, for that step's own place.
+        var receiptsByHead: [Int: [ToolReceipt]] = [:]
+        for span in spans where externalized.contains(span.head) {
+            var receipts: [ToolReceipt] = []
+            for index in span.indices where rest[index].role == .tool {
+                for result in rest[index].toolResults ?? [] {
+                    receipts.append(await receipt(for: result, call: callsByID[result.toolCallId]))
+                }
             }
+            receiptsByHead[span.head] = receipts
         }
+
+        // A completed result is bounded (preview + artifact reference) only
+        // as part of a batch, like an eviction, or when it already was while
+        // active: crossing into sifting alone must not change what the normal
+        // path sent whole. A batch starts at its first evicted step, so only
+        // results after it may change.
+        let batchStart = count > 0 ? candidates.first?.head : nil
 
         var out: [LLMMessage] = []
+        // The system prompt alone. Receipts used to join it, so every batch
+        // changed the start of the request and the whole conversation missed
+        // the prompt cache; in place, a batch changes nothing before its
+        // first evicted step.
+        if !systemText.isEmpty { out.append(.system(systemText)) }
 
-        // One combined system message (identity + ledger) — provider-safe
-        // (some providers keep only a single system block).
-        var systemParts = systemBlocks
-        if !receipts.isEmpty {
-            var lines = receipts.suffix(ledgerEntries).map { "- " + $0.ledgerLine() }.joined(separator: "\n")
-            // Receipts past the ledger cap vanish from the prompt entirely; on a
-            // long run the model has no way to know that older outputs exist,
-            // let alone how to reach them. One count line keeps the store
-            // discoverable (artifact_list is registered iff the store is Listable).
-            let omitted = receipts.count - min(receipts.count, ledgerEntries)
-            if omitted > 0 {
-                let hint = store is any ListableArtifactStore
-                    ? " — use artifact_list to enumerate all stored outputs" : ""
-                lines += "\n(+\(omitted) older tool call\(omitted == 1 ? "" : "s") not shown\(hint))"
-            }
-            systemParts.append(
-                "Older tool ledger — these tool calls already completed and their full output is "
-                + "NOT in this message; retrieve it with artifact_read / artifact_search using the "
-                + "artifact id in brackets when you need the details:\n" + lines
-            )
-        }
-        if !systemParts.isEmpty {
-            out.append(.system(systemParts.joined(separator: "\n\n")))
-        }
-
-        // Main messages. Externalized exchanges collapse to a ledger line
-        // (assistant keeps text only, tool results dropped); everything else —
-        // recent completed exchanges and the active exchange — stays inline
-        // (tool results bounded by `activeDisplay`).
         for (index, message) in rest.enumerated() {
             let isExternalized = externalized.contains(index)
             switch message.role {
@@ -307,24 +386,52 @@ public final class ContextManager: @unchecked Sendable {
                 out.append(contentsOf: message.toLLMMessages())
             case .assistant:
                 if isExternalized {
-                    if !message.content.isEmpty { out.append(.assistant(message.content)) }  // drop tool calls
+                    // The evicted step in its own place: its text, then one
+                    // receipt per call (the calls themselves are dropped and
+                    // their results are in the store).
+                    if let text = Self.receiptMessage(text: message.content, receipts: receiptsByHead[index] ?? []) {
+                        out.append(.assistant(text))
+                    }
                 } else {
                     out.append(contentsOf: message.toLLMMessages())  // keep tool calls (recent/active)
                 }
             case .tool:
                 if !isExternalized, let results = message.toolResults {
+                    let mayBound = index >= activeStart || (batchStart.map { index > $0 } ?? false)
                     for result in results {
-                        let display = await activeDisplay(for: result)
-                        out.append(.tool(display, toolCallId: result.toolCallId))
+                        let display = mayBound || isBounded(result.toolCallId)
+                            ? await activeDisplay(for: result)
+                            : Self.fullDisplay(for: result)
+                        // Images stay with their result, the active one included:
+                        // a chat past the budget used to stop seeing screenshots.
+                        out.append(LLMMessage(role: .tool, content: display, images: result.images,
+                                              toolCallId: result.toolCallId))
                     }
                 }
-                // externalized tool results are dropped (represented in the ledger)
+                // evicted tool results are represented by their step's receipts
             case .system:
                 break
             }
         }
 
         return out
+    }
+
+    /// Opens an evicted step's receipts (the bracketed-evidence style the
+    /// app's own history replay uses).
+    public static let receiptHeader = "[Tool calls in this step — their output was moved out of context; artifact_read / artifact_search with the artifact id in brackets fetch it:"
+
+    /// The assistant message an evicted step becomes: its text, then one
+    /// receipt line per call, in brackets. nil when there is nothing to say.
+    static func receiptMessage(text: String, receipts: [ToolReceipt]) -> String? {
+        guard !receipts.isEmpty else { return text.isEmpty ? nil : text }
+        let block = receiptHeader + "\n" + receipts.map { "- " + $0.ledgerLine() }.joined(separator: "\n") + "\n]"
+        return text.isEmpty ? block : text + "\n\n" + block
+    }
+
+    /// A tool result exactly as the normal (un-sifted) path sends it.
+    private static func fullDisplay(for result: AgentToolResult) -> String {
+        "[Tool: \(result.toolName ?? "tool")] \(result.isError ? "ERROR" : "OK")\n\(result.result)"
     }
 
     // MARK: - Private
@@ -443,6 +550,7 @@ public final class ContextManager: @unchecked Sendable {
         if Self.retrievalToolNames.contains(name) || result.result.count <= maxActiveResultChars {
             return "[Tool: \(name)] \(status)\n\(result.result)"
         }
+        rememberBounded(result.toolCallId)
         // `modelMessages` runs every turn, so a large result that stays the active
         // exchange would spill a fresh artifact each turn. Reuse the artifact id
         // for this tool-call id instead of duplicating the content in the store.
@@ -483,6 +591,43 @@ public final class ContextManager: @unchecked Sendable {
             out.append(d)
         }
         return out
+    }
+
+    /// Tool-call ids whose result has been sent bounded: it stays bounded,
+    /// so the prefix does not flip back to the whole output.
+    private var boundedCallIDs: Set<String> = []
+
+    private func isBounded(_ callID: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return boundedCallIDs.contains(callID)
+    }
+
+    /// The sift state that later calls depend on: the sticky evictions and
+    /// the results sent bounded. (Receipt and artifact caches are keyed by
+    /// call id and idempotent, so they are not part of it.)
+    struct SiftState: Equatable, Sendable {
+        var stickyEvicted: Set<UUID>
+        var boundedCallIDs: Set<String>
+    }
+
+    /// Read or replace the sift state — the overflow net's trial sifts
+    /// restore it, so only the request actually sent commits anything.
+    var siftState: SiftState {
+        get {
+            lock.lock(); defer { lock.unlock() }
+            return SiftState(stickyEvicted: stickyEvicted, boundedCallIDs: boundedCallIDs)
+        }
+        set {
+            lock.lock(); defer { lock.unlock() }
+            stickyEvicted = newValue.stickyEvicted
+            boundedCallIDs = newValue.boundedCallIDs
+        }
+    }
+
+    private func rememberBounded(_ callID: String) {
+        guard !callID.isEmpty else { return }
+        lock.lock(); defer { lock.unlock() }
+        boundedCallIDs.insert(callID)
     }
 
     private func cachedActiveArtifact(_ callID: String) -> String? {

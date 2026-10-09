@@ -395,6 +395,14 @@ public actor Agent {
 
     /// Set at the start of a run; the next request built records its digest.
     private var firstRequestPending = false
+    /// The overflow safety net's cut: the id of the last stored message calls
+    /// leave out (with every older evictable step). Sticky until the request
+    /// passes the bound again; cleared by compaction, or when that message is
+    /// no longer stored.
+    private var overflowCutAfter: UUID?
+    /// The id of the current run's task message: the overflow net never
+    /// leaves it out, whatever user-role nudges the run appends after it.
+    private var runTaskID: UUID?
 
     /// Actor-isolated run/cancel state — actor serialization is the guard now.
     private var isRunActive = false
@@ -985,11 +993,9 @@ public actor Agent {
         }
 
         // Add user message to conversation
-        if images.isEmpty {
-            conversation.append(.user(query))
-        } else {
-            conversation.append(.user(query, images: images))
-        }
+        let task: AgentMessage = images.isEmpty ? .user(query) : .user(query, images: images)
+        runTaskID = task.id
+        conversation.append(task)
 
         // Get registered tools and strengthen system prompt (must happen before skill injection)
         let registeredToolsEarly = await tools.allTools()
@@ -1090,18 +1096,20 @@ public actor Agent {
                     await compactHistory(reason: .nearLimit)
                 }
 
-                // Get messages for LLM call (trimmed to context window)
-                var messagesForLLM = conversation.messagesForLLMCall()
-                // Budget checkpoint: transient system note for THIS call only
-                // (not appended to the conversation), nudging the model to
-                // reassess instead of grinding one subproblem to the turn cap.
-                if pendingNudges.remove(totalTurns) != nil {
-                    messagesForLLM.append(.system(
-                        Self.progressNudge(turn: totalTurns, maxTurns: config.maxTurns)))
-                }
+                // The history this call starts from (see historyForCall)
+                var messagesForLLM = historyForCall()
+                // Budget checkpoint: a note for THIS call only (never stored),
+                // nudging the model to reassess instead of grinding one
+                // subproblem to the turn cap. It goes at the very end, as a
+                // user message: in the system message it changed the prompt
+                // prefix (and on Anthropic, without a ContextManager, it
+                // replaced the whole system prompt).
+                let progressNote: String? = pendingNudges.remove(totalTurns) != nil
+                    ? Self.progressNudge(turn: totalTurns, maxTurns: config.maxTurns) : nil
                 let removedCount = conversation.allMessages().count - messagesForLLM.count
                 if removedCount > 0 {
-                    emit(.historyTrimmed(removedCount: removedCount, remainingCount: messagesForLLM.count))
+                    emit(.historyTrimmed(removedCount: removedCount, remainingCount: messagesForLLM.count,
+                                         reason: .fitToWindow))
                 }
 
                 emit(.llmCallStarted(turn: totalTurns))
@@ -1138,7 +1146,7 @@ public actor Agent {
                                 plan: plan,
                                 startTime: startTime
                             )
-                            _ = conversation.trim()
+                            trimAfterStep()
                             continue
                         }
                         onText?(intercepted.text)
@@ -1160,7 +1168,8 @@ public actor Agent {
 
                 // Build LLM request (with state-templated system prompt)
                 let llmToolDefs = makeLLMToolDefinitions(from: visibleTools(registeredTools))
-                var request = await makeLLMRequest(messagesForLLM: messagesForLLM, tools: llmToolDefs)
+                var request = await makeLLMRequest(messagesForLLM: messagesForLLM, tools: llmToolDefs,
+                                                   trailingNote: progressNote)
 
                 // Call the provider (streamed when onText is set). Transient
                 // provider errors — network blips, proxy 5xx, Ollama cloud
@@ -1182,8 +1191,9 @@ public actor Agent {
                         if !overflowCompacted, !isCancelled, ContextCompaction.isContextOverflow(error),
                            await compactHistory(reason: .overflow) != nil {
                             overflowCompacted = true
-                            messagesForLLM = conversation.messagesForLLMCall()
-                            request = await makeLLMRequest(messagesForLLM: messagesForLLM, tools: llmToolDefs)
+                            messagesForLLM = historyForCall()
+                            request = await makeLLMRequest(messagesForLLM: messagesForLLM, tools: llmToolDefs,
+                                                           trailingNote: progressNote)
                             continue
                         }
                         llmAttempt += 1
@@ -1401,7 +1411,7 @@ public actor Agent {
                 )
 
                 // Trim conversation
-                _ = conversation.trim()
+                trimAfterStep()
             }
 
             // Max turns reached
@@ -1419,7 +1429,7 @@ public actor Agent {
 
         } else {
             // Single-shot or multi-turn chat (no tools)
-            let messagesForLLM = conversation.messagesForLLMCall()
+            let messagesForLLM = historyForCall()
             let request = await makeLLMRequest(messagesForLLM: messagesForLLM)
 
             emit(.llmCallStarted(turn: 1))
@@ -1461,7 +1471,7 @@ public actor Agent {
                 if reasoningTimedOut, agentResponse.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     conversation.append(.assistant(""))
                     conversation.append(.user("You have been reasoning for a long time without answering, so that step was stopped. Give your answer now."))
-                    let again = await makeLLMRequest(messagesForLLM: conversation.messagesForLLMCall())
+                    let again = await makeLLMRequest(messagesForLLM: historyForCall())
                     agentResponse = try await executeTurn(request: again, onText: onText, onReasoning: onReasoning)
                 }
             } catch {
@@ -1780,21 +1790,219 @@ public actor Agent {
                                                      estimate: conversation.estimateTokens)
         guard !middle.isEmpty, let checkpoint = await compactor.summarize(middle: middle, reason: reason) else { return nil }
         conversation.replaceNonSystemMessages(ContextCompaction.assemble(checkpoint: checkpoint, tail: tail))
+        overflowCutAfter = nil
         let after = conversation.estimateTotalTokens(conversation.allMessages())
         emit(.contextCompacted(tokensBefore: before, tokensAfter: after, reason: reason))
         return (before, after)
     }
 
+    /// The stored history a call starts from. With a ContextManager, all of
+    /// it: ContextSift bounds what is sent, and trimming the stored history
+    /// first slid the window on every call once it passed 80% of the window.
+    /// Without one, trimmed to fit, as before.
+    private func historyForCall() -> [AgentMessage] {
+        config.contextManager == nil ? conversation.messagesForLLMCall() : conversation.allMessages()
+    }
+
+    /// After a step: the message-count cap, and — only without a
+    /// ContextManager — the token trim. Every removal is reported, by reason.
+    private func trimAfterStep() {
+        let capped = conversation.trim(byTokens: false)
+        if capped.removed > 0 {
+            emit(.historyTrimmed(removedCount: capped.removed, remainingCount: capped.remaining,
+                                 reason: .messageCap))
+        }
+        guard config.contextManager == nil else { return }
+        let fitted = conversation.trim(byTokens: true)
+        if fitted.removed > 0 {
+            emit(.historyTrimmed(removedCount: fitted.removed, remainingCount: fitted.remaining,
+                                 reason: .tokenBudget))
+        }
+    }
+
+    /// The overflow safety net's bound: `ContextManager.overflowFraction` of
+    /// the window less the output reserve (0 without a ContextManager).
+    var overflowBoundTokens: Int {
+        guard let manager = config.contextManager else { return 0 }
+        return max(0, Int(Double(conversation.contextWindow - conversation.outputReserve) * manager.overflowFraction))
+    }
+
+    /// The steps the overflow net may leave out, oldest first: each a whole
+    /// unit (a tool-call turn with its results, or one message). Never the
+    /// system prompt, the run's task (the message with id `task`, recorded
+    /// when the run starts; without one, the latest user message), or the
+    /// step the model is waiting on: the last tool-call turn with everything
+    /// after it, when that is only its results and user-role nudges (loop,
+    /// repair, verifier, plan, reasoning, progress); else the last message.
+    static func overflowUnits(_ stored: [AgentMessage], task: UUID? = nil) -> [[Int]] {
+        let pinned = task.map { id in stored.firstIndex { $0.id == id } }
+            ?? stored.lastIndex(where: { $0.role == .user })
+        let nonSystem = stored.indices.filter { stored[$0].role != .system }
+        guard let last = nonSystem.last else { return [] }
+        var end = last
+        if let head = stored.lastIndex(where: { $0.role == .assistant && $0.toolCalls?.isEmpty == false }),
+           stored[(head + 1)...].allSatisfy({ $0.role == .tool || $0.role == .user }) {
+            end = head
+        }
+        var units: [[Int]] = []
+        var i = 0
+        while i < end {
+            let message = stored[i]
+            guard message.role != .system, i != pinned else { i += 1; continue }
+            var unit = [i]
+            i += 1
+            if message.role == .assistant, message.toolCalls?.isEmpty == false {
+                while i < end, stored[i].role == .tool { unit.append(i); i += 1 }
+            }
+            units.append(unit)
+        }
+        return units
+    }
+
+    /// One trial sift for the overflow net's cut search: `view` sifted as if
+    /// it were sent, with the manager's sticky state put back afterwards, so
+    /// a request that is never sent commits nothing. Returns the sift and the
+    /// state it would have left (committed only for the cut chosen).
+    static func trialSift(_ view: [AgentMessage], manager: ContextManager,
+                          systemTemplate: (String) -> String) async -> (messages: [LLMMessage], state: ContextManager.SiftState) {
+        let saved = manager.siftState
+        let messages = await manager.modelMessages(view, systemTemplate: systemTemplate)
+        let after = manager.siftState
+        manager.siftState = saved
+        return (messages, after)
+    }
+
+    /// The overflow cut (how many of the oldest units a call leaves out).
+    /// Held while the request at `current` fits `bound`; on a breach, the
+    /// fewest more units that bring it to `target`, or all of them. Pure.
+    static func overflowCut(current: Int, units: Int, bound: Int, target: Int,
+                            cost: (Int) async -> Int) async -> Int {
+        let current = min(current, units)
+        if await cost(current) <= bound { return current }
+        guard current < units else { return current }
+        for cut in (current + 1)...units where await cost(cut) <= target {
+            return cut
+        }
+        return units
+    }
+
+    /// The estimator's token count for a request: characters ÷ 3.5 plus 4 per message.
+    static func estimatedTokens(_ messages: [LLMMessage]) -> Int {
+        let chars = messages.reduce(0) { $0 + $1.content.count }
+        return Int((Double(chars) / 3.5).rounded()) + messages.count * 4
+    }
+
+    /// The old fit's estimate (`Conversation.estimateTokens`: the
+    /// conversation's tokenCounter, or characters ÷ charsPerToken with a fixed
+    /// budget per tool-result image) of what one call sends: the sifted
+    /// messages AND the tool definitions, which the old fit left to its 20%
+    /// headroom.
+    func estimatedRequestTokens(_ messages: [LLMMessage], tools: [LLMToolDefinition]) -> Int {
+        let asStored = messages.map { message -> AgentMessage in
+            let calls = (message.toolCalls ?? []).map { $0.name + $0.arguments }.joined()
+            switch message.role {
+            case .system:
+                return .system(message.content)
+            case .user:
+                return .user(message.content, images: message.images)
+            case .assistant:
+                return .assistant(message.content + calls)
+            case .tool:
+                return .tool(results: [.success(toolCallId: message.toolCallId ?? "", toolName: nil,
+                                                result: message.content, images: message.images)])
+            }
+        }
+        return conversation.estimateTotalTokens(asStored) + toolDefinitionTokens(tools)
+    }
+
+    /// The tool definitions' share of a request, at the conversation's
+    /// characters per token.
+    func toolDefinitionTokens(_ tools: [LLMToolDefinition]) -> Int {
+        let chars = tools.reduce(0) { $0 + Self.toolDefinitionChars($1) }
+        return Int((Double(chars) / conversation.charsPerToken).rounded(.up))
+    }
+
+    /// A tool definition's size on the wire: name, description and the
+    /// sorted-key JSON of its schema.
+    static func toolDefinitionChars(_ tool: LLMToolDefinition) -> Int {
+        let schema = (try? JSONSerialization.data(withJSONObject: tool.parameters, options: [.sortedKeys]))?.count ?? 0
+        return tool.name.count + tool.description.count + schema
+    }
+
+    /// The overflow safety net (see `makeLLMRequest`): `sifted` is the sift
+    /// of `messagesForLLM` (the whole stored history plus any per-call tail).
+    private func overflowSafeMessages(_ messagesForLLM: [AgentMessage], sifted: [LLMMessage],
+                                      tools: [LLMToolDefinition], manager: ContextManager) async -> [LLMMessage] {
+        let stored = conversation.allMessages()
+        let transient = messagesForLLM.count > stored.count ? Array(messagesForLLM.dropFirst(stored.count)) : []
+        let units = Self.overflowUnits(stored, task: runTaskID)
+        var current = 0
+        if let after = overflowCutAfter {
+            if let index = stored.firstIndex(where: { $0.id == after }) {
+                current = units.prefix { $0.last! <= index }.count
+            } else {
+                overflowCutAfter = nil      // compacted or capped away
+            }
+        }
+        let bound = overflowBoundTokens
+        let target = Int(Double(bound) * min(1, max(0, manager.overflowTargetFraction)))
+        let full = estimatedRequestTokens(sifted, tools: tools)
+        guard current > 0 || full > bound else { return sifted }
+
+        // Each candidate cut is a trial sift: it starts from, and leaves, the
+        // state the full sift committed; only the cut chosen commits its own.
+        var built: [Int: (messages: [LLMMessage], tokens: Int, state: ContextManager.SiftState)] =
+            [0: (sifted, full, manager.siftState)]
+        func build(_ cut: Int) async -> (messages: [LLMMessage], tokens: Int, state: ContextManager.SiftState) {
+            if let done = built[cut] { return done }
+            let dropped = Set(units.prefix(cut).flatMap { $0 })
+            let kept = stored.indices.filter { !dropped.contains($0) }.map { stored[$0] } + transient
+            let trial = await Self.trialSift(kept, manager: manager) { [state] content in state.template(content) }
+            let result = (trial.messages, estimatedRequestTokens(trial.messages, tools: tools), trial.state)
+            built[cut] = result
+            return result
+        }
+        let cut = await Self.overflowCut(current: current, units: units.count, bound: bound, target: target) { cut in
+            await build(cut).tokens
+        }
+        let chosen = await build(cut)
+        manager.siftState = chosen.state
+        if cut != current {
+            overflowCutAfter = cut > 0 ? stored[units[cut - 1].last!].id : nil
+            let removed = units.prefix(cut).reduce(0) { $0 + $1.count }
+            emit(.historyTrimmed(removedCount: removed, remainingCount: stored.count - removed, reason: .overflow))
+        }
+        if chosen.tokens > bound {
+            logger.warning("Overflow net: the request (~\(chosen.tokens) tokens) still passes its bound (\(bound)) with every evictable step left out")
+        }
+        return chosen.messages
+    }
+
     private func makeLLMRequest(
         messagesForLLM: [AgentMessage],
-        tools: [LLMToolDefinition] = []
+        tools: [LLMToolDefinition] = [],
+        trailingNote: String? = nil
     ) async -> LLMRequest {
-        let llmMessages: [LLMMessage]
+        var llmMessages: [LLMMessage]
         if let contextManager = config.contextManager {
             // ContextSift-style: externalize completed tool exchanges.
             llmMessages = await contextManager.modelMessages(messagesForLLM) { [state] content in
                 state.template(content)
             }
+            // Safety net: the sifted request, tool definitions counted,
+            // passes `overflowFraction` of the window less the output
+            // reserve — compaction off or set later, or a model that would
+            // truncate it silently (local Ollama drops the system prompt and
+            // tools first). Calls then leave out the oldest whole steps,
+            // measured by what is SENT (sifted), the fewest that bring the
+            // request to the low watermark; that cut then holds, so the
+            // prefix stays byte-identical until the bound is passed again.
+            // Nothing stored is deleted; a set or moved cut is reported
+            // (`.overflow`). Messages the caller added past the stored
+            // history for this call only are kept after it (the progress
+            // note is not one: it is appended after this, below).
+            llmMessages = await overflowSafeMessages(messagesForLLM, sifted: llmMessages, tools: tools,
+                                                     manager: contextManager)
         } else {
             llmMessages = messagesForLLM.flatMap { msg -> [LLMMessage] in
                 if msg.role == .system {
@@ -1804,11 +2012,13 @@ public actor Agent {
             }
         }
 
+        // A note for this call only goes last, after ContextSift has run, so it
+        // can't disturb the active-step detection or the prompt prefix.
+        if let trailingNote { llmMessages.append(.user(trailingNote)) }
+
         // Record the size of what we actually send (post context-management), so
         // an app can show real context usage rather than raw-history size.
-        let promptChars = llmMessages.reduce(0) { $0 + $1.content.count }
-        let estimate = Int((Double(promptChars) / 3.5).rounded()) + llmMessages.count * 4
-        lastPromptTokens = estimate
+        lastPromptTokens = Self.estimatedTokens(llmMessages)
         if firstRequestPending {
             firstRequestPending = false
             firstRequestSystemDigest = PromptDigest.hex(

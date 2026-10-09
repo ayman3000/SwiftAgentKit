@@ -14,7 +14,7 @@ public struct ArtifactReadTool: AgentTool {
     public var isReadOnly: Bool { true }
     public let description = """
     Read the full stored output of a previous tool call by its artifact id \
-    (shown in brackets in the tool ledger, e.g. artifact-abc123). Use `offset` \
+    (shown in brackets in the receipt that replaced the call, e.g. artifact-abc123). Use `offset` \
     and `limit` to page through large outputs.
     """
     public let parameters = ToolParameters(
@@ -71,7 +71,7 @@ public struct ArtifactSearchTool: AgentTool {
     Pass ALL the terms you want to check in ONE call via `queries` (e.g. \
     ["error:", "TEST FAILED", "warning"]) instead of one call per term. Returns \
     matching lines with 2 lines of context each. Use the artifact id from the \
-    tool ledger.
+    receipt that replaced the call.
     """
     public let parameters = ToolParameters(
         properties: [

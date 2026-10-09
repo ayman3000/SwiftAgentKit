@@ -138,15 +138,9 @@ public final class SubAgentSpawner: @unchecked Sendable {
         config.systemPrompt = prompt
 
         if let parentCM = config.contextManager {
-            config.contextManager = ContextManager(
-                store: parentCM.store,
-                maxActiveResultChars: parentCM.maxActiveResultChars,
-                ledgerEntries: parentCM.ledgerEntries,
-                summaryLength: parentCM.summaryLength,
-                inlineBudgetChars: parentCM.inlineBudgetChars,
-                keepLatestReadsInline: parentCM.keepLatestReadsInline,
-                readToolNames: parentCM.readToolNames
-            )
+            // Every setting, readIdentityParams included: without it a child's
+            // sim_ui/mac_ui reads were never protected.
+            config.contextManager = parentCM.childManager()
         }
 
         let child = Agent(config: config)

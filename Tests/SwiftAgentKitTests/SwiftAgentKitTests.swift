@@ -1764,12 +1764,13 @@ private func firstArtifactID(in text: String) -> String? {
     // The raw tool output must NOT be resent as an inline tool message (a short
     // conclusion snippet in the ledger is fine — and desired).
     #expect(!out.contains { $0.role == .tool && $0.content.contains("DEEP_NEEDLE_END") })
-    // …and a ledger + artifact reference must appear in the (single) system block.
-    let system = out.first { $0.role == .system }
-    #expect(system != nil)
-    #expect(system?.content.contains("tool ledger") == true)
-    #expect(system?.content.contains("read_file") == true)
-    let artifactID = system.flatMap { firstArtifactID(in: $0.content) }
+    // …and a receipt with the artifact reference stands in the step's own
+    // place; the system message is the system prompt alone.
+    #expect(out.map(\.role) == [.system, .user, .assistant, .assistant, .user])
+    #expect(out.first { $0.role == .system }?.content == "You are helpful.")
+    let receipt = out.first { $0.role == .assistant && $0.content.contains(ContextManager.receiptHeader) }
+    #expect(receipt?.content.contains("read_file") == true)
+    let artifactID = receipt.flatMap { firstArtifactID(in: $0.content) }
     #expect(artifactID != nil)
 
     // Main messages survive.
@@ -1784,10 +1785,10 @@ private func firstArtifactID(in text: String) -> String? {
     }
 }
 
-@Test func testLedgerNotesOmittedReceiptsBeyondCap() async {
-    // More externalized exchanges than ledger slots → the ledger must say how
-    // many older calls fell off and point at artifact_list (Listable store).
-    let manager = ContextManager(ledgerEntries: 3, summaryLength: 40, inlineBudgetChars: 0)
+@Test func testEveryEvictedStepKeepsItsOwnReceipt() async {
+    // No cap any more: each evicted step keeps its receipt in its own place,
+    // so nothing falls off and no receipt ever moves.
+    let manager = ContextManager(summaryLength: 40, inlineBudgetChars: 0)
     var messages: [AgentMessage] = [.system("sys"), .user("do five things")]
     for i in 1...5 {
         messages.append(.assistant(content: "", toolCalls: [AgentToolCall(id: "c\(i)", name: "run_shell")]))
@@ -1798,15 +1799,17 @@ private func firstArtifactID(in text: String) -> String? {
     messages.append(.user("next"))
 
     let out = await manager.modelMessages(messages) { $0 }
-    let system = out.first { $0.role == .system }?.content ?? ""
-    // 5 receipts, 3 shown → 2 omitted, with the discovery hint.
-    #expect(system.contains("(+2 older tool calls not shown — use artifact_list"))
-    // Ledger shows only the newest 3.
-    #expect(!system.contains("output 1"))
-    #expect(system.contains("output 5"))
+    #expect(out.first { $0.role == .system }?.content == "sys")
+    let receipts = out.filter { $0.role == .assistant && $0.content.contains(ContextManager.receiptHeader) }
+    #expect(receipts.count == 5)
+    for (i, receipt) in receipts.enumerated() {
+        #expect(receipt.content.contains("output \(i + 1) "))
+        #expect(receipt.content.hasSuffix("\n]"))
+    }
+    #expect(out.map(\.content).filter { $0.hasPrefix("done") } == ["done 1", "done 2", "done 3", "done 4", "done 5"])
 }
 
-@Test func testLedgerHasNoOmittedLineWhenAllReceiptsFit() async {
+@Test func testReceiptsNeverJoinTheSystemMessage() async {
     let manager = ContextManager(summaryLength: 40, inlineBudgetChars: 0)
     let messages: [AgentMessage] = [
         .system("sys"),
@@ -1818,9 +1821,9 @@ private func firstArtifactID(in text: String) -> String? {
         .user("next"),
     ]
     let out = await manager.modelMessages(messages) { $0 }
-    let system = out.first { $0.role == .system }?.content ?? ""
-    #expect(system.contains("tool ledger"))
-    #expect(!system.contains("not shown"))
+    #expect(out.filter { $0.role == .system }.map(\.content) == ["sys"])
+    #expect(out.contains { $0.role == .assistant && $0.content.contains(ContextManager.receiptHeader) })
+    #expect(!out.contains { $0.content.contains("tool ledger") })
 }
 
 @Test func testContextManagerDoesNotRetruncateArtifactReads() async {
@@ -1866,7 +1869,7 @@ private func firstArtifactID(in text: String) -> String? {
     // …the tool-call turn is preserved…
     #expect(out.contains { $0.role == .assistant && ($0.toolCalls?.isEmpty == false) })
     // …and no "tool ledger" externalization text appears.
-    #expect(out.allSatisfy { !$0.content.contains("tool ledger") })
+    #expect(out.allSatisfy { !$0.content.contains(ContextManager.receiptHeader) })
 }
 
 @Test func testReceiptSummaryCapturesConclusionAtTail() async {
@@ -1886,11 +1889,11 @@ private func firstArtifactID(in text: String) -> String? {
     ]
 
     let out = await manager.modelMessages(messages) { $0 }
-    let system = out.first { $0.role == .system }?.content ?? ""
+    let receipt = out.first { $0.role == .assistant && $0.content.contains(ContextManager.receiptHeader) }?.content ?? ""
 
-    #expect(system.contains("BULLET_CONCLUSION"))   // the tail (real error) survived
-    #expect(system.contains("Traceback"))           // the head too
-    #expect(system.contains("ERROR"))               // marked as a failure
+    #expect(receipt.contains("BULLET_CONCLUSION"))   // the tail (real error) survived
+    #expect(receipt.contains("Traceback"))           // the head too
+    #expect(receipt.contains("ERROR"))               // marked as a failure
 }
 
 @Test func testReceiptIncludesCallArgHint() async {
@@ -1909,10 +1912,10 @@ private func firstArtifactID(in text: String) -> String? {
     ]
 
     let out = await manager.modelMessages(messages) { $0 }
-    let system = out.first { $0.role == .system }?.content ?? ""
+    let receipt = out.first { $0.role == .assistant && $0.content.contains(ContextManager.receiptHeader) }?.content ?? ""
 
-    #expect(system.contains("run_shell(python3 naseem_pdf_build.py)"))   // command named
-    #expect(system.contains("ERROR"))
+    #expect(receipt.contains("run_shell(python3 naseem_pdf_build.py)"))   // command named
+    #expect(receipt.contains("ERROR"))
 }
 
 @Test func testContextManagerEvictsOldestKeepsRecent() async {
@@ -1937,7 +1940,7 @@ private func firstArtifactID(in text: String) -> String? {
     // The old exchange is externalized — not kept as an inline tool message
     // (a conclusion snippet in the ledger is fine).
     #expect(!out.contains { $0.role == .tool && $0.content.contains("OLDTAIL") })
-    #expect(out.contains { $0.role == .system && $0.content.contains("ledger") })
+    #expect(out.contains { $0.role == .assistant && $0.content.contains(ContextManager.receiptHeader) })
 }
 
 @Test func testContextManagerKeepsActiveExchange() async {
@@ -1983,7 +1986,7 @@ private func readCall(_ id: String, path: String) -> AgentToolCall {
 
     #expect(out.contains { $0.role == .tool && $0.content.contains("READ_KEPT") })     // read kept inline
     #expect(!out.contains { $0.role == .tool && $0.content.contains("SHELL_MARKER") }) // shell externalized
-    #expect(out.contains { $0.role == .system && $0.content.contains("ledger") })
+    #expect(out.contains { $0.role == .assistant && $0.content.contains(ContextManager.receiptHeader) })
 }
 
 @Test func testProtectsStructuredReadKeyedByNonPathParam() async {
@@ -2092,7 +2095,7 @@ private func readCall(_ id: String, path: String) -> AgentToolCall {
     let out = await manager.modelMessages(messages) { $0 }
 
     #expect(!out.contains { $0.role == .tool && $0.content.contains("BIGREAD_") })  // size guard → externalized
-    #expect(out.contains { $0.role == .system && $0.content.contains("ledger") })
+    #expect(out.contains { $0.role == .assistant && $0.content.contains(ContextManager.receiptHeader) })
 }
 
 @Test func testKeepLatestReadsDisabledRestoresOldBehavior() async {
@@ -2800,10 +2803,9 @@ private func completedShellExchange(id i: Int, size: Int) -> [AgentMessage] {
 
     let out = await manager.modelMessages(messages) { $0 }
 
-    // 6 exchanges ≈ 2400 chars; target 500 → at least 5 evicted (ledger'd).
-    let system = out.first { $0.role == .system }?.content ?? ""
-    let ledgerLines = system.split(separator: "\n").filter { $0.hasPrefix("- ") }.count
-    #expect(ledgerLines >= 5)
+    // 6 exchanges ≈ 2400 chars; target 500 → at least 5 evicted, each a receipt in place.
+    let receipts = out.filter { $0.role == .assistant && $0.content.contains(ContextManager.receiptHeader) }
+    #expect(receipts.count >= 5)
     // Inline tool results that remain: at most one exchange.
     #expect(out.filter { $0.role == .tool }.count <= 1)
 }
