@@ -107,8 +107,10 @@ public enum AgentEvent: Sendable {
 
     // MARK: - Memory
 
-    /// History was trimmed to fit the context window.
-    case historyTrimmed(removedCount: Int, remainingCount: Int)
+    /// History was trimmed: `removedCount` messages left out (or deleted,
+    /// by `reason`), `remainingCount` kept. `.overflow` is the signal to
+    /// compact: the request no longer fits without leaving steps out.
+    case historyTrimmed(removedCount: Int, remainingCount: Int, reason: HistoryTrimReason)
 
     /// The older part of the history was replaced by a summary.
     case contextCompacted(tokensBefore: Int, tokensAfter: Int, reason: CompactionReason)
@@ -223,4 +225,21 @@ public final class BlockObserver: AgentObserver {
     public func onEvent(_ event: AgentEvent) {
         block(event)
     }
+}
+/// Why history was trimmed (`AgentEvent.historyTrimmed`).
+public enum HistoryTrimReason: String, Sendable {
+    /// Without a ContextManager: this call sends the stored history trimmed
+    /// to fit the window. Nothing stored is deleted.
+    case fitToWindow
+    /// The message-count cap (`maxMessages`) deleted the oldest stored messages.
+    case messageCap
+    /// Without a ContextManager: the token budget deleted the oldest stored
+    /// messages after a step.
+    case tokenBudget
+    /// With a ContextManager: the sifted request, tool definitions counted,
+    /// passed `ContextManager.overflowFraction` of the window, so calls now
+    /// leave out the oldest whole steps (stored history is kept). Emitted
+    /// when that cut is set or moves, not on every call it holds. An app
+    /// that compacts should compact on it.
+    case overflow
 }

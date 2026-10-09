@@ -41,7 +41,7 @@ struct HistoryTrimTests {
                                               loopDetection: nil))
         let trims = Trims()
         agent.onEvent { event in
-            if case .historyTrimmed(let removed, _) = event { trims.add(removed) }
+            if case .historyTrimmed(let removed, _, _) = event { trims.add(removed) }
         }
         return (agent, trims)
     }
@@ -110,7 +110,7 @@ struct HistoryTrimTests {
                                               loopDetection: nil, progressNudgeFractions: []))
         let trims = Trims()
         agent.onEvent { event in
-            if case .historyTrimmed(let removed, _) = event { trims.add(removed) }
+            if case .historyTrimmed(let removed, _, _) = event { trims.add(removed) }
         }
         _ = try await agent.run("do the task")
         let last = try #require(provider.captured.last)
@@ -142,5 +142,159 @@ struct HistoryTrimTests {
         #expect(conversation.trim(byTokens: false).removed == 0)
         #expect(conversation.allMessages().count == 8)
         #expect(conversation.trim().removed > 0)
+    }
+
+    // MARK: - Fix round 1: the overflow cut (sifted cost, sticky)
+
+    /// Records, per call, whether the safety net moved its cut on that call.
+    final class OverflowLog: @unchecked Sendable {
+        private let lock = NSLock()
+        private var turn = 0
+        private var moved: Set<Int> = []
+        private var reasons: [HistoryTrimReason] = []
+        func started(_ t: Int) { lock.withLock { turn = t } }
+        func trimmed(_ reason: HistoryTrimReason) {
+            lock.withLock {
+                reasons.append(reason)
+                if reason == .overflow { moved.insert(turn) }
+            }
+        }
+        var movedTurns: Set<Int> { lock.withLock { moved } }
+        var allReasons: [HistoryTrimReason] { lock.withLock { reasons } }
+    }
+
+    /// Eleven 700-character steps under a 4,096 window, no sifting: the
+    /// request passes the bound part-way through, the net cuts, and the cut
+    /// then holds for several calls before the next breach moves it.
+    private static func longRun() async throws -> (Agent, ScriptedProvider, OverflowLog) {
+        let steps = 11
+        let provider = ScriptedProvider(turns: (1...steps).map {
+            [LLMToolCall(id: "m\($0)", name: "make_output", arguments: #"{"n":\#($0)}"#)]
+        } + [[]])
+        let agent = Agent(config: AgentConfig(provider: provider, model: "mock", systemPrompt: "BASE",
+                                              maxTurns: steps + 2, contextWindow: 4_096,
+                                              tools: [OutputTool(size: 700)],
+                                              contextManager: ContextManager(inlineBudgetChars: 100_000),
+                                              loopDetection: nil, progressNudgeFractions: []))
+        let log = OverflowLog()
+        agent.onEvent { event in
+            switch event {
+            case .llmCallStarted(let turn): log.started(turn)
+            case .historyTrimmed(_, _, let reason): log.trimmed(reason)
+            default: break
+            }
+        }
+        _ = try await agent.run("do the task")
+        return (agent, provider, log)
+    }
+
+    private static func hasPrefix(_ later: LLMRequest, _ earlier: LLMRequest) -> Bool {
+        later.messages.count >= earlier.messages.count
+            && Array(later.messages.prefix(earlier.messages.count)) == earlier.messages
+    }
+
+    @Test func twoConsecutiveFallbackCallsSendTheSamePrefix() async throws {
+        let (agent, provider, log) = try await Self.longRun()
+        let first = try #require(log.movedTurns.min())
+        let captured = provider.captured
+        // The call after the cut does not move it, and sends the cut call's
+        // request unchanged, with only the new step after it.
+        #expect(!log.movedTurns.contains(first + 1))
+        #expect(Self.hasPrefix(captured[first], captured[first - 1]))
+        // It is still a fallback call: the oldest step is left out.
+        #expect(!captured[first].messages.contains { $0.toolCallId == "m1" })
+        // The request the cut built fits the bound, and leaves headroom.
+        let bound = await agent.overflowBoundTokens
+        #expect(await agent.estimatedRequestTokens(captured[first - 1].messages, tools: captured[first - 1].tools) <= bound)
+        // Nothing stored was deleted.
+        #expect(agent.conversation.allMessages().count == 25)   // system, task, 11 calls and results, the answer
+    }
+
+    @Test func theCutMovesOnlyWhenTheBoundIsBreachedAgain() async throws {
+        let (agent, provider, log) = try await Self.longRun()
+        let captured = provider.captured
+        let moved = log.movedTurns
+        let first = try #require(moved.min())
+        // It moves again later in the run, but not on every call.
+        #expect(moved.count >= 2)
+        #expect(moved.count < captured.count - first + 1)
+        let bound = await agent.overflowBoundTokens
+        for turn in first..<captured.count {
+            let request = captured[turn]      // call turn + 1
+            if moved.contains(turn + 1) {
+                // A moved cut: the previous cut, grown by one step, breached.
+                #expect(await agent.estimatedRequestTokens(request.messages, tools: request.tools) <= bound)
+            } else {
+                // A held cut: byte-identical prefix.
+                #expect(Self.hasPrefix(request, captured[turn - 1]))
+            }
+        }
+        // Only the net trimmed, and every trim says so.
+        #expect(log.allReasons.allSatisfy { $0 == .overflow })
+    }
+
+    @Test func theCutNeverDropsTheStepTheModelIsWaitingOn() async throws {
+        let (_, provider, _) = try await Self.longRun()
+        let captured = provider.captured
+        for (index, request) in captured.enumerated() where index >= 1 && index <= 11 {
+            #expect(request.messages.last?.role == .tool)
+            #expect(request.messages.last?.toolCallId == "m\(index)")
+            #expect(request.messages.contains { $0.role == .user && $0.content == "do the task" })
+        }
+    }
+
+    /// The pure decision: hold the cut while it fits the bound; on a breach,
+    /// the fewest more steps that bring the request to the target.
+    @Test func theCutDecision() async {
+        let cost: @Sendable (Int) async -> Int = { 1_000 - 100 * $0 }
+        // Fits at the current cut: held, even with the full history over.
+        #expect(await Agent.overflowCut(current: 2, units: 8, bound: 800, target: 600, cost: cost) == 2)
+        // Breached: the fewest steps that reach the target (600 at 4).
+        #expect(await Agent.overflowCut(current: 0, units: 8, bound: 800, target: 600, cost: cost) == 4)
+        #expect(await Agent.overflowCut(current: 1, units: 8, bound: 800, target: 600, cost: cost) == 4)
+        // Nothing reaches it: every evictable step, never more.
+        #expect(await Agent.overflowCut(current: 0, units: 3, bound: 800, target: 600, cost: cost) == 3)
+    }
+
+    @Test func theBoundIsConfigurable() {
+        let manager = ContextManager()
+        #expect(manager.overflowFraction == 0.8)
+        manager.overflowFraction = 1.0
+        manager.overflowTargetFraction = 0.6
+        let child = manager.childManager()
+        #expect(child.overflowFraction == 1.0)
+        #expect(child.overflowTargetFraction == 0.6)
+    }
+
+    @Test func aHigherOverflowFractionLeavesTheRunToCompaction() async throws {
+        // The same run as aSiftedRequestTooBigForTheWindowFallsBackAndSaysSo,
+        // with the net's bound raised past what the run reaches.
+        let manager = ContextManager(inlineBudgetChars: 100_000)
+        manager.overflowFraction = 3.0
+        let provider = ScriptedProvider(turns: Self.fourSteps())
+        let (agent, trims) = Self.agent(provider, size: 3_000, contextManager: manager)
+        _ = try await agent.run("do the task")
+        #expect(trims.all.isEmpty)
+        #expect(provider.captured.last?.messages.filter { $0.role == .assistant }.count == 4)
+    }
+
+    /// An active result too big for the bound on its own: the net leaves out
+    /// every older step but never the call the model is waiting on, nor its
+    /// result.
+    @Test func anOversizedActiveStepIsKeptWhole() async throws {
+        let provider = ScriptedProvider(turns: Self.fourSteps())
+        let agent = Agent(config: AgentConfig(provider: provider, model: "mock", systemPrompt: "BASE", maxTurns: 6,
+                                              contextWindow: 4_096, tools: [OutputTool(size: 7_000)],
+                                              contextManager: ContextManager(inlineBudgetChars: 100_000),
+                                              loopDetection: nil, progressNudgeFractions: []))
+        _ = try await agent.run("do the task")
+        for (index, request) in provider.captured.enumerated() where index >= 1 && index <= 4 {
+            let last = try #require(request.messages.last)
+            #expect(last.role == .tool && last.toolCallId == "m\(index)")
+            #expect(request.messages.contains { $0.toolCalls?.contains { $0.id == "m\(index)" } == true })
+            #expect(request.messages.contains { $0.role == .user && $0.content == "do the task" })
+            // Older steps are all left out.
+            #expect(request.messages.filter { $0.role == .tool }.count == 1)
+        }
     }
 }

@@ -130,6 +130,25 @@ public final class ContextManager: @unchecked Sendable {
     /// `inlineBudgetChars`, however long the system prompt is.
     public var minMessageBudgetFraction: Double = 0.25
 
+    /// The agent's overflow safety net: when the sifted request, tool
+    /// definitions counted, passes this fraction of (context window − output
+    /// reserve), calls leave out the oldest whole steps (stored history is
+    /// kept) and the agent emits `.historyTrimmed(reason: .overflow)`.
+    ///
+    /// An app with its own compaction trigger must set this ABOVE that
+    /// trigger, in the net's terms (the trigger's share of the window plus
+    /// the tool definitions), or the net fires first and compaction never
+    /// does: the net's trimmed request is what `lastPromptTokens` then
+    /// records. 1.0 makes the net a pure overflow guard (the request would
+    /// not fit beside the output reserve). Default 0.8, the old fit's bound.
+    public var overflowFraction: Double = 0.8
+
+    /// Low watermark for the net's cut, as a share of its bound: a breach
+    /// leaves out the fewest oldest steps that bring the request to this,
+    /// and the cut then holds (byte-identical prefix) until the request
+    /// passes the bound again.
+    public var overflowTargetFraction: Double = 0.7
+
     /// What the messages may use: the inline budget less the system prompt,
     /// so system + messages keep the ceiling `inlineBudgetChars` always
     /// meant. The system prompt itself is not sifted — it is the same on
@@ -153,6 +172,8 @@ public final class ContextManager: @unchecked Sendable {
         child.minEvictionBatchFraction = minEvictionBatchFraction
         child.evictionSlackFraction = evictionSlackFraction
         child.minMessageBudgetFraction = minMessageBudgetFraction
+        child.overflowFraction = overflowFraction
+        child.overflowTargetFraction = overflowTargetFraction
         return child
     }
 
