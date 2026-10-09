@@ -373,6 +373,12 @@ public actor Agent {
     /// and every post-init access is actor-isolated.
     private nonisolated(unsafe) var pendingRegistrationTasks: [Task<Void, Never>] = []
 
+    /// The latest queued registration (never cleared): the next one waits
+    /// for it, so registrations land in call order even while
+    /// `awaitPendingRegistrations` is draining the list. Same safety as
+    /// `pendingRegistrationTasks`.
+    private nonisolated(unsafe) var registrationTail: Task<Void, Never>?
+
     /// Logger.
     public private(set) var logger: AgentLogger
 
@@ -380,6 +386,15 @@ public actor Agent {
     /// (after context management / trimming) — i.e. what the model really saw, not
     /// the full stored history. Useful for a context-usage indicator.
     public private(set) var lastPromptTokens = 0
+
+    /// `PromptDigest.hex` of the system text sent on the latest run's first
+    /// model call; nil before any. Lets an app tell whether a reply started
+    /// from the same system prompt as the reply before — a changed one is a
+    /// prompt-cache miss for the whole conversation.
+    public private(set) var firstRequestSystemDigest: String?
+
+    /// Set at the start of a run; the next request built records its digest.
+    private var firstRequestPending = false
 
     /// Actor-isolated run/cancel state — actor serialization is the guard now.
     private var isRunActive = false
@@ -479,7 +494,7 @@ public actor Agent {
         // call isolated methods like `register(_:)`.)
         if !config.tools.isEmpty {
             for tool in config.tools {
-                pendingRegistrationTasks.append(Task { [tools] in await tools.register(tool) })
+                trackRegistration { [tools] in await tools.register(tool) }
             }
         }
 
@@ -487,19 +502,19 @@ public actor Agent {
         // can pull full tool outputs back from external storage on demand.
         if let contextManager = config.contextManager {
             for tool in contextManager.artifactTools {
-                pendingRegistrationTasks.append(Task { [tools] in await tools.register(tool) })
+                trackRegistration { [tools] in await tools.register(tool) }
             }
         }
 
         // Apply autonomous mode (skips the confirmation gate) if configured.
         if config.autonomousMode {
-            pendingRegistrationTasks.append(Task { [dispatcher] in await dispatcher.setAutonomousMode(true) })
+            trackRegistration { [dispatcher] in await dispatcher.setAutonomousMode(true) }
         }
 
         // Deferred tool groups: `load_tools` exists only when something is deferred.
         if config.toolGroups.contains(where: { !$0.alwaysLoaded }) {
             let loadTool = LoadToolsTool(handle: AgentHandle(self))
-            pendingRegistrationTasks.append(Task { [tools] in await tools.register(loadTool) })
+            trackRegistration { [tools] in await tools.register(loadTool) }
         }
 
         // Sub-agents: register the delegation tool. The spawner strips this
@@ -511,7 +526,7 @@ public actor Agent {
             let delegateTool = DelegateTaskTool(spawner: spawner, emit: { [weak self] event in
                 self?.emitEvent(event)
             })
-            pendingRegistrationTasks.append(Task { [tools] in await tools.register(delegateTool) })
+            trackRegistration { [tools] in await tools.register(delegateTool) }
         }
     }
 
@@ -604,10 +619,10 @@ public actor Agent {
             // No stale memory tool may keep writing into an unreachable inbox
             // or a detached store.
             memoryInbox = nil
-            trackRegistrationTask(Task { [tools] in
+            trackRegistration { [tools] in
                 await tools.unregister(named: "remember")
                 await tools.unregister(named: "update_agent_profile")
-            })
+            }
             return
         }
         let notes = inbox ?? MemoryInbox()
@@ -627,11 +642,11 @@ public actor Agent {
         guard let store = store else { return }
         register(LearnSkillTool(store: store, registry: skillRegistry))
         register(UseSkillTool(registry: skillRegistry, handle: AgentHandle(self)))
-        trackRegistrationTask(Task { [skillRegistry] in
+        trackRegistration { [skillRegistry] in
             if let skills = try? await store.loadAll() {
                 await skillRegistry.registerAll(skills)
             }
-        })
+        }
     }
     public func setCallbacks(_ newCallbacks: AgentCallbacks?) throws { try requireIdle(); callbacks = newCallbacks }
     public func setPlanner(_ newPlanner: (any AgentPlanner)?) throws { try requireIdle(); planner = newPlanner }
@@ -644,37 +659,63 @@ public actor Agent {
     /// Enable/disable autonomous mode at runtime. When `true`, tools marked
     /// `requiresConfirmation` run without prompting `onToolConfirmation`.
     public func setAutonomousMode(_ enabled: Bool) {
-        trackRegistrationTask(Task { await dispatcher.setAutonomousMode(enabled) })
+        trackRegistration { [dispatcher] in await dispatcher.setAutonomousMode(enabled) }
     }
 
-    /// Register a tool.
+    /// Register a tool. Registrations run in call order, so a later
+    /// registration of the same name always wins: an app replacing a
+    /// framework tool (Naseem's `learn_skill`, registered after
+    /// `setSkillStore`) gets the same tool — and the same tool block on the
+    /// wire — on every engine. An app that registers its own `learn_skill`
+    /// BEFORE `setSkillStore` loses to the framework's.
     public func register(_ tool: any AgentTool) {
-        trackRegistrationTask(Task { await tools.register(tool) })
+        trackRegistration { [tools] in await tools.register(tool) }
     }
 
-    /// Register multiple tools.
+    /// Register multiple tools (in call order, like `register(_:)`).
     public func registerAll(_ toolsToRegister: [any AgentTool]) {
-        trackRegistrationTask(Task { await tools.registerAll(toolsToRegister) })
+        trackRegistration { [tools] in await tools.registerAll(toolsToRegister) }
+    }
+
+    /// Every registered tool, by name, once the registrations still in
+    /// flight have landed (`register` is fire-and-forget).
+    public func registeredTools() async -> [any AgentTool] {
+        await awaitPendingRegistrations()
+        return await tools.allTools()
     }
 
     /// Set context fields for tools (e.g. current directory, selected files).
     public func setToolContext(_ context: [String: Any]) {
         // Swift 6: [String: Any] is not Sendable — wrap in @unchecked Sendable box
         let box = ToolContextBox(values: context)
-        trackRegistrationTask(Task { await dispatcher.setContext(box.values) })
+        trackRegistration { [dispatcher] in await dispatcher.setContext(box.values) }
     }
 
     /// Register a skill for progressive disclosure.
     public func registerSkill(_ skill: AgentSkill) {
-        trackRegistrationTask(Task { await skillRegistry.register(skill) })
+        trackRegistration { [skillRegistry] in await skillRegistry.register(skill) }
     }
 
     /// Register multiple skills.
     public func registerSkills(_ skills: [AgentSkill]) {
-        trackRegistrationTask(Task { await skillRegistry.registerAll(skills) })
+        trackRegistration { [skillRegistry] in await skillRegistry.registerAll(skills) }
     }
 
-    private func trackRegistrationTask(_ task: Task<Void, Never>) {
+    /// Queue registration work behind everything queued before it (the
+    /// tail), so it all lands in call order, whichever setter queued the
+    /// earlier work. Independent Tasks left the winner of a same-name
+    /// registration to scheduling.
+    ///
+    /// `nonisolated` so `init` can use it after `self` has escaped (it cannot
+    /// call isolated methods there); every other caller is actor-isolated,
+    /// which is what keeps the `nonisolated(unsafe)` state safe.
+    private nonisolated func trackRegistration(_ work: @escaping @Sendable () async -> Void) {
+        let previous = registrationTail
+        let task = Task {
+            await previous?.value
+            await work()
+        }
+        registrationTail = task
         pendingRegistrationTasks.append(task)
     }
 
@@ -921,6 +962,8 @@ public actor Agent {
 
         await awaitPendingRegistrations()
         resetCancellation()
+        firstRequestPending = true
+        firstRequestSystemDigest = nil   // this run's, never the previous run's
         let startTime = Date()
         emit(.started(query: query))
 
@@ -1766,6 +1809,11 @@ public actor Agent {
         let promptChars = llmMessages.reduce(0) { $0 + $1.content.count }
         let estimate = Int((Double(promptChars) / 3.5).rounded()) + llmMessages.count * 4
         lastPromptTokens = estimate
+        if firstRequestPending {
+            firstRequestPending = false
+            firstRequestSystemDigest = PromptDigest.hex(
+                llmMessages.filter { $0.role == .system }.map(\.content).joined(separator: "\n\n"))
+        }
 
         return LLMRequest(
             model: config.model ?? config.provider.configuration.defaultModel ?? "",

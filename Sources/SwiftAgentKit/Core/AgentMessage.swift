@@ -128,13 +128,10 @@ public struct AgentMessage: Identifiable, @unchecked Sendable, Codable {
                 // Convert AgentToolCall to LLMToolCall so the provider
                 // can serialize them for the model to correlate results
                 let llmToolCalls = toolCalls.map { call in
-                    // Serialize parameters to JSON string
-                    let paramsData = try? JSONEncoder().encode(call.parameters)
-                    let argsString = paramsData.flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
-                    return LLMToolCall(
+                    LLMToolCall(
                         id: call.id,
                         name: call.name,
-                        arguments: argsString,
+                        arguments: Self.canonicalArguments(call.parameters),
                         providerMetadata: call.providerMetadata
                     )
                 }
@@ -148,6 +145,17 @@ public struct AgentMessage: Identifiable, @unchecked Sendable, Codable {
             }
             return .user(content)
         }
+    }
+
+    /// The JSON a replayed tool call carries: keys sorted at every level, so
+    /// the same call is the same bytes on every request. An unsorted encoder
+    /// reorders keys from one encode to the next, and the provider's prompt
+    /// cache stops at the first replayed call that differs.
+    static func canonicalArguments(_ parameters: [String: AnyCodable]) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(parameters) else { return "{}" }
+        return String(decoding: data, as: UTF8.self)
     }
 }
 
@@ -355,6 +363,17 @@ public struct AnyCodable: @unchecked Sendable, Codable {
         switch value {
         case is NSNull:
             try container.encodeNil()
+        case let number as NSNumber:
+            // JSONSerialization gives every number as NSNumber, and an NSNumber
+            // holding 0 or 1 also casts to Bool — so matching `Bool` first
+            // replayed an integer 1 as `true`. Ask the number what it is.
+            if CFGetTypeID(number) == CFBooleanGetTypeID() {
+                try container.encode(number.boolValue)
+            } else if CFNumberIsFloatType(number as CFNumber) {
+                try container.encode(number.doubleValue)
+            } else {
+                try container.encode(number.int64Value)
+            }
         case let bool as Bool:
             try container.encode(bool)
         case let int as Int:

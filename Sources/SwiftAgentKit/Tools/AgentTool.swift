@@ -295,14 +295,17 @@ public actor ToolRegistry {
         tools[name]
     }
 
-    /// Get all registered tools.
+    /// All registered tools, by name. A dictionary's own order differs for
+    /// every instance, so two engines with the same tools sent them in
+    /// different orders: no shared tool block between chats, and a full
+    /// prompt-cache miss on every rebuild.
     public func allTools() -> [any AgentTool] {
-        Array(tools.values)
+        tools.values.sorted { $0.name < $1.name }
     }
 
-    /// Get all tool names.
+    /// All tool names, sorted.
     public func allToolNames() -> [String] {
-        Array(tools.keys)
+        tools.keys.sorted()
     }
 
     /// Check if a tool is registered.
