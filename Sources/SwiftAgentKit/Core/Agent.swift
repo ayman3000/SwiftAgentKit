@@ -400,6 +400,9 @@ public actor Agent {
     /// passes the bound again; cleared by compaction, or when that message is
     /// no longer stored.
     private var overflowCutAfter: UUID?
+    /// The id of the current run's task message: the overflow net never
+    /// leaves it out, whatever user-role nudges the run appends after it.
+    private var runTaskID: UUID?
 
     /// Actor-isolated run/cancel state — actor serialization is the guard now.
     private var isRunActive = false
@@ -990,11 +993,9 @@ public actor Agent {
         }
 
         // Add user message to conversation
-        if images.isEmpty {
-            conversation.append(.user(query))
-        } else {
-            conversation.append(.user(query, images: images))
-        }
+        let task: AgentMessage = images.isEmpty ? .user(query) : .user(query, images: images)
+        runTaskID = task.id
+        conversation.append(task)
 
         // Get registered tools and strengthen system prompt (must happen before skill injection)
         let registeredToolsEarly = await tools.allTools()
@@ -1825,16 +1826,19 @@ public actor Agent {
 
     /// The steps the overflow net may leave out, oldest first: each a whole
     /// unit (a tool-call turn with its results, or one message). Never the
-    /// system prompt, the run's task (the latest user message), or the step
-    /// the model is waiting on (the trailing tool exchange; else the last
-    /// message).
-    static func overflowUnits(_ stored: [AgentMessage]) -> [[Int]] {
-        let pinned = stored.lastIndex(where: { $0.role == .user })
+    /// system prompt, the run's task (the message with id `task`, recorded
+    /// when the run starts; without one, the latest user message), or the
+    /// step the model is waiting on: the last tool-call turn with everything
+    /// after it, when that is only its results and user-role nudges (loop,
+    /// repair, verifier, plan, reasoning, progress); else the last message.
+    static func overflowUnits(_ stored: [AgentMessage], task: UUID? = nil) -> [[Int]] {
+        let pinned = task.map { id in stored.firstIndex { $0.id == id } }
+            ?? stored.lastIndex(where: { $0.role == .user })
         let nonSystem = stored.indices.filter { stored[$0].role != .system }
         guard let last = nonSystem.last else { return [] }
         var end = last
         if let head = stored.lastIndex(where: { $0.role == .assistant && $0.toolCalls?.isEmpty == false }),
-           stored[(head + 1)...].allSatisfy({ $0.role == .tool }) {
+           stored[(head + 1)...].allSatisfy({ $0.role == .tool || $0.role == .user }) {
             end = head
         }
         var units: [[Int]] = []
@@ -1850,6 +1854,19 @@ public actor Agent {
             units.append(unit)
         }
         return units
+    }
+
+    /// One trial sift for the overflow net's cut search: `view` sifted as if
+    /// it were sent, with the manager's sticky state put back afterwards, so
+    /// a request that is never sent commits nothing. Returns the sift and the
+    /// state it would have left (committed only for the cut chosen).
+    static func trialSift(_ view: [AgentMessage], manager: ContextManager,
+                          systemTemplate: (String) -> String) async -> (messages: [LLMMessage], state: ContextManager.SiftState) {
+        let saved = manager.siftState
+        let messages = await manager.modelMessages(view, systemTemplate: systemTemplate)
+        let after = manager.siftState
+        manager.siftState = saved
+        return (messages, after)
     }
 
     /// The overflow cut (how many of the oldest units a call leaves out).
@@ -1915,7 +1932,7 @@ public actor Agent {
                                       tools: [LLMToolDefinition], manager: ContextManager) async -> [LLMMessage] {
         let stored = conversation.allMessages()
         let transient = messagesForLLM.count > stored.count ? Array(messagesForLLM.dropFirst(stored.count)) : []
-        let units = Self.overflowUnits(stored)
+        let units = Self.overflowUnits(stored, task: runTaskID)
         var current = 0
         if let after = overflowCutAfter {
             if let index = stored.firstIndex(where: { $0.id == after }) {
@@ -1929,13 +1946,16 @@ public actor Agent {
         let full = estimatedRequestTokens(sifted, tools: tools)
         guard current > 0 || full > bound else { return sifted }
 
-        var built: [Int: (messages: [LLMMessage], tokens: Int)] = [0: (sifted, full)]
-        func build(_ cut: Int) async -> (messages: [LLMMessage], tokens: Int) {
+        // Each candidate cut is a trial sift: it starts from, and leaves, the
+        // state the full sift committed; only the cut chosen commits its own.
+        var built: [Int: (messages: [LLMMessage], tokens: Int, state: ContextManager.SiftState)] =
+            [0: (sifted, full, manager.siftState)]
+        func build(_ cut: Int) async -> (messages: [LLMMessage], tokens: Int, state: ContextManager.SiftState) {
             if let done = built[cut] { return done }
             let dropped = Set(units.prefix(cut).flatMap { $0 })
             let kept = stored.indices.filter { !dropped.contains($0) }.map { stored[$0] } + transient
-            let messages = await manager.modelMessages(kept) { [state] content in state.template(content) }
-            let result = (messages, estimatedRequestTokens(messages, tools: tools))
+            let trial = await Self.trialSift(kept, manager: manager) { [state] content in state.template(content) }
+            let result = (trial.messages, estimatedRequestTokens(trial.messages, tools: tools), trial.state)
             built[cut] = result
             return result
         }
@@ -1943,6 +1963,7 @@ public actor Agent {
             await build(cut).tokens
         }
         let chosen = await build(cut)
+        manager.siftState = chosen.state
         if cut != current {
             overflowCutAfter = cut > 0 ? stored[units[cut - 1].last!].id : nil
             let removed = units.prefix(cut).reduce(0) { $0 + $1.count }

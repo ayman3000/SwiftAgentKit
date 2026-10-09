@@ -602,6 +602,28 @@ public final class ContextManager: @unchecked Sendable {
         return boundedCallIDs.contains(callID)
     }
 
+    /// The sift state that later calls depend on: the sticky evictions and
+    /// the results sent bounded. (Receipt and artifact caches are keyed by
+    /// call id and idempotent, so they are not part of it.)
+    struct SiftState: Equatable, Sendable {
+        var stickyEvicted: Set<UUID>
+        var boundedCallIDs: Set<String>
+    }
+
+    /// Read or replace the sift state — the overflow net's trial sifts
+    /// restore it, so only the request actually sent commits anything.
+    var siftState: SiftState {
+        get {
+            lock.lock(); defer { lock.unlock() }
+            return SiftState(stickyEvicted: stickyEvicted, boundedCallIDs: boundedCallIDs)
+        }
+        set {
+            lock.lock(); defer { lock.unlock() }
+            stickyEvicted = newValue.stickyEvicted
+            boundedCallIDs = newValue.boundedCallIDs
+        }
+    }
+
     private func rememberBounded(_ callID: String) {
         guard !callID.isEmpty else { return }
         lock.lock(); defer { lock.unlock() }

@@ -297,4 +297,95 @@ struct HistoryTrimTests {
             #expect(request.messages.filter { $0.role == .tool }.count == 1)
         }
     }
+
+    // MARK: - Fix round 2: the run's task and the current step are pinned
+
+    private static func call(_ id: String) -> AgentMessage {
+        .assistant(content: "", toolCalls: [AgentToolCall(id: id, name: "t")])
+    }
+
+    private static func result(_ id: String) -> AgentMessage {
+        .tool(results: [.success(toolCallId: id, toolName: "t", result: "out")])
+    }
+
+    /// The reviewer's probe: a mid-run user nudge used to become the pinned
+    /// "task", so the units were [[1], [2, 3]] and unit 0 — the first any
+    /// cut drops — was the real task.
+    @Test func aMidRunNudgeDoesNotUnpinTheTask() {
+        let task = AgentMessage.user("THE TASK")
+        let stored: [AgentMessage] = [.system("S"), task, Self.call("c1"), Self.result("c1"),
+                                      .user("You've called t with the same arguments 3 times"),
+                                      Self.call("c2"), Self.result("c2")]
+        let units = Agent.overflowUnits(stored, task: task.id)
+        #expect(!units.flatMap { $0 }.contains(1))
+        #expect(units == [[2, 3], [4]])
+    }
+
+    /// A loop nudge after the tool results is part of the step the model is
+    /// waiting on: neither that exchange nor the nudge is droppable.
+    @Test func aTrailingNudgeKeepsTheCurrentStepPinned() {
+        let task = AgentMessage.user("THE TASK")
+        let stored: [AgentMessage] = [.system("S"), task, Self.call("c1"), Self.result("c1"),
+                                      Self.call("c2"), Self.result("c2"),
+                                      .user("You've called t with the same arguments 3 times")]
+        #expect(Agent.overflowUnits(stored, task: task.id) == [[2, 3]])
+    }
+
+    /// End to end: every step repeats the same call, so the loop detector
+    /// appends a nudge after the results on most calls. The net cuts, and
+    /// still every request carries the task and the step being answered.
+    @Test func loopNudgesNeverLetTheNetDropTheTask() async throws {
+        let steps = 11
+        let provider = ScriptedProvider(turns: (1...steps).map {
+            [LLMToolCall(id: "m\($0)", name: "make_output", arguments: #"{"n":1}"#)]
+        } + [[]])
+        let agent = Agent(config: AgentConfig(provider: provider, model: "mock", systemPrompt: "BASE",
+                                              maxTurns: steps + 2, contextWindow: 4_096,
+                                              tools: [OutputTool(size: 700)],
+                                              contextManager: ContextManager(inlineBudgetChars: 100_000),
+                                              loopDetection: LoopDetectionConfig(stopThreshold: 100),
+                                              progressNudgeFractions: []))
+        let log = OverflowLog()
+        agent.onEvent { event in
+            if case .historyTrimmed(_, _, let reason) = event { log.trimmed(reason) }
+        }
+        _ = try await agent.run("do the task")
+        #expect(log.allReasons.contains(.overflow))
+        let captured = provider.captured
+        #expect(captured.count == steps + 1)
+        for (index, request) in captured.enumerated() where index >= 1 {
+            #expect(request.messages.contains { $0.role == .user && $0.content == "do the task" })
+            #expect(request.messages.contains { $0.toolCalls?.contains { $0.id == "m\(index)" } == true })
+            #expect(request.messages.contains { $0.role == .tool && $0.toolCallId == "m\(index)" })
+        }
+        // The nudges really were trailing the results.
+        #expect(captured.contains { $0.messages.last?.role == .user && $0.messages.last?.content.contains("same arguments") == true })
+    }
+
+    // MARK: - Fix round 2: trial sifts commit nothing
+
+    /// A trial sift of a shorter view, under a configuration where it evicts
+    /// (slack ≥ minimum batch, so the proof that trials are inert does not
+    /// hold), leaves the manager's sticky state as it was.
+    @Test func aTrialSiftLeavesTheManagerUnchanged() async {
+        let manager = ContextManager(summaryLength: 40, inlineBudgetChars: 2_000)
+        manager.evictionSlackFraction = 0.5
+        manager.minEvictionBatchFraction = 0.1
+        var view: [AgentMessage] = [.system("S"), .user("go")]
+        for i in 0..<6 { view += ContextSiftBatchTests.step(i, size: 800) }
+        let before = manager.siftState
+        let trial = await Agent.trialSift(view, manager: manager) { $0 }
+        // The trial itself evicted (so a committed sift would have changed state)…
+        #expect(trial.state != before)
+        #expect(trial.messages.contains { $0.content.contains(ContextManager.receiptHeader) })
+        // …and the manager is as it was.
+        #expect(manager.siftState == before)
+        // Committing the trial's state gives what a real sift leaves.
+        let committed = ContextManager(summaryLength: 40, inlineBudgetChars: 2_000)
+        committed.evictionSlackFraction = 0.5
+        committed.minEvictionBatchFraction = 0.1
+        let real = await committed.modelMessages(view) { $0 }
+        #expect(real.map(\.role) == trial.messages.map(\.role))   // artifact ids differ per store
+        #expect(committed.siftState == trial.state)
+    }
 }
