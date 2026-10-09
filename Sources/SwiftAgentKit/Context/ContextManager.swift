@@ -393,7 +393,7 @@ public final class ContextManager: @unchecked Sendable {
 
     /// A tool result exactly as the normal (un-sifted) path sends it.
     private static func fullDisplay(for result: AgentToolResult) -> String {
-        "[Tool: \(result.toolName ?? "unknown")] \(result.isError ? "ERROR" : "OK")\n\(result.result)"
+        "[Tool: \(result.toolName ?? "tool")] \(result.isError ? "ERROR" : "OK")\n\(result.result)"
     }
 
     // MARK: - Private
