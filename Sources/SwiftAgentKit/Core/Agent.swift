@@ -410,6 +410,11 @@ public actor Agent {
     /// nil until a run builds them, and after `invalidateRunContext()` or a
     /// compaction.
     public private(set) var frozenRunContext: FrozenRunContext?
+    /// Bumped by `invalidateRunContext()`, `restoreRunContext` and
+    /// compaction. `runContextParts` captures this before its first await;
+    /// if it changed by the time the build finishes, the build was
+    /// overtaken by one of those and must not freeze its (now stale) result.
+    private var runContextGeneration = 0
     /// The overflow safety net's cut: the id of the last stored message calls
     /// leave out (with every older evictable step). Sticky until the request
     /// passes the bound again; cleared by compaction, or when that message is
@@ -637,6 +642,7 @@ public actor Agent {
         if config.freezeRunContext, let frozen = frozenRunContext, frozen.baseDigest == baseDigest {
             return frozen
         }
+        let generation = runContextGeneration
         var memory = ""
         if let memoryStore {
             memory = await memoryStore.loadContextBlock(project: memoryProject)
@@ -647,7 +653,11 @@ public actor Agent {
         }
         let parts = FrozenRunContext(baseDigest: baseDigest, memory: memory, runContext: runContext,
                                      skillIndex: await skillRegistry.skillIndex())
-        if config.freezeRunContext { frozenRunContext = parts }
+        // An invalidate/restore/compaction that landed during these awaits
+        // already bumped the generation; the stale parts above are still
+        // used for this run (the running reply keeps its prompt) but are
+        // not frozen, so the next run rebuilds instead of reusing them.
+        if config.freezeRunContext && generation == runContextGeneration { frozenRunContext = parts }
         return parts
     }
 
@@ -714,14 +724,21 @@ public actor Agent {
     /// prompt it started with.
     public func invalidateRunContext() {
         frozenRunContext = nil
+        runContextGeneration += 1
     }
 
     /// Use a frozen context saved with the conversation (after a relaunch).
-    /// It is used only if it was made for this engine's base; otherwise the
-    /// next run builds fresh. Idle-only, like the other setters.
+    /// A no-op when `freezeRunContext` is off: nothing ever reads this
+    /// context without it, so storing one would just be a value no run
+    /// reads back and an app that persists `frozenRunContext` after each
+    /// run would keep saving a copy that is not in use. Idle-only, like the
+    /// other setters. When freeze is on, it is used only if it was made for
+    /// this engine's base; otherwise the next run builds fresh.
     public func restoreRunContext(_ context: FrozenRunContext) throws {
         try requireIdle()
+        guard config.freezeRunContext else { return }
         frozenRunContext = context
+        runContextGeneration += 1
     }
     public func setSkillStore(_ store: (any AgentSkillStore)?) throws {
         try requireIdle()
@@ -1841,6 +1858,7 @@ public actor Agent {
         // Compaction is the sanctioned break: memory, the per-run context and
         // the skill index are read again at the start of the next run.
         frozenRunContext = nil
+        runContextGeneration += 1
         overflowCutAfter = nil
         let after = conversation.estimateTotalTokens(conversation.allMessages())
         emit(.contextCompacted(tokensBefore: before, tokensAfter: after, reason: reason))
