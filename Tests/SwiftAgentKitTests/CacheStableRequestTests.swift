@@ -364,12 +364,18 @@ extension CacheStableRequestTests {
     /// `invalidateRunContext()` (what compaction or a user edit does).
     @Test func aChatStaysCacheStableAcrossRunsABatchAndARelaunch() async throws {
         let memory = TextMemoryStore("FACTS v1")
+        // Artifacts on disk, as the app keeps them: the relaunch opens a new
+        // store on the same folder.
+        let artifactDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sak-cache-stable-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: artifactDir) }
         func makeAgent(_ provider: ScriptedProvider) async throws -> Agent {
             // Progress notes off: with the defaults, turn 3 of each run would
             // carry one, each a tail-only break, and this test counts batches.
             let agent = Agent(config: AgentConfig(provider: provider, model: "mock", systemPrompt: "BASE",
                                                   maxTurns: 6, tools: [StepTool()],
-                                                  contextManager: ContextManager(inlineBudgetChars: 2_600),
+                                                  contextManager: ContextManager(store: FileArtifactStore(directory: artifactDir),
+                                                                                 inlineBudgetChars: 2_600),
                                                   loopDetection: nil, progressNudgeFractions: [],
                                                   freezeRunContext: true))
             try await agent.setMemoryStore(memory)
@@ -420,12 +426,31 @@ extension CacheStableRequestTests {
         #expect(try Self.streamWireBody(after).starts(with: try #require(Self.messagesPrefix(
             try Self.streamWireBody(LLMRequest(model: "mock", messages: Array(after.messages.prefix(2)),
                                                tools: after.tools))))))
-        // Known gap: from the first evicted step on it is NOT append-only. The
-        // receipt cache and the evicted set live in memory, so the new engine
-        // saves each evicted output again (a new random artifact id in every
-        // receipt) and evicts afresh (one step more than the old engine had).
-        // When that is fixed this block stops recording an issue and fails.
-        withKnownIssue("ContextSift receipts and evicted set are rebuilt after a relaunch") {
+        // Receipts are the same bytes after the relaunch: each artifact id
+        // comes from its tool-call id and output, and the new store reuses
+        // the artifact already on disk instead of saving it again.
+        let receipts = before.messages.filter { $0.content.hasPrefix(ContextManager.receiptHeader) }
+        #expect(!receipts.isEmpty)
+        for receipt in receipts {
+            #expect(after.messages.contains(receipt), "a receipt changed across the relaunch")
+        }
+        let artifactFiles = try FileManager.default.contentsOfDirectory(atPath: artifactDir.path)
+        #expect(Set(artifactFiles.map { ($0 as NSString).deletingPathExtension }).count == artifactFiles.count / 2)
+        #expect(artifactFiles.count == 2 * 4, "steps 1–4 saved once each, none again on the relaunch")
+        // So the prefix now holds through every receipt, up to the first
+        // step the OLD engine kept inline (step 4).
+        let firstDiff = try #require(zip(before.messages, after.messages).enumerated()
+            .first { $0.element.0 != $0.element.1 }?.offset)
+        #expect(before.messages[firstDiff].toolCalls?.first?.id == "s4")
+        #expect(after.messages[firstDiff].content.hasPrefix(ContextManager.receiptHeader))
+        let held = try #require(Self.messagesPrefix(try Self.wireBody(
+            LLMRequest(model: "mock", messages: Array(before.messages.prefix(firstDiff)), tools: before.tools))))
+        #expect(try Self.wireBody(after).starts(with: held))
+        // Remaining gap (accepted follow-up, not fixed here): the evicted set
+        // lives in memory, so the new engine evicts afresh and also evicts
+        // step 4, which the old engine still sent inline. When the evicted
+        // boundary is persisted this block stops recording an issue and fails.
+        withKnownIssue("the evicted set is rebuilt after a relaunch and evicts one more step") {
             let prefix = try #require(Self.messagesPrefix(try Self.wireBody(before)))
             #expect(try Self.wireBody(after).starts(with: prefix), "the relaunch rewrote an earlier byte")
         }
