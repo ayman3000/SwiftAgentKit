@@ -85,7 +85,9 @@ public struct ArtifactMatch: Sendable, Equatable {
 /// A store is shared by reference between agents (parent and sub-agents), so
 /// conformers must be reference types (classes or actors).
 public protocol ArtifactStore: AnyObject, Sendable {
-    /// Store a full output and return its artifact record (with a fresh id).
+    /// Store a full output and return its artifact record. Built-in stores
+    /// derive the id from the tool-call id and content (`Artifact.makeID`)
+    /// and return the existing artifact instead of storing it twice.
     /// `toolName` is the producing tool (nil when unknown) — persistence
     /// filters key off it (e.g. keep run_shell logs, skip re-derivable reads).
     func save(_ content: String, description: String, toolCallID: String?, toolName: String?) async -> Artifact
@@ -112,6 +114,24 @@ public protocol ListableArtifactStore: ArtifactStore {
     func list(limit: Int) async -> [ArtifactSummary]
 }
 
+public extension Artifact {
+    /// The id a store gives an artifact: `artifact-` + 12 lowercase hex.
+    ///
+    /// With a tool-call id it is derived from that id AND the content, so the
+    /// same evicted output gets the same id after a relaunch (its receipt is
+    /// the same bytes, which keeps the prompt cache warm) and a store can
+    /// reuse the artifact instead of writing a duplicate. The content is part
+    /// of the key because some providers reuse call ids (`call_0`) across
+    /// runs: a different output under the same call id gets its own artifact.
+    /// Without a call id the id is random, as before.
+    static func makeID(toolCallID: String?, content: String) -> String {
+        guard let toolCallID, !toolCallID.isEmpty else {
+            return "artifact-" + UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "").prefix(12)
+        }
+        return "artifact-" + PromptDigest.hex(toolCallID + "\u{0}" + content).prefix(12)
+    }
+}
+
 /// In-memory artifact store (process lifetime). Good for apps and tests; swap in
 /// a file-backed store for durability.
 public actor InMemoryArtifactStore: ArtifactStore, ListableArtifactStore {
@@ -120,8 +140,10 @@ public actor InMemoryArtifactStore: ArtifactStore, ListableArtifactStore {
     public init() {}
 
     public func save(_ content: String, description: String, toolCallID: String?, toolName: String?) -> Artifact {
-        let id = "artifact-" + UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "").prefix(12)
-        let artifact = Artifact(id: String(id), toolCallID: toolCallID, toolName: toolName,
+        let id = Artifact.makeID(toolCallID: toolCallID, content: content)
+        // Same call, same output: already stored — reuse it.
+        if let existing = artifacts[id] { return existing }
+        let artifact = Artifact(id: id, toolCallID: toolCallID, toolName: toolName,
                                 description: description, content: content)
         artifacts[artifact.id] = artifact
         return artifact

@@ -161,6 +161,15 @@ public struct AgentConfig: Sendable {
     /// Compact before the next call once the last prompt passes this share of
     /// the window. nil = only on a context-length error.
     public var compactAtFraction: Double?
+    /// Build the system prompt's dynamic parts — persistent memory, the app's
+    /// per-run context, the skill index — once, and reuse them on every
+    /// later run (`Agent.frozenRunContext`) until `invalidateRunContext()` or
+    /// a compaction. Off (default): rebuilt at the start of every run, as
+    /// before. On, a conversation's system prompt stays the same bytes from
+    /// run to run, so provider prompt caches cover the whole conversation;
+    /// what the agent files during it reaches the model through the tool
+    /// result that filed it, not through the prompt.
+    public var freezeRunContext: Bool
 
     public init(
         provider: any LLMProvider,
@@ -194,10 +203,12 @@ public struct AgentConfig: Sendable {
         toolGroups: [DeferredToolGroup] = [],
         maxReasoningSeconds: TimeInterval? = nil,
         contextCompactor: (any ContextCompactor)? = nil,
-        compactAtFraction: Double? = nil
+        compactAtFraction: Double? = nil,
+        freezeRunContext: Bool = false
     ) {
         self.contextCompactor = contextCompactor
         self.compactAtFraction = compactAtFraction
+        self.freezeRunContext = freezeRunContext
         self.provider = provider
         self.model = model
         self.temperature = temperature
@@ -395,6 +406,15 @@ public actor Agent {
 
     /// Set at the start of a run; the next request built records its digest.
     private var firstRequestPending = false
+    /// The frozen parts of the system prompt (`AgentConfig.freezeRunContext`):
+    /// nil until a run builds them, and after `invalidateRunContext()` or a
+    /// compaction.
+    public private(set) var frozenRunContext: FrozenRunContext?
+    /// Bumped by `invalidateRunContext()`, `restoreRunContext` and
+    /// compaction. `runContextParts` captures this before its first await;
+    /// if it changed by the time the build finishes, the build was
+    /// overtaken by one of those and must not freeze its (now stale) result.
+    private var runContextGeneration = 0
     /// The overflow safety net's cut: the id of the last stored message calls
     /// leave out (with every older evictable step). Sticky until the request
     /// passes the bound again; cleared by compaction, or when that message is
@@ -600,6 +620,60 @@ public actor Agent {
             + lines.joined(separator: "\n")
     }
 
+    /// The tool line of the system prompt (empty without tools). Deferred
+    /// tools are left out, loaded or not.
+    private func toolInstructionLine(_ registered: [any AgentTool]) -> String {
+        guard !registered.isEmpty else { return "" }
+        let hiddenNames = Set(deferredGroups.flatMap(\.toolNames))
+        let toolNames = registered.map { $0.name }.filter { !hiddenNames.contains($0) }.joined(separator: ", ")
+        return """
+
+        You have access to the following tools: \(toolNames).
+        IMPORTANT: When the user's request requires action (reading files, running commands, searching, creating, etc.), you MUST use the available tools instead of answering from memory. Call the appropriate tool to get real information, then use the tool results to formulate your answer. Do not guess or hallucinate results — always call the tool to get the actual data.
+        """
+    }
+
+    /// Memory, the per-run context and the skill index for this run: the
+    /// frozen ones when frozen for this base, otherwise read now (and frozen
+    /// when `freezeRunContext` is on).
+    private func runContextParts(base: String, toolLine: String, groupIndex: String,
+                                 toolNames: [String]) async -> FrozenRunContext {
+        let baseDigest = PromptDigest.hex([base, toolLine, groupIndex].joined(separator: "\u{1F}"))
+        if config.freezeRunContext, let frozen = frozenRunContext, frozen.baseDigest == baseDigest {
+            return frozen
+        }
+        let generation = runContextGeneration
+        var memory = ""
+        if let memoryStore {
+            memory = await memoryStore.loadContextBlock(project: memoryProject)
+        }
+        var runContext = ""
+        if let runContextProvider {
+            runContext = await runContextProvider(toolNames)
+        }
+        let parts = FrozenRunContext(baseDigest: baseDigest, memory: memory, runContext: runContext,
+                                     skillIndex: await skillRegistry.skillIndex())
+        // An invalidate/restore/compaction that landed during these awaits
+        // already bumped the generation; the stale parts above are still
+        // used for this run (the running reply keeps its prompt) but are
+        // not frozen, so the next run rebuilds instead of reusing them.
+        if config.freezeRunContext && generation == runContextGeneration { frozenRunContext = parts }
+        return parts
+    }
+
+    /// The system prompt, assembled exactly as before freezing existed: the
+    /// base, memory and the per-run context separated by a blank line, then
+    /// the tool line, the skill index and the tool-group index.
+    static func renderSystemPrompt(base: String, parts: FrozenRunContext,
+                                   toolLine: String, groupIndex: String) -> String {
+        var prompt = base
+        for block in [parts.memory, parts.runContext] where !block.isEmpty {
+            if !prompt.isEmpty { prompt += "\n\n" }
+            prompt += block
+        }
+        return prompt + toolLine + parts.skillIndex + groupIndex
+    }
+
     /// The deferred group a tool belongs to, when it isn't loaded yet.
     private func unloadedGroup(ofTool name: String) -> DeferredToolGroup? {
         deferredGroups.first { $0.toolNames.contains(name) && !loadedToolGroupIDs.contains($0.id) }
@@ -643,6 +717,28 @@ public actor Agent {
     public func setRunContextProvider(_ provider: (@Sendable ([String]) async -> String)?) throws {
         try requireIdle()
         runContextProvider = provider
+    }
+
+    /// Build memory, the per-run context and the skill index again at the
+    /// start of the next run. Safe during a run: the running reply keeps the
+    /// prompt it started with.
+    public func invalidateRunContext() {
+        frozenRunContext = nil
+        runContextGeneration += 1
+    }
+
+    /// Use a frozen context saved with the conversation (after a relaunch).
+    /// A no-op when `freezeRunContext` is off: nothing ever reads this
+    /// context without it, so storing one would just be a value no run
+    /// reads back and an app that persists `frozenRunContext` after each
+    /// run would keep saving a copy that is not in use. Idle-only, like the
+    /// other setters. When freeze is on, it is used only if it was made for
+    /// this engine's base; otherwise the next run builds fresh.
+    public func restoreRunContext(_ context: FrozenRunContext) throws {
+        try requireIdle()
+        guard config.freezeRunContext else { return }
+        frozenRunContext = context
+        runContextGeneration += 1
     }
     public func setSkillStore(_ store: (any AgentSkillStore)?) throws {
         try requireIdle()
@@ -997,51 +1093,20 @@ public actor Agent {
         runTaskID = task.id
         conversation.append(task)
 
-        // Get registered tools and strengthen system prompt (must happen before skill injection)
+        // Get registered tools, then the system prompt (before skill injection).
         let registeredToolsEarly = await tools.allTools()
-        var effectiveSystemPrompt = config.systemPrompt ?? ""
-
-        // Persistent memory must be part of every model call. Loading it at run
-        // time ensures facts saved by earlier runs are immediately available.
-        if let memoryStore {
-            let memoryContext = await memoryStore.loadContextBlock(project: memoryProject)
-            if !memoryContext.isEmpty {
-                if !effectiveSystemPrompt.isEmpty {
-                    effectiveSystemPrompt += "\n\n"
-                }
-                effectiveSystemPrompt += memoryContext
-            }
-        }
-
-        // The app's per-run context (built now, so what changed since the last
-        // run — a lesson filed after it — is used from this one).
-        if let runContextProvider {
-            let extra = await runContextProvider(registeredToolsEarly.map(\.name))
-            if !extra.isEmpty {
-                if !effectiveSystemPrompt.isEmpty { effectiveSystemPrompt += "\n\n" }
-                effectiveSystemPrompt += extra
-            }
-        }
-
-        if !registeredToolsEarly.isEmpty {
-            let hiddenNames = Set(deferredGroups.flatMap(\.toolNames))
-            let toolNames = registeredToolsEarly.map { $0.name }.filter { !hiddenNames.contains($0) }.joined(separator: ", ")
-            let toolInstruction = """
-
-            You have access to the following tools: \(toolNames).
-            IMPORTANT: When the user's request requires action (reading files, running commands, searching, creating, etc.), you MUST use the available tools instead of answering from memory. Call the appropriate tool to get real information, then use the tool results to formulate your answer. Do not guess or hallucinate results — always call the tool to get the actual data.
-            """
-            effectiveSystemPrompt += toolInstruction
-        }
-
-        // Model-driven skills: a compact, query-independent index of every
-        // skill goes into the system prompt; the model loads full
-        // instructions on demand with `use_skill`. The index is byte-stable
-        // (alphabetical, changes only when skills change) so the prompt
-        // prefix stays cache-friendly across steps and turns.
-        let skillIndex = await skillRegistry.skillIndex() + toolGroupIndex()
-        if !skillIndex.isEmpty || !effectiveSystemPrompt.isEmpty {
-            conversation.setSystemMessage(.system(effectiveSystemPrompt + skillIndex))
+        let basePrompt = config.systemPrompt ?? ""
+        let toolLine = toolInstructionLine(registeredToolsEarly)
+        let groupIndex = toolGroupIndex()
+        // Persistent memory, the app's per-run context and the skill index:
+        // read now, so facts saved by earlier runs are available — or, with
+        // `freezeRunContext`, kept from the conversation's first run.
+        let parts = await runContextParts(base: basePrompt, toolLine: toolLine, groupIndex: groupIndex,
+                                          toolNames: registeredToolsEarly.map(\.name))
+        let systemPrompt = Self.renderSystemPrompt(base: basePrompt, parts: parts,
+                                                   toolLine: toolLine, groupIndex: groupIndex)
+        if !systemPrompt.isEmpty {
+            conversation.setSystemMessage(.system(systemPrompt))
         }
 
         var totalTurns = 0
@@ -1790,6 +1855,10 @@ public actor Agent {
                                                      estimate: conversation.estimateTokens)
         guard !middle.isEmpty, let checkpoint = await compactor.summarize(middle: middle, reason: reason) else { return nil }
         conversation.replaceNonSystemMessages(ContextCompaction.assemble(checkpoint: checkpoint, tail: tail))
+        // Compaction is the sanctioned break: memory, the per-run context and
+        // the skill index are read again at the start of the next run.
+        frozenRunContext = nil
+        runContextGeneration += 1
         overflowCutAfter = nil
         let after = conversation.estimateTotalTokens(conversation.allMessages())
         emit(.contextCompacted(tokensBefore: before, tokensAfter: after, reason: reason))

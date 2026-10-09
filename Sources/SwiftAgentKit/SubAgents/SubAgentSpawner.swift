@@ -106,6 +106,9 @@ public final class SubAgentSpawner: @unchecked Sendable {
         config.subAgentModel = nil
         config.subAgentReasoningEffort = nil
         config.enableSubAgents = false   // defense in depth vs. recursion
+        // A child's prompt is built fresh, from current memory, on every
+        // spawn; it runs one bounded task, so there is nothing to keep.
+        config.freezeRunContext = false
         config.maxTurns = min(config.maxTurns, max(1, config.maxSubAgentTurns))
         config.tools = []                       // registered explicitly below
 

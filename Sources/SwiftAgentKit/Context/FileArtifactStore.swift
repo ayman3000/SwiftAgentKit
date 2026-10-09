@@ -61,8 +61,11 @@ public actor FileArtifactStore: ArtifactStore, ListableArtifactStore {
     // MARK: - ArtifactStore
 
     public func save(_ content: String, description: String, toolCallID: String?, toolName: String?) -> Artifact {
-        let id = "artifact-" + UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "").prefix(12)
-        let artifact = Artifact(id: String(id), toolCallID: toolCallID, toolName: toolName,
+        let id = Artifact.makeID(toolCallID: toolCallID, content: content)
+        // Same call, same output — saved earlier this session or before a
+        // relaunch: reuse it instead of writing a duplicate to disk.
+        if let existing = get(id) { return existing }
+        let artifact = Artifact(id: id, toolCallID: toolCallID, toolName: toolName,
                                 description: description, content: content)
         memory[artifact.id] = artifact
         if persistFilter(toolName) {

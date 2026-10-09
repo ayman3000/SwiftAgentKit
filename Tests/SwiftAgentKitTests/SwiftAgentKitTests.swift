@@ -2630,6 +2630,57 @@ private func tempArtifactDir() -> URL {
     #expect(listed.first?.toolName == "run_shell")
 }
 
+/// Saves one evicted step through a FRESH ContextManager (what a relaunch
+/// builds) and returns the model-facing messages.
+private func evictOneStep(_ store: any ArtifactStore) async -> [LLMMessage] {
+    let manager = ContextManager(store: store, summaryLength: 40, inlineBudgetChars: 0)
+    let messages: [AgentMessage] = [
+        .system("sys"),
+        .user("build it"),
+        .assistant(content: "", toolCalls: [AgentToolCall(id: "c1", name: "run_shell")]),
+        .tool(results: [.success(toolCallId: "c1", toolName: "run_shell",
+                                 result: "BUILD LOG " + String(repeating: "x", count: 500))]),
+        .assistant("built"),
+        .user("next"),
+    ]
+    return await manager.modelMessages(messages) { $0 }
+}
+
+@Test func testArtifactForAnEvictedResultIsSavedOnceAcrossFreshManagers() async throws {
+    let dir = tempArtifactDir()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let store = FileArtifactStore(directory: dir)
+    let first = await evictOneStep(store)
+    let second = await evictOneStep(store)
+    // A relaunch: a new store on the same folder, and a new manager.
+    let third = await evictOneStep(FileArtifactStore(directory: dir))
+
+    #expect(first.map(\.content) == second.map(\.content), "receipts are byte-identical")
+    #expect(first.map(\.content) == third.map(\.content), "receipts survive a relaunch byte-identical")
+    let id = try #require(first.lazy.compactMap { firstArtifactID(in: $0.content) }.first)
+    #expect(await store.list(limit: 10).map(\.id) == [id])
+    let files = try FileManager.default.contentsOfDirectory(atPath: dir.path).sorted()
+    #expect(files == [id + ".json", id + ".txt"], "one artifact on disk, not one per relaunch")
+}
+
+@Test func testInMemoryArtifactStoreReusesTheArtifactForACall() async {
+    let store = InMemoryArtifactStore()
+    let a = await store.save("full output", description: "t", toolCallID: "c1", toolName: "run_shell")
+    let b = await store.save("full output", description: "t", toolCallID: "c1", toolName: "run_shell")
+    #expect(a.id == b.id)
+    #expect(await store.list(limit: 10).count == 1)
+    #expect(a.id.range(of: #"^artifact-[0-9a-f]{12}$"#, options: .regularExpression) != nil)
+    // Same id, different output (a provider that reuses call ids across
+    // runs): a different artifact, never the stale one.
+    let c = await store.save("other output", description: "t", toolCallID: "c1", toolName: "run_shell")
+    #expect(c.id != a.id)
+    #expect(await store.get(c.id)?.content == "other output")
+    // No call id: a fresh artifact each time, as before.
+    let d = await store.save("full output", description: "t", toolCallID: nil, toolName: "run_shell")
+    let e = await store.save("full output", description: "t", toolCallID: nil, toolName: "run_shell")
+    #expect(d.id != e.id)
+}
+
 // MARK: - Progress nudge (turn-budget checkpoint)
 
 @Test func testNudgeTurnSchedule() {

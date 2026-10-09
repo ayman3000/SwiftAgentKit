@@ -2,7 +2,15 @@
   "max_tokens" : 32000,
   "messages" : [
     {
-      "content" : "screenshot the page",
+      "content" : [
+        {
+          "cache_control" : {
+            "type" : "ephemeral"
+          },
+          "text" : "screenshot the page",
+          "type" : "text"
+        }
+      ],
       "role" : "user"
     },
     {
