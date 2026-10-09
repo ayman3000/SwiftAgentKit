@@ -55,6 +55,10 @@ let package = Package(
                 // that pin one request per streamed tool step.
                 .product(name: "LLMProviderKitOllama", package: "LLMProviderKit"),
                 .product(name: "LLMProviderKitOpenAI", package: "LLMProviderKit"),
+                // Anthropic wire test: the regression that the trailing note
+                // and the stop-reasoning nudge keep the request's roles
+                // alternating through AnthropicProvider.prepareRequest.
+                .product(name: "LLMProviderKitAnthropic", package: "LLMProviderKit"),
             ]
         ),
 

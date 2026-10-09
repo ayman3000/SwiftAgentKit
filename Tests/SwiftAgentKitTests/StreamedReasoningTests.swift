@@ -59,12 +59,21 @@ private final class EndlessThinker: LLMProvider, @unchecked Sendable {
     let configuration = LLMProviderConfiguration(name: name, baseURL: URL(string: "inprocess://t")!, defaultModel: "m")
     private let lock = NSLock()
     private(set) var calls = 0
-    private(set) var lastUserMessage = ""
+    /// Every `.user`-role message of the most recently sent request, in
+    /// order. With progress nudges on, a transient progress note can land
+    /// after the stored "stop reasoning" nudge as the call's last user
+    /// message, so a test must find the right one among these rather than
+    /// assume it is the last.
+    private(set) var lastUserMessages: [String] = []
     func complete(_ request: LLMRequest) async throws -> LLMResponse {
         LLMResponse(text: "done", finishReason: .stop, request: request, providerName: Self.name)
     }
     func stream(_ request: LLMRequest) -> AsyncThrowingStream<LLMStreamChunk, Error> {
-        let n: Int = lock.withLock { calls += 1; lastUserMessage = request.messages.last { $0.role == .user }?.content ?? ""; return calls }
+        let n: Int = lock.withLock {
+            calls += 1
+            lastUserMessages = request.messages.filter { $0.role == .user }.map(\.content)
+            return calls
+        }
         return AsyncThrowingStream { continuation in
             let task = Task {
                 if n == 1 {
@@ -87,12 +96,20 @@ private final class EndlessThinker: LLMProvider, @unchecked Sendable {
 /// Single "Thinking…" pauses of 11, 17 and 23 minutes, some after the work
 /// was done (xontel review, I-11): a call that only reasons past the limit is
 /// stopped and the model is told to act.
+///
+/// Progress nudges stay ON (default fractions) here on purpose: with
+/// `withTools: true` and `maxTurns: 4`, turn 2's stop-reasoning nudge is
+/// stored, and turn 2 is also a nudge turn, so the SAME call carries both the
+/// stored nudge and the transient progress note as its last two user
+/// messages — the collision `AnthropicRoleAlternationTests` exercises at the
+/// wire level. Disabling nudges here would hide that overlap instead of
+/// exercising it, so the assertion below looks for the stop-reasoning
+/// message among all of the call's user messages rather than assuming it is
+/// the last one.
 @Test(arguments: [false, true])
 func aCallThatOnlyThinksPastTheLimitIsStoppedAndToldToAct(withTools: Bool) async throws {
     let p = EndlessThinker()
-    // No progress note: at turn 2 of 4 it would be the call's last user message.
-    let agent = Agent(config: AgentConfig(provider: p, maxTurns: 4, progressNudgeFractions: [],
-                                          maxReasoningSeconds: 0.3))
+    let agent = Agent(config: AgentConfig(provider: p, maxTurns: 4, maxReasoningSeconds: 0.3))
     if withTools { await agent.register(EchoTool()) }
     let started = Date()
     var text = ""
@@ -100,5 +117,6 @@ func aCallThatOnlyThinksPastTheLimitIsStoppedAndToldToAct(withTools: Bool) async
     #expect(Date().timeIntervalSince(started) < 5)          // not the full 10 s
     #expect(p.calls == 2)
     #expect(text == "answer")
-    #expect(p.lastUserMessage.lowercased().contains("reasoning"), "\(p.lastUserMessage)")
+    #expect(p.lastUserMessages.contains { $0.lowercased().contains("reasoning") },
+            "expected the stop-reasoning nudge among the turn's user messages: \(p.lastUserMessages)")
 }
