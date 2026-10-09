@@ -109,6 +109,22 @@ enum UnifiedDiff {
         return hunks.isEmpty ? nil : hunks
     }
 
+    /// The files a diff changes, from its `+++` headers (a leading `a/`/`b/`
+    /// dropped, /dev/null skipped), in order and distinct. Empty when the diff
+    /// has no headers — the tool's `path` names its one file.
+    static func targets(in patch: String) -> [String] {
+        var out: [String] = []
+        for raw in patch.components(separatedBy: "\n") where raw.hasPrefix("+++ ") {
+            var name = String(raw.dropFirst(4))
+            if let tab = name.firstIndex(of: "\t") { name = String(name[..<tab]) }
+            name = name.trimmingCharacters(in: .whitespaces)
+            if name == "/dev/null" || name.isEmpty { continue }
+            if name.hasPrefix("a/") || name.hasPrefix("b/") { name.removeFirst(2) }
+            if !out.contains(name) { out.append(name) }
+        }
+        return out
+    }
+
     /// Extract the old-file start line from an `@@ -a,b +c,d @@` header.
     private static func parseOldStart(_ header: String) -> Int? {
         guard let dash = header.firstIndex(of: "-") else { return nil }
