@@ -354,3 +354,92 @@ extension CacheStableRequestTests {
         }
     }
 }
+
+extension CacheStableRequestTests {
+    /// Steps 1–3 together, on the OpenAI wire: two runs of one chat with a
+    /// fact filed between them and a ContextSift batch in the second, then a
+    /// relaunch. One system text throughout; append-only except the one
+    /// batch; after the relaunch the system message and the tool definitions
+    /// are byte-identical. The filed fact reaches the prompt only after
+    /// `invalidateRunContext()` (what compaction or a user edit does).
+    @Test func aChatStaysCacheStableAcrossRunsABatchAndARelaunch() async throws {
+        let memory = TextMemoryStore("FACTS v1")
+        func makeAgent(_ provider: ScriptedProvider) async throws -> Agent {
+            // Progress notes off: with the defaults, turn 3 of each run would
+            // carry one, each a tail-only break, and this test counts batches.
+            let agent = Agent(config: AgentConfig(provider: provider, model: "mock", systemPrompt: "BASE",
+                                                  maxTurns: 6, tools: [StepTool()],
+                                                  contextManager: ContextManager(inlineBudgetChars: 2_600),
+                                                  loopDetection: nil, progressNudgeFractions: [],
+                                                  freezeRunContext: true))
+            try await agent.setMemoryStore(memory)
+            return agent
+        }
+        let provider = ScriptedProvider(turns: Self.stepCalls(1...2) + [[]] + Self.stepCalls(3...5) + [[]])
+        let agent = try await makeAgent(provider)
+        _ = try await agent.run("first task")
+        memory.text = "FACTS v2"   // the keeper files a fact between the runs
+        _ = try await agent.run("second task")
+
+        let requests = provider.captured
+        #expect(requests.count == 7)
+        let systems = Set(requests.map { $0.messages.first { $0.role == .system }?.content ?? "" })
+        #expect(systems.count == 1, "one system text for the whole chat")
+        #expect(systems.first?.contains("FACTS v1") == true)
+        let breaks = try Self.breakIndices(requests)
+        #expect(breaks.compactMap { $0 }.count == 1, "exactly one ContextSift batch")
+        let batch = try #require(breaks.firstIndex { $0 != nil })
+        let at = try #require(breaks[batch])
+        #expect(requests[batch + 1].messages[at].content.hasPrefix(ContextManager.receiptHeader))
+        let tools = try requests.map { Self.toolsSection(try Self.wireBody($0)) }
+        #expect(Set(tools.compactMap { $0 }).count == 1)
+        // The streaming body breaks at exactly the same pair, and nowhere else.
+        let streamed = try requests.map(Self.streamWireBody)
+        for (pair, index) in breaks.enumerated() {
+            let prefix = try #require(Self.messagesPrefix(streamed[pair]))
+            #expect(streamed[pair + 1].starts(with: prefix) == (index == nil), "streamed pair \(pair)")
+        }
+
+        // Relaunch: the frozen context goes through JSON (as the app saves it);
+        // a new agent gets the same stored history and restores it.
+        let saved = try JSONEncoder().encode(try #require(await agent.frozenRunContext))
+        let relaunched = ScriptedProvider(turns: [])
+        let again = try await makeAgent(relaunched)
+        again.conversation.append(agent.conversation.allMessages().filter { $0.role != .system })
+        try await again.restoreRunContext(try JSONDecoder().decode(FrozenRunContext.self, from: saved))
+        _ = try await again.run("third task")
+        let before = try #require(requests.last)
+        let after = try #require(relaunched.captured.first)
+        #expect(after.messages.first { $0.role == .system }?.content == systems.first)
+        #expect(Self.toolsSection(try Self.wireBody(after)) == Self.toolsSection(try Self.wireBody(before)))
+        // Across the relaunch the prefix holds up to the first evicted step:
+        // the system prompt and the first task are the same bytes.
+        let kept = try #require(Self.messagesPrefix(try Self.wireBody(
+            LLMRequest(model: "mock", messages: Array(after.messages.prefix(2)), tools: after.tools))))
+        #expect(try Self.wireBody(before).starts(with: kept) && Self.wireBody(after).starts(with: kept))
+        #expect(try Self.streamWireBody(after).starts(with: try #require(Self.messagesPrefix(
+            try Self.streamWireBody(LLMRequest(model: "mock", messages: Array(after.messages.prefix(2)),
+                                               tools: after.tools))))))
+        // Known gap: from the first evicted step on it is NOT append-only. The
+        // receipt cache and the evicted set live in memory, so the new engine
+        // saves each evicted output again (a new random artifact id in every
+        // receipt) and evicts afresh (one step more than the old engine had).
+        // When that is fixed this block stops recording an issue and fails.
+        withKnownIssue("ContextSift receipts and evicted set are rebuilt after a relaunch") {
+            let prefix = try #require(Self.messagesPrefix(try Self.wireBody(before)))
+            #expect(try Self.wireBody(after).starts(with: prefix), "the relaunch rewrote an earlier byte")
+        }
+
+        // The filed fact appears only once the context is invalidated
+        // (compaction or a user edit), and from then on.
+        let all = requests + relaunched.captured
+        #expect(!all.contains { String(decoding: (try? Self.wireBody($0)) ?? Data(), as: UTF8.self).contains("FACTS v2") })
+        await again.invalidateRunContext()
+        _ = try await again.run("fourth task")
+        let fresh = try #require(relaunched.captured.last)
+        #expect(relaunched.captured.count == 2)
+        #expect(fresh.messages.first { $0.role == .system }?.content.contains("FACTS v2") == true)
+        #expect(Self.toolsSection(try Self.wireBody(fresh)) == Self.toolsSection(try Self.wireBody(after)))
+    }
+}
+
