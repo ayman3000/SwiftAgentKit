@@ -78,8 +78,10 @@ struct HistoryTrimTests {
         #expect(last.messages.filter { $0.role == .assistant }.count < 4)
         #expect(last.messages.contains { $0.role == .user && $0.content == "do the task" })
         // A note added for one call only (the progress nudge, turns 3 and 5
-        // of 6) survives the fallback: it is not stored, so not trimmed.
-        #expect(provider.captured[4].messages.contains { $0.role == .system && $0.content.contains("[Progress check]") })
+        // of 6) survives the fallback as that call's last message: it is not
+        // stored, so not trimmed.
+        let noted = provider.captured[4].messages.last
+        #expect(noted?.role == .user && noted?.content.contains("[Progress check]") == true)
         // The fallback is per call: the stored history is complete.
         #expect(agent.conversation.allMessages().count == 11)
     }

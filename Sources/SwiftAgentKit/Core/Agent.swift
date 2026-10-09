@@ -1098,13 +1098,14 @@ public actor Agent {
 
                 // The history this call starts from (see historyForCall)
                 var messagesForLLM = historyForCall()
-                // Budget checkpoint: transient system note for THIS call only
-                // (not appended to the conversation), nudging the model to
-                // reassess instead of grinding one subproblem to the turn cap.
-                if pendingNudges.remove(totalTurns) != nil {
-                    messagesForLLM.append(.system(
-                        Self.progressNudge(turn: totalTurns, maxTurns: config.maxTurns)))
-                }
+                // Budget checkpoint: a note for THIS call only (never stored),
+                // nudging the model to reassess instead of grinding one
+                // subproblem to the turn cap. It goes at the very end, as a
+                // user message: in the system message it changed the prompt
+                // prefix (and on Anthropic, without a ContextManager, it
+                // replaced the whole system prompt).
+                let progressNote: String? = pendingNudges.remove(totalTurns) != nil
+                    ? Self.progressNudge(turn: totalTurns, maxTurns: config.maxTurns) : nil
                 let removedCount = conversation.allMessages().count - messagesForLLM.count
                 if removedCount > 0 {
                     emit(.historyTrimmed(removedCount: removedCount, remainingCount: messagesForLLM.count,
@@ -1167,7 +1168,8 @@ public actor Agent {
 
                 // Build LLM request (with state-templated system prompt)
                 let llmToolDefs = makeLLMToolDefinitions(from: visibleTools(registeredTools))
-                var request = await makeLLMRequest(messagesForLLM: messagesForLLM, tools: llmToolDefs)
+                var request = await makeLLMRequest(messagesForLLM: messagesForLLM, tools: llmToolDefs,
+                                                   trailingNote: progressNote)
 
                 // Call the provider (streamed when onText is set). Transient
                 // provider errors — network blips, proxy 5xx, Ollama cloud
@@ -1190,7 +1192,8 @@ public actor Agent {
                            await compactHistory(reason: .overflow) != nil {
                             overflowCompacted = true
                             messagesForLLM = historyForCall()
-                            request = await makeLLMRequest(messagesForLLM: messagesForLLM, tools: llmToolDefs)
+                            request = await makeLLMRequest(messagesForLLM: messagesForLLM, tools: llmToolDefs,
+                                                           trailingNote: progressNote)
                             continue
                         }
                         llmAttempt += 1
@@ -1977,7 +1980,8 @@ public actor Agent {
 
     private func makeLLMRequest(
         messagesForLLM: [AgentMessage],
-        tools: [LLMToolDefinition] = []
+        tools: [LLMToolDefinition] = [],
+        trailingNote: String? = nil
     ) async -> LLMRequest {
         var llmMessages: [LLMMessage]
         if let contextManager = config.contextManager {
@@ -1995,7 +1999,8 @@ public actor Agent {
             // prefix stays byte-identical until the bound is passed again.
             // Nothing stored is deleted; a set or moved cut is reported
             // (`.overflow`). Messages the caller added past the stored
-            // history for this call only (a progress nudge) are kept after it.
+            // history for this call only are kept after it (the progress
+            // note is not one: it is appended after this, below).
             llmMessages = await overflowSafeMessages(messagesForLLM, sifted: llmMessages, tools: tools,
                                                      manager: contextManager)
         } else {
@@ -2006,6 +2011,10 @@ public actor Agent {
                 return msg.toLLMMessages()
             }
         }
+
+        // A note for this call only goes last, after ContextSift has run, so it
+        // can't disturb the active-step detection or the prompt prefix.
+        if let trailingNote { llmMessages.append(.user(trailingNote)) }
 
         // Record the size of what we actually send (post context-management), so
         // an app can show real context usage rather than raw-history size.

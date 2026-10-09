@@ -90,7 +90,9 @@ private final class EndlessThinker: LLMProvider, @unchecked Sendable {
 @Test(arguments: [false, true])
 func aCallThatOnlyThinksPastTheLimitIsStoppedAndToldToAct(withTools: Bool) async throws {
     let p = EndlessThinker()
-    let agent = Agent(config: AgentConfig(provider: p, maxTurns: 4, maxReasoningSeconds: 0.3))
+    // No progress note: at turn 2 of 4 it would be the call's last user message.
+    let agent = Agent(config: AgentConfig(provider: p, maxTurns: 4, progressNudgeFractions: [],
+                                          maxReasoningSeconds: 0.3))
     if withTools { await agent.register(EchoTool()) }
     let started = Date()
     var text = ""
