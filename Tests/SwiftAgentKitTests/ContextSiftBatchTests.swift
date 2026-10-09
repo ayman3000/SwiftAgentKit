@@ -92,3 +92,84 @@ struct ContextSiftBatchTests {
         #expect(Self.breaks(outputs) == 3)
     }
 }
+
+extension ContextSiftBatchTests {
+    @Test func anEvictedStepBecomesOneAssistantMessageInItsPlace() async {
+        let manager = ContextManager(summaryLength: 40, inlineBudgetChars: 0)
+        let messages: [AgentMessage] = [
+            .system("sys"),
+            .user("task"),
+            .assistant(content: "Checking both.", toolCalls: [
+                AgentToolCall(id: "a", name: "run_shell", parameters: ["command": AnyCodable("ls")]),
+                AgentToolCall(id: "b", name: "fetch_url", parameters: ["url": AnyCodable("https://x")]),
+            ]),
+            .tool(results: [.success(toolCallId: "a", toolName: "run_shell", result: "a.txt"),
+                            .success(toolCallId: "b", toolName: "fetch_url", result: "hello")]),
+            .assistant("Done."),
+            .user("next"),
+        ]
+        let out = await manager.modelMessages(messages) { $0 }
+        #expect(out.map(\.role) == [.system, .user, .assistant, .assistant, .user])
+        #expect(out[0].content == "sys")   // the system prompt alone
+        #expect(out[2].content == "Checking both.\n\n" + ContextManager.receiptHeader
+                + "\n- a run_shell(ls) → OK: a.txt\n- b fetch_url(https://x) → OK: hello\n]")
+        #expect(out[2].toolCalls == nil)
+    }
+
+    /// Calls through several batches: each break is a batch, and it starts at
+    /// the first newly evicted step — the system prompt, the task and every
+    /// earlier receipt are the same as before.
+    @Test func aLaterBatchKeepsEverythingBeforeItsFirstEvictedStep() async {
+        let manager = ContextManager(inlineBudgetChars: 2_000)
+        var messages: [AgentMessage] = [.system("sys"), .user("long task")]
+        var outputs: [[LLMMessage]] = []
+        for i in 0..<20 {
+            messages += Self.step(i, size: 300)
+            outputs.append(await manager.modelMessages(messages) { $0 })
+        }
+        var breaks = 0
+        for (earlier, later) in zip(outputs, outputs.dropFirst()) {
+            guard let first = zip(earlier, later).enumerated().first(where: { $0.element.0 != $0.element.1 })?.offset
+            else { continue }
+            breaks += 1
+            #expect(first >= 2, "the system prompt and the task never change")
+            #expect(later[first].role == .assistant)
+            #expect(later[first].content.hasPrefix(ContextManager.receiptHeader))
+            #expect(earlier[first].toolCalls?.isEmpty == false)   // it was that step's call
+        }
+        // Budget 1,997 (2,000 − "sys"), minimum batch 500: four steps per batch,
+        // at calls 7, 11, 15 and 19.
+        #expect(breaks == 4)
+    }
+
+    @Test func siftedToolResultsKeepTheirImages() async {
+        let manager = ContextManager(inlineBudgetChars: 0)
+        let shot = LLMImage(data: Data([1, 2, 3]), mimeType: "image/png")
+        let messages: [AgentMessage] = [
+            .user("look"),
+            .assistant(content: "", toolCalls: [AgentToolCall(id: "s1", name: "mac_screenshot")]),
+            .tool(results: [.success(toolCallId: "s1", toolName: "mac_screenshot", result: "captured", images: [shot])]),
+        ]
+        let out = await manager.modelMessages(messages) { $0 }
+        #expect(out.first { $0.role == .tool }?.images.map(\.base64) == [shot.base64])
+    }
+
+    /// Crossing into sifting alone changes nothing: a large completed result
+    /// the normal path sent whole is still sent whole until a batch, and is
+    /// bounded (or evicted) only as part of one.
+    @Test func enteringSiftingDoesNotTruncateACompletedResult() async {
+        let manager = ContextManager(maxActiveResultChars: 1_000, inlineBudgetChars: 6_000)
+        manager.minEvictionBatchFraction = 1.0   // a batch needs 6,000 evictable; there is 5,000
+        var messages: [AgentMessage] = [.user("task")] + Self.step(0, size: 5_000) + [.assistant("ok")]
+        let before = await manager.modelMessages(messages) { $0 }   // 5,006 ≤ 6,000: the normal path
+        messages += Self.step(1, size: 1_200)                        // 6,206: sifting, but no batch
+        let sifted = await manager.modelMessages(messages) { $0 }
+        #expect(Array(sifted.prefix(before.count)) == before)       // step 0 still whole
+        #expect(!sifted.contains { $0.content.hasPrefix(ContextManager.receiptHeader) })
+
+        // With a batch, the large completed step goes, as a receipt.
+        let batching = ContextManager(maxActiveResultChars: 1_000, inlineBudgetChars: 6_000)
+        let batched = await batching.modelMessages(messages) { $0 }
+        #expect(batched.contains { $0.role == .assistant && $0.content.hasPrefix(ContextManager.receiptHeader) })
+    }
+}

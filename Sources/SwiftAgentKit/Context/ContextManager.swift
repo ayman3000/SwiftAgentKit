@@ -3,9 +3,9 @@
 //  SwiftAgentKit
 //
 //  ContextSift-style context management: keep the full main conversation, but
-//  move *completed* tool exchanges out of active model context — replaced by a
-//  compact receipt ledger, with full outputs preserved in an `ArtifactStore` and
-//  retrievable on demand via `artifact_read` / `artifact_search`.
+//  move *completed* tool exchanges out of active model context — each replaced,
+//  in its own place, by compact receipts, with full outputs preserved in an
+//  `ArtifactStore` and retrievable on demand via `artifact_read` / `artifact_search`.
 //
 //  Opt-in: set `AgentConfig.contextManager`. When nil, the agent uses its normal
 //  (trim-based) context handling and behaves exactly as before.
@@ -25,7 +25,9 @@ public final class ContextManager: @unchecked Sendable {
     /// shown to the model as a bounded preview + reference — even while active.
     public var maxActiveResultChars: Int
 
-    /// How many recent completed-tool receipts to include in the ledger.
+    /// No longer used (0.4.0-alpha.120): every evicted step keeps its own
+    /// receipts in its own place, so there is no ledger to cap. Kept so
+    /// callers compile; compaction bounds the growth.
     public var ledgerEntries: Int
 
     /// Length of the receipt summary drawn from a tool result.
@@ -233,9 +235,9 @@ public final class ContextManager: @unchecked Sendable {
 
     // MARK: - Build
 
-    /// Build the model-facing messages: identity/system + receipt ledger, then
-    /// main messages (completed assistant turns keep only their text), then the
-    /// active tool exchange (bounded).
+    /// Build the model-facing messages: the system prompt, then the main
+    /// messages (each evicted step replaced in place by its receipts), then
+    /// the active tool exchange (bounded).
     public func modelMessages(
         _ messages: [AgentMessage],
         systemTemplate: (String) -> String
@@ -313,45 +315,32 @@ public final class ContextManager: @unchecked Sendable {
             rememberEvicted(batch.map { rest[$0.head].id })
         }
 
-        // Receipts for the externalized (older) tool results only.
-        var receipts: [ToolReceipt] = []
-        for index in externalized.sorted() where rest[index].role == .tool {
-            for result in rest[index].toolResults ?? [] {
-                receipts.append(await receipt(for: result, call: callsByID[result.toolCallId]))
+        // Receipts, per evicted step, for that step's own place.
+        var receiptsByHead: [Int: [ToolReceipt]] = [:]
+        for span in spans where externalized.contains(span.head) {
+            var receipts: [ToolReceipt] = []
+            for index in span.indices where rest[index].role == .tool {
+                for result in rest[index].toolResults ?? [] {
+                    receipts.append(await receipt(for: result, call: callsByID[result.toolCallId]))
+                }
             }
+            receiptsByHead[span.head] = receipts
         }
+
+        // A completed result is bounded (preview + artifact reference) only
+        // as part of a batch, like an eviction, or when it already was while
+        // active: crossing into sifting alone must not change what the normal
+        // path sent whole. A batch starts at its first evicted step, so only
+        // results after it may change.
+        let batchStart = count > 0 ? candidates.first?.head : nil
 
         var out: [LLMMessage] = []
+        // The system prompt alone. Receipts used to join it, so every batch
+        // changed the start of the request and the whole conversation missed
+        // the prompt cache; in place, a batch changes nothing before its
+        // first evicted step.
+        if !systemText.isEmpty { out.append(.system(systemText)) }
 
-        // One combined system message (identity + ledger) — provider-safe
-        // (some providers keep only a single system block).
-        var systemParts = systemBlocks
-        if !receipts.isEmpty {
-            var lines = receipts.suffix(ledgerEntries).map { "- " + $0.ledgerLine() }.joined(separator: "\n")
-            // Receipts past the ledger cap vanish from the prompt entirely; on a
-            // long run the model has no way to know that older outputs exist,
-            // let alone how to reach them. One count line keeps the store
-            // discoverable (artifact_list is registered iff the store is Listable).
-            let omitted = receipts.count - min(receipts.count, ledgerEntries)
-            if omitted > 0 {
-                let hint = store is any ListableArtifactStore
-                    ? " — use artifact_list to enumerate all stored outputs" : ""
-                lines += "\n(+\(omitted) older tool call\(omitted == 1 ? "" : "s") not shown\(hint))"
-            }
-            systemParts.append(
-                "Older tool ledger — these tool calls already completed and their full output is "
-                + "NOT in this message; retrieve it with artifact_read / artifact_search using the "
-                + "artifact id in brackets when you need the details:\n" + lines
-            )
-        }
-        if !systemParts.isEmpty {
-            out.append(.system(systemParts.joined(separator: "\n\n")))
-        }
-
-        // Main messages. Externalized exchanges collapse to a ledger line
-        // (assistant keeps text only, tool results dropped); everything else —
-        // recent completed exchanges and the active exchange — stays inline
-        // (tool results bounded by `activeDisplay`).
         for (index, message) in rest.enumerated() {
             let isExternalized = externalized.contains(index)
             switch message.role {
@@ -359,24 +348,52 @@ public final class ContextManager: @unchecked Sendable {
                 out.append(contentsOf: message.toLLMMessages())
             case .assistant:
                 if isExternalized {
-                    if !message.content.isEmpty { out.append(.assistant(message.content)) }  // drop tool calls
+                    // The evicted step in its own place: its text, then one
+                    // receipt per call (the calls themselves are dropped and
+                    // their results are in the store).
+                    if let text = Self.receiptMessage(text: message.content, receipts: receiptsByHead[index] ?? []) {
+                        out.append(.assistant(text))
+                    }
                 } else {
                     out.append(contentsOf: message.toLLMMessages())  // keep tool calls (recent/active)
                 }
             case .tool:
                 if !isExternalized, let results = message.toolResults {
+                    let mayBound = index >= activeStart || (batchStart.map { index > $0 } ?? false)
                     for result in results {
-                        let display = await activeDisplay(for: result)
-                        out.append(.tool(display, toolCallId: result.toolCallId))
+                        let display = mayBound || isBounded(result.toolCallId)
+                            ? await activeDisplay(for: result)
+                            : Self.fullDisplay(for: result)
+                        // Images stay with their result, the active one included:
+                        // a chat past the budget used to stop seeing screenshots.
+                        out.append(LLMMessage(role: .tool, content: display, images: result.images,
+                                              toolCallId: result.toolCallId))
                     }
                 }
-                // externalized tool results are dropped (represented in the ledger)
+                // evicted tool results are represented by their step's receipts
             case .system:
                 break
             }
         }
 
         return out
+    }
+
+    /// Opens an evicted step's receipts (the bracketed-evidence style the
+    /// app's own history replay uses).
+    public static let receiptHeader = "[Tool calls in this step — their output was moved out of context; artifact_read / artifact_search with the artifact id in brackets fetch it:"
+
+    /// The assistant message an evicted step becomes: its text, then one
+    /// receipt line per call, in brackets. nil when there is nothing to say.
+    static func receiptMessage(text: String, receipts: [ToolReceipt]) -> String? {
+        guard !receipts.isEmpty else { return text.isEmpty ? nil : text }
+        let block = receiptHeader + "\n" + receipts.map { "- " + $0.ledgerLine() }.joined(separator: "\n") + "\n]"
+        return text.isEmpty ? block : text + "\n\n" + block
+    }
+
+    /// A tool result exactly as the normal (un-sifted) path sends it.
+    private static func fullDisplay(for result: AgentToolResult) -> String {
+        "[Tool: \(result.toolName ?? "unknown")] \(result.isError ? "ERROR" : "OK")\n\(result.result)"
     }
 
     // MARK: - Private
@@ -495,6 +512,7 @@ public final class ContextManager: @unchecked Sendable {
         if Self.retrievalToolNames.contains(name) || result.result.count <= maxActiveResultChars {
             return "[Tool: \(name)] \(status)\n\(result.result)"
         }
+        rememberBounded(result.toolCallId)
         // `modelMessages` runs every turn, so a large result that stays the active
         // exchange would spill a fresh artifact each turn. Reuse the artifact id
         // for this tool-call id instead of duplicating the content in the store.
@@ -535,6 +553,21 @@ public final class ContextManager: @unchecked Sendable {
             out.append(d)
         }
         return out
+    }
+
+    /// Tool-call ids whose result has been sent bounded: it stays bounded,
+    /// so the prefix does not flip back to the whole output.
+    private var boundedCallIDs: Set<String> = []
+
+    private func isBounded(_ callID: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return boundedCallIDs.contains(callID)
+    }
+
+    private func rememberBounded(_ callID: String) {
+        guard !callID.isEmpty else { return }
+        lock.lock(); defer { lock.unlock() }
+        boundedCallIDs.insert(callID)
     }
 
     private func cachedActiveArtifact(_ callID: String) -> String? {

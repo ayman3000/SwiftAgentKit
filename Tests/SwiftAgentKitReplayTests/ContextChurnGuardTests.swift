@@ -53,17 +53,18 @@ struct ContextChurnGuardTests {
                             contextManager: cm, loopDetection: nil)
         _ = try await run.run("drive the app")
 
-        // The LAST request the loop built must contain the newest snapshots inline
-        // and must NOT carry the oldest one's full result in non-system messages
-        // (SNAP1 externalized to ledger — a summary appears in the system message,
-        // but the full inline content must be gone from tool/user/assistant messages).
+        // The LAST request the loop built must carry the newest snapshots as tool
+        // results and must NOT carry the oldest one's result as one: SNAP1 is
+        // evicted, and its receipt (which may quote its first characters)
+        // stands in its step's place as an assistant message.
         let last = try #require(run.capturedRequests.last)
-        let nonSystemText = last.messages
-            .filter { $0.role != .system }
+        let toolText = last.messages
+            .filter { $0.role == .tool }
             .map { $0.content }
             .joined(separator: "\n")
-        #expect(nonSystemText.contains("SNAP3"))    // active exchange kept inline
-        #expect(nonSystemText.contains("SNAP2"))    // newest completed read protected inline
-        #expect(!nonSystemText.contains("SNAP1"))   // oldest externalized to ledger
+        #expect(toolText.contains("SNAP3"))    // active exchange kept inline
+        #expect(toolText.contains("SNAP2"))    // newest completed read protected inline
+        #expect(!toolText.contains("SNAP1"))   // oldest evicted
+        #expect(last.messages.contains { $0.role == .assistant && $0.content.contains(ContextManager.receiptHeader) })
     }
 }
