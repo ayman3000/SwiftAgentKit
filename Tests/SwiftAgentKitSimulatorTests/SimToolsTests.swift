@@ -275,6 +275,48 @@ final class SimToolsTests: XCTestCase {
         XCTAssertTrue(result.result.contains("bundle_id"))
     }
 
+    /// A run spent 240 s on two launch timeouts and then paused: the session's
+    /// device wasn't booted, and the only signal was "The request timed out"
+    /// (Naseem, 2026-10-10). The launch is refused with the reason instead.
+    func testSimLaunchRefusesAnUnbootedDevice() async throws {
+        let mock = MockDriver()
+        let session = SimSession()
+        session.udid = "U1"
+        let tool = SimLaunchTool(client: mock, session: session, devices: {
+            [Simctl.SimDevice(udid: "U1", name: "iPad Pro 13", state: "Shutdown", runtime: "iOS-26-1")]
+        })
+        let result = try await tool.execute(parameters: ["bundle_id": "com.example.app"])
+        XCTAssertTrue(result.isError)
+        XCTAssertTrue(result.result.contains("iPad Pro 13"))
+        XCTAssertTrue(result.result.contains("not booted"))
+        XCTAssertTrue(result.result.contains("sim_boot"))
+        XCTAssertEqual(mock.lastCall, "", "the driver must not be asked to launch on a shut-down device")
+    }
+
+    func testSimLaunchProceedsOnABootedDevice() async throws {
+        let mock = MockDriver()
+        let session = SimSession()
+        session.udid = "U1"
+        let tool = SimLaunchTool(client: mock, session: session, devices: {
+            [Simctl.SimDevice(udid: "U1", name: "iPhone 17 Pro", state: "Booted", runtime: "iOS-26-1")]
+        })
+        let result = try await tool.execute(parameters: ["bundle_id": "com.example.app"])
+        XCTAssertFalse(result.isError)
+        XCTAssertEqual(mock.lastCall, "launch:com.example.app")
+    }
+
+    /// The driver answering nothing for the whole request timeout says what
+    /// to do next, not just "timed out".
+    func testSimLaunchTimeoutSaysWhatToCheck() async throws {
+        let mock = MockDriver()
+        mock.errorToThrow = URLError(.timedOut)
+        let tool = SimLaunchTool(client: mock, session: SimSession())
+        let result = try await tool.execute(parameters: ["bundle_id": "com.example.app"])
+        XCTAssertTrue(result.isError)
+        XCTAssertTrue(result.result.contains("sim_list"))
+        XCTAssertTrue(result.result.contains("once"))
+    }
+
     // MARK: sim_terminate
 
     func testSimTerminateClearsSessionBundleId() async throws {

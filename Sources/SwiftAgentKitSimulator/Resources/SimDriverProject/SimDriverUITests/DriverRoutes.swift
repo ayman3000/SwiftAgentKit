@@ -94,6 +94,14 @@ final class DriverRoutes {
                 let a = app(r.bundleId)
                 if r.terminateFirst { a.terminate() }
                 a.launch()
+                // launch() reports a failure to XCTest, not to us: without
+                // this the route answered OK and the next call failed with
+                // "application is not running" (code 10001).
+                guard a.wait(for: .runningForeground, timeout: 30) else {
+                    return .json(SimWire.ErrorResponse(code: "launch_failed",
+                        message: "\(r.bundleId) did not reach the foreground within 30 s (state \(a.state.rawValue)). "
+                            + "Is it installed on this device? Use sim_build_install, then sim_launch."), status: 500)
+                }
                 return .json(SimWire.OKResponse())
             case ("POST", "/terminate"):
                 let r = try decode(SimWire.LaunchRequest.self, req)
