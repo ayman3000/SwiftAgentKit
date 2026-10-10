@@ -120,6 +120,13 @@ public enum Simctl {
         guard status == 0 else { throw SimctlError.commandFailed("simctl launch failed: \(out)") }
     }
 
+    /// Whether the app is installed on the device (`simctl get_app_container`
+    /// exits non-zero for an unknown bundle id). Answers in about a second.
+    public static func isInstalled(udid: String, bundleId: String) async -> Bool {
+        guard let (status, _) = try? await run(["simctl", "get_app_container", udid, bundleId], timeout: 20) else { return false }
+        return status == 0
+    }
+
     public static func terminateApp(udid: String, bundleId: String) async throws {
         _ = try await run(["simctl", "terminate", udid, bundleId], timeout: 30)  // non-zero if not running: fine
     }

@@ -301,4 +301,83 @@ final class SimClientTests: XCTestCase {
         XCTAssertEqual(spy.count, SimClient.maxRelaunchesPerClient)
     }
 }
+
+/// App lifecycle runs natively on the host (simctl), not through XCTest.
+/// `XCUIApplication.launch()` on an app that isn't installed recorded the
+/// failure and then waited 4 minutes (accessibility, spindump, idle) inside
+/// one driver request; the host timed out at 120 s, replaced the driver and
+/// sent the launch again (Naseem, 2026-10-10).
+final class SimLifecycleTests: XCTestCase {
+    final class Calls: @unchecked Sendable {
+        var log: [String] = []
+        var installed = true
+        var launchError: String?
+    }
+
+    private func client(_ calls: Calls) -> SimClient {
+        // No driver server on purpose: lifecycle must never touch HTTP.
+        SimClient(baseURL: URL(string: "http://127.0.0.1:9")!, lifecycle: SimLifecycle(
+            isInstalled: { id in calls.log.append("installed?:\(id)"); return calls.installed },
+            launch: { id in
+                calls.log.append("launch:\(id)")
+                if let e = calls.launchError { throw SimctlError.commandFailed(e) }
+            },
+            terminate: { id in calls.log.append("terminate:\(id)") }))
+    }
+
+    func testAnAppThatIsNotInstalledFailsAtOnceWithTheReason() async throws {
+        let calls = Calls(); calls.installed = false
+        let started = Date()
+        do {
+            try await client(calls).launch(bundleId: "com.quakely.app", terminateFirst: false)
+            XCTFail("expected not_installed")
+        } catch let e as SimDriverError {
+            XCTAssertEqual(e.code, "not_installed")
+            XCTAssertTrue(e.message.contains("sim_build_install"))
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2)
+        XCTAssertEqual(calls.log, ["installed?:com.quakely.app"])
+    }
+
+    func testLaunchTerminatesFirstWhenAsked() async throws {
+        let calls = Calls()
+        try await client(calls).launch(bundleId: "com.quakely.app", terminateFirst: true)
+        XCTAssertEqual(calls.log, ["installed?:com.quakely.app", "terminate:com.quakely.app", "launch:com.quakely.app"])
+    }
+
+    func testASimctlLaunchFailureCarriesItsMessage() async throws {
+        let calls = Calls(); calls.launchError = "An error was encountered processing the command (code=4)"
+        do {
+            try await client(calls).launch(bundleId: "com.quakely.app", terminateFirst: false)
+            XCTFail("expected launch_failed")
+        } catch let e as SimDriverError {
+            XCTAssertEqual(e.code, "launch_failed")
+            XCTAssertTrue(e.message.contains("code=4"))
+        }
+    }
+
+    func testTerminateIsNative() async throws {
+        let calls = Calls()
+        try await client(calls).terminate(bundleId: "com.quakely.app")
+        XCTAssertEqual(calls.log, ["terminate:com.quakely.app"])
+    }
+}
+
+/// After a transport error the client relaunches the driver and may resend.
+/// A request that may already have run (a timeout) is resent only when it is
+/// safe to repeat; one that never reached the driver always is.
+final class SimResendPolicyTests: XCTestCase {
+    func testATimedOutTapIsNotResent() {
+        XCTAssertFalse(SimClient.mayResend(after: URLError(.timedOut), idempotent: false))
+        XCTAssertTrue(SimClient.mayResend(after: URLError(.timedOut), idempotent: true))
+    }
+    func testARequestThatNeverReachedTheDriverIsResent() {
+        XCTAssertTrue(SimClient.mayResend(after: URLError(.cannotConnectToHost), idempotent: false))
+        XCTAssertTrue(SimClient.mayResend(after: URLError(.cannotFindHost), idempotent: false))
+    }
+    func testAnUnknownFailureFollowsIdempotence() {
+        XCTAssertFalse(SimClient.mayResend(after: URLError(.networkConnectionLost), idempotent: false))
+        XCTAssertTrue(SimClient.mayResend(after: URLError(.networkConnectionLost), idempotent: true))
+    }
+}
 #endif
