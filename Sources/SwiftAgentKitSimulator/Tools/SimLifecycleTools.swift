@@ -142,11 +142,25 @@ public struct SimLaunchTool: AgentTool {
     public var requiresConfirmation: Bool { true }
     let client: any SimDriving
     let session: SimSession
-    public init(client: any SimDriving, session: SimSession) { self.client = client; self.session = session }
+    /// The device list, so a launch on a shut-down device is refused with
+    /// the reason instead of timing out in the driver (tests inject one).
+    let devices: @Sendable () async throws -> [Simctl.SimDevice]
+    public init(client: any SimDriving, session: SimSession,
+                devices: @escaping @Sendable () async throws -> [Simctl.SimDevice] = { try await Simctl.listDevices() }) {
+        self.client = client; self.session = session; self.devices = devices
+    }
 
     public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
         guard let bundleId = parameters["bundle_id"] as? String, !bundleId.isEmpty else {
             return .error(toolCallId: "", toolName: name, message: "sim_launch requires `bundle_id`.")
+        }
+        // A launch on a device that isn't booted hangs in the driver until the
+        // request times out (120 s, twice in one run, 2026-10-10). Say so now.
+        if let udid = session.udid, let device = try? await devices().first(where: { $0.udid == udid }),
+           !device.isBooted {
+            return .error(toolCallId: "", toolName: name, message:
+                "\(device.name) [\(udid)] is not booted (state: \(device.state)). "
+                + "Call sim_boot for it first, or sim_list to pick a booted device.")
         }
         let terminateFirst = (parameters["terminate_first"] as? Bool) ?? false
         do {
@@ -157,6 +171,12 @@ public struct SimLaunchTool: AgentTool {
         } catch let e as SimDriverError {
             return .error(toolCallId: "", toolName: name,
                 message: e.localizedDescription + (e.tree.map { "\n\nCurrent UI:\n" + $0.renderCompact() } ?? ""))
+        } catch let e as URLError where e.code == .timedOut {
+            return .error(toolCallId: "", toolName: name, message:
+                "sim_launch: the simulator driver did not answer within the request timeout. "
+                + "The simulator may still be booting, or the driver is stuck. "
+                + "Run sim_list to check the device is Booted, then retry sim_launch once; "
+                + "if it times out again, report that instead of retrying.")
         } catch {
             return .error(toolCallId: "", toolName: name, message: "sim_launch failed: \(error.localizedDescription)")
         }
