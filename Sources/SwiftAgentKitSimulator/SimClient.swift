@@ -40,11 +40,42 @@ public struct SimDriverError: Error, LocalizedError, Sendable {
     }
 }
 
+// MARK: - SimLifecycle
+
+/// Launching and terminating an app, done natively on the host through
+/// CoreSimulator (`simctl`), not through XCTest. `XCUIApplication.launch()`
+/// is a test-harness call: on an app that isn't installed it recorded the
+/// failure and then kept waiting (accessibility 120 s, a spindump, idle) —
+/// 4 minutes inside one driver request, which also blocked the driver's
+/// health checks so the host replaced it (2026-10-10). simctl answers in
+/// about a second and says why it failed. The driver attaches to the
+/// running app for UI work.
+public struct SimLifecycle: Sendable {
+    public var isInstalled: @Sendable (String) async -> Bool
+    public var launch: @Sendable (String) async throws -> Void
+    public var terminate: @Sendable (String) async throws -> Void
+
+    public init(isInstalled: @escaping @Sendable (String) async -> Bool,
+                launch: @escaping @Sendable (String) async throws -> Void,
+                terminate: @escaping @Sendable (String) async throws -> Void) {
+        self.isInstalled = isInstalled; self.launch = launch; self.terminate = terminate
+    }
+
+    public static func simctl(udid: String) -> SimLifecycle {
+        SimLifecycle(isInstalled: { await Simctl.isInstalled(udid: udid, bundleId: $0) },
+                     launch: { try await Simctl.launchApp(udid: udid, bundleId: $0) },
+                     terminate: { try await Simctl.terminateApp(udid: udid, bundleId: $0) })
+    }
+}
+
 // MARK: - SimClient
 
 public actor SimClient: SimDriving {
     private let baseURL: URL
     private let session: URLSession
+    /// Native app lifecycle (production: simctl on the client's device).
+    /// nil = the driver's /launch and /terminate routes (test stubs only).
+    private let lifecycle: SimLifecycle?
     /// Relaunches the driver (production: `SimDriverManager.launch`, which
     /// health-checks and replaces a dead session). nil = no recovery possible.
     private let relaunch: (@Sendable () async throws -> Void)?
@@ -66,6 +97,7 @@ public actor SimClient: SimDriving {
         self.baseURL = URL(string: "http://127.0.0.1:\(manager.port)")!
         self.relaunch = { try await manager.launch(udid: udid, runtime: runtime) }
         self.revealWindow = { await Simctl.ensureDeviceWindow(udid: udid) }
+        self.lifecycle = .simctl(udid: udid)
         let cfg = URLSessionConfiguration.ephemeral
         cfg.timeoutIntervalForRequest = 120   // /wait can legitimately take a while
         self.session = URLSession(configuration: cfg)
@@ -77,10 +109,11 @@ public actor SimClient: SimDriving {
     /// Test-only: point at a stub server, with an optional relaunch hook.
     /// Uses a short-timeout session so a misbehaving stub fails fast instead of hanging.
     init(baseURL: URL, relaunch: (@Sendable () async throws -> Void)? = nil,
-         revealWindow: (@Sendable () async -> Void)? = nil) {
+         revealWindow: (@Sendable () async -> Void)? = nil, lifecycle: SimLifecycle? = nil) {
         self.baseURL = baseURL
         self.relaunch = relaunch
         self.revealWindow = revealWindow
+        self.lifecycle = lifecycle
         let cfg = URLSessionConfiguration.ephemeral
         cfg.timeoutIntervalForRequest = 10
         self.session = URLSession(configuration: cfg)
@@ -139,15 +172,32 @@ public actor SimClient: SimDriving {
     }
 
     public func launch(bundleId: String, terminateFirst: Bool) async throws {
-        _ = try await post("/launch",
-                           SimWire.LaunchRequest(bundleId: bundleId, terminateFirst: terminateFirst),
-                           as: SimWire.OKResponse.self)
+        guard let lifecycle else {
+            _ = try await post("/launch",
+                               SimWire.LaunchRequest(bundleId: bundleId, terminateFirst: terminateFirst),
+                               as: SimWire.OKResponse.self)
+            return
+        }
+        guard await lifecycle.isInstalled(bundleId) else {
+            throw SimDriverError(code: "not_installed",
+                message: "\(bundleId) is not installed on this simulator (or the simulator is not booted). Build and install it with sim_build_install, then sim_launch.")
+        }
+        if terminateFirst { try? await lifecycle.terminate(bundleId) }
+        do {
+            try await lifecycle.launch(bundleId)
+        } catch {
+            throw SimDriverError(code: "launch_failed", message: "\(bundleId) did not launch: \(error.localizedDescription)")
+        }
     }
 
     public func terminate(bundleId: String) async throws {
-        _ = try await post("/terminate",
-                           SimWire.LaunchRequest(bundleId: bundleId, terminateFirst: false),
-                           as: SimWire.OKResponse.self)
+        guard let lifecycle else {
+            _ = try await post("/terminate",
+                               SimWire.LaunchRequest(bundleId: bundleId, terminateFirst: false),
+                               as: SimWire.OKResponse.self)
+            return
+        }
+        try await lifecycle.terminate(bundleId)
     }
 
     public func screenshot() async throws -> Data {
@@ -220,9 +270,22 @@ public actor SimClient: SimDriving {
             try await relaunch?()
             return try await send(req)
         } catch {
-            guard consumeRelaunchBudget() else { throw error }
+            guard Self.mayResend(after: error, idempotent: idempotent), consumeRelaunchBudget() else { throw error }
             try await relaunch?()
             return try await send(req)
+        }
+    }
+
+    /// Whether a request that failed in transport may be sent again after the
+    /// driver is relaunched. One that never reached the driver may; one that
+    /// may already have run (a timeout, a dropped connection) only when it is
+    /// safe to repeat — a resent tap or text entry would happen twice.
+    nonisolated static func mayResend(after error: Error, idempotent: Bool) -> Bool {
+        if idempotent { return true }
+        guard let u = error as? URLError else { return false }
+        switch u.code {
+        case .cannotConnectToHost, .cannotFindHost, .notConnectedToInternet: return true
+        default: return false
         }
     }
 
