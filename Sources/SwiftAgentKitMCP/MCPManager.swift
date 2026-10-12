@@ -22,12 +22,35 @@ public actor MCPManager {
     /// readResource). Tool-call timeouts are configured on `MCPToolBridge`.
     public var requestTimeout: TimeInterval = 60
 
-    public init() {}
+    /// Folders this client offers servers as MCP roots. Servers that confine
+    /// file writes to the client's roots (chrome-devtools-mcp's screenshot
+    /// `filePath`, the filesystem server) refuse every path when a client
+    /// offers none. Empty = the `roots` capability is not declared.
+    public let roots: [URL]
+
+    public init(roots: [URL] = []) {
+        self.roots = roots
+    }
+
+    /// `roots` as MCP `Root`s: `file://` directory URIs, named by folder.
+    static func mcpRoots(from urls: [URL]) -> [Root] {
+        urls.map { url in
+            let dir = URL(fileURLWithPath: url.standardizedFileURL.path, isDirectory: true)
+            return Root(uri: dir.absoluteString, name: dir.lastPathComponent)
+        }
+    }
 
     /// Connect to an MCP server using the given configuration.
     @discardableResult
     public func connect(_ config: MCPClientConfig) async throws -> MCPServerInfo {
-        let client = Client(name: "SwiftAgentKit", version: "0.3.0-alpha.7")
+        let client = Client(
+            name: "SwiftAgentKit", version: "0.3.0-alpha.7",
+            capabilities: roots.isEmpty ? .init() : .init(roots: .init(listChanged: false))
+        )
+        if !roots.isEmpty {
+            let offered = Self.mcpRoots(from: roots)
+            await client.withRootsHandler { offered }
+        }
 
         let transport: Transport
         var process: Process?

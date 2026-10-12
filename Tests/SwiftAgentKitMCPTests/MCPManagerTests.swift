@@ -167,6 +167,58 @@ final class MCPManagerTests: XCTestCase {
         )
     }
 
+    func testRootsBecomeFileDirectoryURIs() {
+        let roots = MCPManager.mcpRoots(from: [
+            URL(fileURLWithPath: "/Users/someone"),
+            URL(fileURLWithPath: "/tmp/with space/../out"),
+        ])
+        XCTAssertEqual(roots.map(\.uri), ["file:///Users/someone/", "file:///tmp/out/"])
+        XCTAssertEqual(roots.map(\.name), ["someone", "out"])
+    }
+
+    func testManagerKeepsOfferedRoots() async {
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
+        let manager = MCPManager(roots: [tmp])
+        let roots = await manager.roots
+        XCTAssertEqual(roots, [tmp])
+        let none = await MCPManager().roots
+        XCTAssertTrue(none.isEmpty)
+    }
+
+    /// Live: chrome-devtools-mcp saves a screenshot inside an offered root.
+    /// Without roots it answers "is not within any of the configured workspace
+    /// roots" for every path. Needs npx + Chrome; pre-warm the package.
+    ///   SAK_LIVE_TESTS=1 swift test --filter testLiveChromeDevToolsWritesInsideRoot
+    func testLiveChromeDevToolsWritesInsideRoot() async throws {
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["SAK_LIVE_TESTS"] == "1")
+
+        // Outside the temp directory: chrome-devtools-mcp always allows temp,
+        // so a temp folder would pass with no roots at all.
+        let dir = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent(".build/mcp-roots-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let manager = MCPManager(roots: [dir])
+        defer { Task { await manager.disconnectAll() } }
+        _ = try await manager.connect(.stdio(
+            command: "npx",
+            args: ["-y", "chrome-devtools-mcp@latest", "--isolated", "--headless"]
+        ))
+
+        let tools = try await manager.bridgedTools()
+        let list = try XCTUnwrap(tools.first { $0.name == "list_pages" })
+        let pages = try await list.execute(parameters: [:]).result
+        // "1: about:blank [selected]" — the id of the open page.
+        let pageId = try XCTUnwrap(pages.split(separator: "\n")
+            .lazy.compactMap { Int($0.prefix { $0.isNumber }) }.first, pages)
+        let shot = try XCTUnwrap(tools.first { $0.name == "take_screenshot" })
+        let file = dir.appendingPathComponent("shot.png")
+        let result = try await shot.execute(parameters: ["pageId": pageId, "filePath": file.path])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), "screenshot not written: \(result)")
+    }
+
     func testExecutableResolverReportsMissingCommand() {
         XCTAssertThrowsError(
             try MCPExecutableResolver.resolve(
