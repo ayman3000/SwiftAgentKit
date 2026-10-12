@@ -105,10 +105,16 @@ public struct ShellTool: AgentTool {
 
     // MARK: - Foreground
 
-    /// Run to completion, capturing output via a pipe. The read-to-EOF is raced
-    /// against the wall-clock timeout and cooperative task cancellation; whichever
-    /// "stop" fires first SIGKILLs the whole process group, which closes the pipe
-    /// and unblocks the read.
+    /// Run until the shell exits, capturing output via a pipe. The shell's exit
+    /// is raced against the wall-clock timeout and cooperative task
+    /// cancellation; a timeout or Stop SIGKILLs the whole process group.
+    ///
+    /// The run ends when zsh exits, not when the pipe closes: a child the
+    /// command backgrounded itself (`python3 -m http.server 8080 &`) keeps the
+    /// write end open for as long as it lives. Waiting for that EOF held the
+    /// agent for the full timeout and then killed the server it had just
+    /// started. Such children are left running; their later output is drained
+    /// and dropped.
     private func runForeground(command: String, cwd: String?, timeoutSeconds: Double) async -> AgentToolResult {
         let pipe = Pipe()
         let writeFD = pipe.fileHandleForWriting.fileDescriptor
@@ -129,16 +135,15 @@ public struct ShellTool: AgentTool {
         // everything it spawned) has closed it.
         try? pipe.fileHandleForWriting.close()
 
-        let handle = pipe.fileHandleForReading
-        // Read on a GCD thread, not a cooperative one: a blocking read parked on
-        // the Swift pool starves the timeout timer on small machines (CI runners
-        // have three cores), so a 1 s timeout fired only after the command ended.
-        let readTask = Task { await Self.readToEnd(handle) }
+        // Read with a dispatch readability handler, not a blocking read on the
+        // cooperative pool (that starved the timeout timer on 3-core CI runners).
+        let collector = PipeCollector(pipe.fileHandleForReading, keepBytes: maxOutputChars * 4)
+        let exit = Task { await reap(pid) }
 
         let stop: StopReason = await withTaskCancellationHandler {
             await withTaskGroup(of: StopReason.self) { group in
                 group.addTask {
-                    _ = await readTask.value          // read reached EOF on its own
+                    _ = await exit.value              // the shell exited on its own
                     return .finished
                 }
                 group.addTask { [timeoutSeconds] in
@@ -146,9 +151,8 @@ public struct ShellTool: AgentTool {
                     return .timedOut
                 }
                 let first = await group.next() ?? .finished
-                // Kill BEFORE draining the group: the read child awaits the
-                // non-cancellable readDataToEndOfFile, so it only returns once the
-                // pipe closes — which killing the group makes happen.
+                // Kill BEFORE draining the group: the exit child awaits a
+                // non-cancellable waitpid, which only returns once the shell dies.
                 if first != .finished { killGroup(pid) }
                 group.cancelAll()
                 return first
@@ -157,11 +161,15 @@ public struct ShellTool: AgentTool {
             killGroup(pid)                            // Stop button → kill immediately
         }
 
-        let data = await readTask.value              // unblocked; collects partial output
-        let status = await reap(pid)
+        let status = await exit.value
         let cancelled = Task.isCancelled
+        // Output written just before the shell exited may still be in flight.
+        // A clean exit gets a short drain; past it, whatever still holds the
+        // pipe is a background child and is left running.
+        // (A cancelled task's sleep returns at once, so that wait stays short.)
+        let closed = await collector.waitForEOF(seconds: stop == .timedOut ? 0.5 : 0.3)
+        var output = decode(collector.take())
 
-        var output = decode(data)
         let header: String
         if cancelled {
             header = "stopped by user"
@@ -170,6 +178,9 @@ public struct ShellTool: AgentTool {
                 + "The output below is everything captured before the kill — the command may or may not "
                 + "have finished its work. For builds and test suites pass timeout_seconds (up to "
                 + "\(Self.maxTimeoutSeconds)), or use background: true for servers."
+        } else if !closed {
+            header = "exit \(status.exitCode). Processes this command started in the background are still "
+                + "running; their later output is not captured (redirect it to a file to keep it)."
         } else {
             header = "exit \(status.exitCode)"
         }
@@ -239,11 +250,6 @@ public struct ShellTool: AgentTool {
         if kill(-pid, SIGKILL) != 0 { kill(pid, SIGKILL) }
     }
 
-    /// Blocking read-to-EOF moved off the cooperative thread pool.
-    private static func readToEnd(_ handle: FileHandle) async -> Data {
-        await BlockingWork.run { handle.readDataToEndOfFile() }
-    }
-
     private struct ExitStatus { let exitCode: Int32 }
 
     /// Block until our direct child is reaped; grandchildren reparent to launchd
@@ -275,7 +281,9 @@ public struct ShellTool: AgentTool {
 
     private enum StopReason { case finished, timedOut }
 
-    private func decode(_ data: Data) -> String { String(data: data, encoding: .utf8) ?? "" }
+    /// Lossy: a byte cap can split a multi-byte character, and one bad byte
+    /// must not blank the whole output.
+    private func decode(_ data: Data) -> String { String(decoding: data, as: UTF8.self) }
 
     private func setCloseOnExec(_ fd: Int32) {
         let flags = fcntl(fd, F_GETFD)
@@ -297,11 +305,61 @@ public struct ShellTool: AgentTool {
             "npm start", "npm run start", "npm run dev", "npm run serve",
             "yarn start", "yarn dev", "pnpm dev", "pnpm start",
             "ng serve", "vite", "next dev", "nuxt dev",
-            "rails server", "rails s", "python -m http.server",
+            "rails server", "rails s", "python -m http.server", "python3 -m http.server",
             "flask run", "uvicorn ", "gunicorn ",
         ]
         return markers.contains { c.contains($0) }
     }
 
+}
+
+/// Collects a pipe's output from a dispatch readability handler until EOF.
+/// After `take()` it keeps draining (so a background writer never blocks on a
+/// full pipe) but stops storing.
+final class PipeCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+    private var storing = true
+    private var closed = false
+    private let keepBytes: Int
+    /// Held until EOF: a deallocated FileHandle closes the read end, and a
+    /// background server then dies of SIGPIPE on its next log line.
+    private var handle: FileHandle?
+
+    init(_ handle: FileHandle, keepBytes: Int) {
+        self.keepBytes = keepBytes
+        self.handle = handle
+        handle.readabilityHandler = { [self] h in
+            let chunk = h.availableData
+            lock.lock(); defer { lock.unlock() }
+            if chunk.isEmpty {
+                h.readabilityHandler = nil            // EOF; also breaks the retain cycle
+                try? h.close()
+                self.handle = nil
+                closed = true
+            } else if storing, data.count < keepBytes {
+                data.append(chunk.prefix(keepBytes - data.count))
+            }
+        }
+    }
+
+    var isClosed: Bool { lock.lock(); defer { lock.unlock() }; return closed }
+
+    /// True once the pipe reached EOF, false if `seconds` passed first.
+    func waitForEOF(seconds: Double) async -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        while !isClosed {
+            if Date() >= deadline { return false }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        return true
+    }
+
+    /// What was collected so far; later output is drained and dropped.
+    func take() -> Data {
+        lock.lock(); defer { lock.unlock() }
+        storing = false
+        return data
+    }
 }
 #endif

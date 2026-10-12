@@ -119,20 +119,44 @@ private func tempDir() -> URL {
     #expect(result.result.contains("marker.txt"))
 }
 
-/// The hang bug: `sleep 30 &` orphans a child that keeps the stdout pipe's
-/// write-end open after zsh exits. Terminating only the direct child leaves
-/// the orphan holding stdout, so an EOF-based read blocks for the full 30s
-/// despite the 2s timeout. The fix kills the whole process group, so the read
-/// unblocks and we return promptly.
-@Test func shellTimesOutEvenWhenOrphanHoldsStdout() async throws {
+/// `cmd &` (a server the model backgrounds itself) leaves a child holding the
+/// stdout pipe after zsh exits. run_shell returns when zsh exits — it does not
+/// wait for that pipe to close, and it does not kill the child: the server
+/// must still be up for the next tool call.
+@Test func shellReturnsWhenShellExitsAndLeavesBackgroundChildRunning() async throws {
+    let marker = "sak-bg-\(UUID().uuidString.prefix(8))"
     let start = Date()
-    let result = try await ShellTool(timeoutSeconds: 2).execute(
-        parameters: ["command": "echo started; sleep 30 &"]
+    let result = try await ShellTool(timeoutSeconds: 20).execute(
+        parameters: ["command": "echo started; (exec -a \(marker) sleep 30) &"]
     )
     let elapsed = Date().timeIntervalSince(start)
-    #expect(elapsed < 8)                            // must not wait out the 30s orphan
-    #expect(result.result.contains("started"))      // captured output before the kill
-    #expect(result.result.contains("timeout"))      // reported as a timeout, not a clean exit
+    #expect(elapsed < 5)                            // not the 20 s timeout
+    #expect(result.result.contains("started"))
+    #expect(result.result.hasPrefix("exit 0"))
+    #expect(result.result.contains("timeout") == false)
+    #expect(result.result.contains("still running"))
+
+    let check = try await ShellTool().execute(parameters: ["command": "pgrep -f \(marker)"])
+    #expect(check.result.hasPrefix("exit 0"), "background child was killed: \(check.result)")
+    _ = try await ShellTool().execute(parameters: ["command": "pkill -f \(marker)"])
+}
+
+/// A command that is still running at the timeout is killed with its whole
+/// process group, children included, and reported as a timeout.
+@Test func shellTimeoutKillsTheWholeGroup() async throws {
+    let start = Date()
+    let result = try await ShellTool(timeoutSeconds: 2).execute(
+        parameters: ["command": "echo started; sleep 30 & sleep 30"]
+    )
+    #expect(Date().timeIntervalSince(start) < 8)
+    #expect(result.result.contains("started"))
+    #expect(result.result.contains("timeout"))
+}
+
+/// `python3 -m http.server` (what macOS ships) is a server, like `python -m`.
+@Test func shellDetectsPython3HTTPServer() {
+    #expect(ShellTool.looksLikeLongLivedServer("python3 -m http.server 8080"))
+    #expect(ShellTool.looksLikeLongLivedServer("cd site && python -m http.server"))
 }
 
 /// Per-call `timeout_seconds` overrides the instance default and is clamped to 1...900.
