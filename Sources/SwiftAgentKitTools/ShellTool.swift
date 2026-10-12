@@ -167,7 +167,7 @@ public struct ShellTool: AgentTool {
         // A clean exit gets a short drain; past it, whatever still holds the
         // pipe is a background child and is left running.
         // (A cancelled task's sleep returns at once, so that wait stays short.)
-        let closed = await collector.waitForEOF(seconds: stop == .timedOut ? 2 : 0.3)
+        let closed = await collector.waitForEOF(seconds: stop == .timedOut ? 0.5 : 0.3)
         var output = decode(collector.take())
 
         let header: String
