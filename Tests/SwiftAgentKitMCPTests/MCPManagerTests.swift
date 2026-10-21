@@ -26,7 +26,7 @@ final class MCPManagerTests: XCTestCase {
         let url = URL(string: "http://localhost:8080")!
         let config = MCPClientConfig.http(endpoint: url)
         switch config {
-        case .http(let endpoint):
+        case .http(let endpoint, _):
             XCTAssertEqual(endpoint, url)
         case .stdio:
             XCTFail("Expected http config")
@@ -243,5 +243,20 @@ final class MCPManagerTests: XCTestCase {
         XCTAssertEqual(images.count, 1)
         XCTAssertEqual(images[0].mimeType, "image/png")
         XCTAssertEqual(images[0].base64, Data([0xAB, 0xCD]).base64EncodedString())
+    }
+
+    func testBridgedToolCarriesTheReadOnlyHint() {
+        let client = Client(name: "test", version: "1")
+        let reader = MCPToolBridge(tool: Tool(name: "search", description: "", inputSchema: .object([:]),
+                                              annotations: .init(readOnlyHint: true)),
+                                   client: client, serverName: "s")
+        let writer = MCPToolBridge(tool: Tool(name: "create", description: "", inputSchema: .object([:]),
+                                              annotations: .init(readOnlyHint: false)),
+                                   client: client, serverName: "s")
+        let silent = MCPToolBridge(tool: Tool(name: "other", description: "", inputSchema: .object([:])),
+                                   client: client, serverName: "s")
+        XCTAssertEqual(reader.readOnlyHint, true)
+        XCTAssertEqual(writer.readOnlyHint, false)
+        XCTAssertNil(silent.readOnlyHint)
     }
 }
