@@ -65,6 +65,10 @@ public struct ShellTool: AgentTool {
     /// How long a `background` command is observed before returning, to capture
     /// startup output (a server's "listening on…" line) without waiting for exit.
     private let backgroundGraceSeconds: Double
+    /// Directories put first on PATH for every command, read per call — a
+    /// host's private toolchain (Naseem's own Node) installed mid-session is
+    /// seen by the next command. Empty: the login shell's PATH as is.
+    private let extraPath: @Sendable () -> [String]
     /// Upper bound for a per-call `timeout_seconds` override.
     public static let maxTimeoutSeconds = 900
 
@@ -72,12 +76,22 @@ public struct ShellTool: AgentTool {
         defaultWorkingDirectory: URL? = nil,
         maxOutputChars: Int = 10_000,
         timeoutSeconds: Double = 120,
-        backgroundGraceSeconds: Double = 2.5
+        backgroundGraceSeconds: Double = 2.5,
+        extraPath: @escaping @Sendable () -> [String] = { [] }
     ) {
         self.defaultWorkingDirectory = defaultWorkingDirectory
         self.maxOutputChars = maxOutputChars
         self.timeoutSeconds = timeoutSeconds
         self.backgroundGraceSeconds = backgroundGraceSeconds
+        self.extraPath = extraPath
+    }
+
+    /// Pure — unit-tested. The command with `dirs` put first on PATH. The
+    /// export runs after the login profile (zsh -lc), so it wins over it.
+    public static func withPath(_ command: String, prepending dirs: [String]) -> String {
+        guard !dirs.isEmpty else { return command }
+        let quoted = dirs.map { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }.joined(separator: ":")
+        return "export PATH=\(quoted):\"$PATH\"; \(command)"
     }
 
     public func execute(parameters: [String: Any]) async throws -> AgentToolResult {
@@ -127,7 +141,7 @@ public struct ShellTool: AgentTool {
 
         let pid: pid_t
         do {
-            pid = try spawnInNewGroup(command: command, workingDirectory: cwd, stdoutFD: writeFD)
+            pid = try spawnInNewGroup(command: Self.withPath(command, prepending: extraPath()), workingDirectory: cwd, stdoutFD: writeFD)
         } catch {
             return .error(toolCallId: "", toolName: name, message: "Failed to launch shell: \(error.localizedDescription)")
         }
@@ -207,7 +221,7 @@ public struct ShellTool: AgentTool {
 
         let pid: pid_t
         do {
-            pid = try spawnInNewGroup(command: command, workingDirectory: cwd, stdoutFD: logFD)
+            pid = try spawnInNewGroup(command: Self.withPath(command, prepending: extraPath()), workingDirectory: cwd, stdoutFD: logFD)
         } catch {
             close(logFD)
             return .error(toolCallId: "", toolName: name, message: "Failed to launch shell: \(error.localizedDescription)")
