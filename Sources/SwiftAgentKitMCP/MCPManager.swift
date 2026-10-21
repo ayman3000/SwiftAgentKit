@@ -93,8 +93,8 @@ public actor MCPManager {
             )
             process = proc
 
-        case .http(let endpoint):
-            transport = HTTPClientTransport(endpoint: endpoint)
+        case .http(let endpoint, let authorizer):
+            transport = HTTPClientTransport(endpoint: endpoint, authorizer: authorizer)
         }
 
         // Bound the handshake and clean up the spawned process if it fails or

@@ -1,11 +1,14 @@
 import Foundation
+import MCP
 
 /// Configuration for connecting to an MCP server.
 public enum MCPClientConfig: Sendable {
     /// Connect to a local MCP server via stdio (subprocess).
     case stdio(command: String, args: [String] = [], env: [String: String]? = nil)
-    /// Connect to a remote MCP server via streamable HTTP.
-    case http(endpoint: URL)
+    /// Connect to a remote MCP server via streamable HTTP. `authorizer` signs
+    /// the requests of a server that needs a sign-in (OAuth) — the SDK calls it
+    /// on 401/403 and before each request; nil for open servers.
+    case http(endpoint: URL, authorizer: (any HTTPClientAuthorizer)? = nil)
 }
 
 /// Metadata about a discovered MCP server connection.

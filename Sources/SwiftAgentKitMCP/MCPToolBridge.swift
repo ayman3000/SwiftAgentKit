@@ -14,6 +14,9 @@ public struct MCPToolBridge: AgentTool {
     public let description: String
     public let parameters: ToolParameters
     public let requiresConfirmation: Bool
+    /// The server says this tool only reads (MCP `readOnlyHint`); nil when it
+    /// doesn't say. Lets a host ask before the tools that change things only.
+    public let readOnlyHint: Bool?
 
     private let client: Client
     private let serverName: String
@@ -26,6 +29,7 @@ public struct MCPToolBridge: AgentTool {
         self.serverName = serverName
         self.parameters = MCPToolBridge.convertSchema(tool.inputSchema)
         self.requiresConfirmation = false
+        self.readOnlyHint = tool.annotations.readOnlyHint
         self.timeout = timeout
     }
 
