@@ -28,8 +28,12 @@ public actor MCPManager {
     /// offers none. Empty = the `roots` capability is not declared.
     public let roots: [URL]
 
-    public init(roots: [URL] = []) {
+    /// - Parameter connectTimeout: the handshake's limit. A server that signs
+    ///   in through the browser does it inside the handshake, so its host passes
+    ///   the sign-in's own time here.
+    public init(roots: [URL] = [], connectTimeout: TimeInterval = 30) {
         self.roots = roots
+        self.connectTimeout = connectTimeout
     }
 
     /// `roots` as MCP `Root`s: `file://` directory URIs, named by folder.
