@@ -132,12 +132,15 @@ public enum AppleMailScripts {
         """
     }
 
-    /// True when Mail has at least one account; without one every inbox
-    /// script returns nothing and the user deserves a sentence, not silence.
+    /// Mail's account count, asked with a short limit before any read: a Mail
+    /// busy downloading an account answers late, and a read would otherwise
+    /// wait out its full two minutes in silence (2026-10-23).
     public static func accountCount() -> String {
         """
         \(AppleScriptText.launchGuard("Mail"))
+        with timeout of \(MailReadiness.pingSeconds) seconds
         tell application "Mail" to return (count of accounts) as string
+        end timeout
         """
     }
 
@@ -219,6 +222,32 @@ public enum AppleMailScripts {
 
 // MARK: - Tools
 
+/// Whether Mail can be read right now — asked before every read.
+enum MailReadiness: Equatable {
+    case ready, busy, noAccounts
+
+    static let pingSeconds = 10
+
+    static func check(_ runner: any AppleScripting) async -> MailReadiness {
+        do {
+            return try await runner.run(AppleMailScripts.accountCount()) == "0" ? .noAccounts : .ready
+        } catch let error as AppleScriptError where error.code == -1712 {
+            return .busy
+        } catch {
+            return .ready   // anything else surfaces, worded, from the read itself
+        }
+    }
+
+    /// The sentence a tool returns instead of reading; nil when ready.
+    var note: String? {
+        switch self {
+        case .ready: nil
+        case .busy: "Mail is busy and did not answer within \(Self.pingSeconds) seconds — usually it is still downloading an account that was just added. Nothing was read. Tell the user to try again in a few minutes."
+        case .noAccounts: "The Mail app has no accounts set up on this Mac, so there is no inbox to read. The user can add one in Mail ▸ Settings ▸ Accounts."
+        }
+    }
+}
+
 public struct MailInboxTool: AgentTool {
     public let name = "mail_inbox"
     public var isReadOnly: Bool { true }
@@ -241,6 +270,9 @@ public struct MailInboxTool: AgentTool {
         let hours = min(max(intArg(parameters["hours"]) ?? 24, 1), 720)
         let limit = min(max(intArg(parameters["limit"]) ?? 30, 1), 100)
         let unread = (parameters["unread_only"] as? Bool) ?? false
+        if let note = await MailReadiness.check(runner).note {
+            return .success(toolCallId: "", toolName: name, result: note)
+        }
         let text = try await runner.run(AppleMailScripts.inbox(hours: hours, limit: limit, unreadOnly: unread))
         let cutoff = Date().addingTimeInterval(-Double(hours) * 3_600)
         let messages = Array(AppleMailScripts.parseMessages(text)
@@ -248,13 +280,10 @@ public struct MailInboxTool: AgentTool {
             .prefix(limit))
         let failed = AppleMailScripts.accountErrorNote(text)
         guard !messages.isEmpty else {
-            if !failed.isEmpty {
-                return .success(toolCallId: "", toolName: name, result: "No \(unread ? "unread " : "")messages read in the last \(hours) hours." + failed)
-            }
-            if (try? await runner.run(AppleMailScripts.accountCount())) == "0" {
-                return .success(toolCallId: "", toolName: name, result: "The Mail app has no accounts set up on this Mac, so there is no inbox to read. The user can add one in Mail ▸ Settings ▸ Accounts.")
-            }
-            return .success(toolCallId: "", toolName: name, result: "No \(unread ? "unread " : "")messages in the last \(hours) hours.")
+            // With an account that failed, a bare "no messages" would be untrue.
+            let lead = "No \(unread ? "unread " : "")messages in the last \(hours) hours"
+                + (failed.isEmpty ? "." : " in the accounts that could be read.")
+            return .success(toolCallId: "", toolName: name, result: lead + failed)
         }
         return .success(toolCallId: "", toolName: name,
                         result: "\(messages.count) message(s), newest first:\n" + messages.map(\.line).joined(separator: "\n") + failed)
@@ -278,6 +307,9 @@ public struct MailSearchTool: AgentTool {
             return .error(toolCallId: "", toolName: name, message: "query is required.")
         }
         let limit = min(max(intArg(parameters["limit"]) ?? 20, 1), 100)
+        if let note = await MailReadiness.check(runner).note {
+            return .success(toolCallId: "", toolName: name, result: note)
+        }
         let text = try await runner.run(AppleMailScripts.search(query: query, limit: limit))
         let messages = AppleMailScripts.parseMessages(text)
         let failed = AppleMailScripts.accountErrorNote(text)
@@ -303,6 +335,9 @@ public struct MailReadTool: AgentTool {
             return .error(toolCallId: "", toolName: name, message: "id must be a message id from mail_inbox.")
         }
         let cap = min(max(intArg(parameters["max_chars"]) ?? 12_000, 500), 60_000)
+        if let note = await MailReadiness.check(runner).note {
+            return .success(toolCallId: "", toolName: name, result: note)
+        }
         let text = try await runner.run(AppleMailScripts.read(id: id))
         let f = text.split(separator: AppleScriptText.field, omittingEmptySubsequences: false).map(String.init)
         guard f.count >= 5 else { return .error(toolCallId: "", toolName: name, message: "Message \(id) was not found in the inbox.") }

@@ -107,9 +107,10 @@ final class AppleAppsTests: XCTestCase {
         XCTAssertTrue(result.result.contains("• Sara"), "unread marker")
         // Properties come straight from the range: Gmail's messages are
         // references into All Mail, and a list of them has no `id`.
-        XCTAssertTrue(mock.scripts[0].contains("id of messages i0 thru i1 of mb"))
-        XCTAssertFalse(mock.scripts[0].contains("id of ms"))
-        XCTAssertTrue(mock.scripts[0].contains("with timeout"))
+        XCTAssertTrue(mock.scripts[0].contains("count of accounts"), "Mail is asked first, briefly")
+        XCTAssertTrue(mock.scripts[1].contains("id of messages i0 thru i1 of mb"))
+        XCTAssertFalse(mock.scripts[1].contains("id of ms"))
+        XCTAssertTrue(mock.scripts[1].contains("with timeout"))
     }
 
     func testOneFailingAccountStillReturnsTheOthers() async throws {
@@ -119,7 +120,7 @@ final class AppleAppsTests: XCTestCase {
         let r = try await MailInboxTool(runner: mock).execute(parameters: [:])
         XCTAssertTrue(r.result.contains("1 message(s)"), r.result)
         XCTAssertTrue(r.result.contains("Could not read: Gmail (Mail got an error: AppleEvent timed out.)"), r.result)
-        XCTAssertTrue(mock.scripts[0].contains("on error e"), "each account in its own try")
+        XCTAssertTrue(mock.scripts[1].contains("on error e"), "each account in its own try")
     }
 
     func testOnlyFailingAccountsSaySoInsteadOfNoMessages() async throws {
@@ -127,11 +128,25 @@ final class AppleAppsTests: XCTestCase {
         mock.reply = ["ACCOUNT-ERROR", "Gmail", "Can't get id."].joined(separator: fs)
         let r = try await MailInboxTool(runner: mock).execute(parameters: [:])
         XCTAssertTrue(r.result.contains("Could not read: Gmail"), r.result)
-        XCTAssertEqual(mock.scripts.count, 1, "no account-count call when an account failed")
+        XCTAssertTrue(r.result.contains("in the accounts that could be read"), "a failure is not an empty inbox")
     }
 
     func testMailReadWaitsForABodyMailHasNotDownloaded() {
         XCTAssertTrue(AppleMailScripts.read(id: "1").contains("delay 1"))
+    }
+
+    func testABusyMailIsSaidAtOnceWithoutReading() async throws {
+        let mock = MockScript()
+        mock.error = AppleScriptError(code: -1712, message: "Mail got an error: AppleEvent timed out.")
+        let inbox = try await MailInboxTool(runner: mock).execute(parameters: [:])
+        let search = try await MailSearchTool(runner: mock).execute(parameters: ["query": "x"])
+        let read = try await MailReadTool(runner: mock).execute(parameters: ["id": "7"])
+        for r in [inbox, search, read] {
+            XCTAssertFalse(r.isError)
+            XCTAssertTrue(r.result.contains("Mail is busy"), r.result)
+        }
+        XCTAssertEqual(mock.scripts.count, 3, "only the short check ran, once per tool")
+        XCTAssertTrue(mock.scripts.allSatisfy { $0.contains("with timeout of 10 seconds") })
     }
 
     func testTimeoutReadsAsABusyApp() {
@@ -152,7 +167,7 @@ final class AppleAppsTests: XCTestCase {
 
     func testNoAccountsIsSaidPlainly() async throws {
         let mock = MockScript()
-        mock.replies = ["", "0"]
+        mock.replies = ["0"]
         let r = try await MailInboxTool(runner: mock).execute(parameters: [:])
         XCTAssertTrue(r.result.contains("no accounts"))
     }
