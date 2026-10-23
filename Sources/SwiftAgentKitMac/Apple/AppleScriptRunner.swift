@@ -31,6 +31,8 @@ public struct AppleScriptError: LocalizedError, Equatable {
             return "macOS has not allowed Naseem to control that app. Allow it in System Settings ▸ Privacy & Security ▸ Automation, then try again."
         case -600, -609:
             return "That app is not running and could not be reached. Open it once, then try again."
+        case -1712:
+            return "That app did not answer in time — it is probably busy, for example Mail downloading an account that was just added. Try again in a few minutes."
         default:
             return message
         }
