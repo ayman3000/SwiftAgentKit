@@ -215,12 +215,10 @@ private struct CancellingTool: AgentTool {
     var isReadOnly: Bool { true }
     func execute(parameters: [String: Any]) async throws -> AgentToolResult {
         let result = try script.next()
-        if script.callCount == 1, let agent = holder.agent {
-            Task {
-                try? await Task.sleep(for: .milliseconds(50))
-                agent.requestCancel()
-            }
-        }
+        // Stop is pressed as the first attempt ends, so the flag is set
+        // before the retry wait — no timer racing a slow CI machine
+        // (a 50 ms timer lost to the 300 ms wait on CI, 2026-10-23).
+        if script.callCount == 1 { holder.agent?.requestCancel() }
         return result
     }
 }
