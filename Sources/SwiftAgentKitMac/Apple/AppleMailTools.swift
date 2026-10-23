@@ -33,7 +33,11 @@ public enum AppleMailScripts {
     /// filter over a big inbox times out; an index range does not. Whether
     /// index 1 is the newest depends on the mailbox, so the script checks both
     /// ends and takes the newer one; the tool filters by `hours` afterwards.
-    private static func perAccountInbox(limit: Int, filter: String) -> String {
+    /// Properties are read straight from the range: for Gmail, Mail hands back
+    /// the messages as references into "[Gmail]/All Mail", and a list of
+    /// references has no `id` of its own (2026-10-23). One account that fails
+    /// is reported as an error record; the others still come back.
+    private static func perAccountInbox(limit: Int) -> String {
         """
         \(AppleScriptText.delimiterPrelude)
         \(AppleScriptText.launchGuard("Mail"))
@@ -42,33 +46,38 @@ public enum AppleMailScripts {
         tell application "Mail"
             repeat with a in (every account)
                 set acct to name of a
-                set mb to missing value
                 try
-                    set mb to (first mailbox of a whose name is "INBOX" or name is "Inbox")
-                end try
-                if mb is not missing value then
-                    set n to count of messages of mb
-                    set lim to \(limit)
-                    if n < lim then set lim to n
-                    if lim > 0 then
-                        set ms to messages 1 thru lim of mb
-                        if n > lim then
-                            set dFirst to date received of message 1 of mb
-                            set dLast to date received of message n of mb
-                            if dLast > dFirst then set ms to messages (n - lim + 1) thru n of mb
+                    set mb to missing value
+                    try
+                        set mb to (first mailbox of a whose name is "INBOX" or name is "Inbox")
+                    end try
+                    if mb is not missing value then
+                        set n to count of messages of mb
+                        set lim to \(limit)
+                        if n < lim then set lim to n
+                        if lim > 0 then
+                            set i0 to 1
+                            set i1 to lim
+                            if n > lim then
+                                if (date received of message n of mb) > (date received of message 1 of mb) then
+                                    set i0 to n - lim + 1
+                                    set i1 to n
+                                end if
+                            end if
+                            set mIDs to id of messages i0 thru i1 of mb
+                            set mDates to date received of messages i0 thru i1 of mb
+                            set mSenders to sender of messages i0 thru i1 of mb
+                            set mSubjects to subject of messages i0 thru i1 of mb
+                            set mRead to read status of messages i0 thru i1 of mb
+                            set mBox to name of mb
+                            repeat with i from 1 to count of mIDs
+                                set end of out to ((item i of mIDs) as string) & fs & ((item i of mDates as «class isot») as string) & fs & (item i of mSenders) & fs & (item i of mSubjects) & fs & ((item i of mRead) as string) & fs & mBox & fs & acct
+                            end repeat
                         end if
-                        \(filter)
-                        set mIDs to id of ms
-                        set mDates to date received of ms
-                        set mSenders to sender of ms
-                        set mSubjects to subject of ms
-                        set mRead to read status of ms
-                        set mBox to name of mb
-                        repeat with i from 1 to count of mIDs
-                            set end of out to ((item i of mIDs) as string) & fs & ((item i of mDates as «class isot») as string) & fs & (item i of mSenders) & fs & (item i of mSubjects) & fs & ((item i of mRead) as string) & fs & mBox & fs & acct
-                        end repeat
                     end if
-                end if
+                on error e
+                    set end of out to \(AppleScriptText.literal(accountErrorTag)) & fs & acct & fs & e
+                end try
             end repeat
         end tell
         end timeout
@@ -80,8 +89,11 @@ public enum AppleMailScripts {
     public static func inbox(hours: Int, limit: Int, unreadOnly: Bool) -> String {
         // Unread is filtered in Swift from the newest window; the hours cut
         // is applied there too, so one shape of script serves both.
-        perAccountInbox(limit: limit, filter: "")
+        perAccountInbox(limit: limit)
     }
+
+    /// First field of the record an account that could not be read leaves.
+    static let accountErrorTag = "ACCOUNT-ERROR"
 
     public static func search(query: String, limit: Int) -> String {
         let q = AppleScriptText.literal(query)
@@ -93,19 +105,25 @@ public enum AppleMailScripts {
         tell application "Mail"
             repeat with a in (every account)
                 set acct to name of a
-                set mb to missing value
                 try
-                    set mb to (first mailbox of a whose name is "INBOX" or name is "Inbox")
+                    set mb to missing value
+                    try
+                        set mb to (first mailbox of a whose name is "INBOX" or name is "Inbox")
+                    end try
+                    if mb is not missing value then
+                        set ms to (messages of mb whose subject contains \(q) or sender contains \(q))
+                        set n to count of ms
+                        if n > \(limit) then set n to \(limit)
+                        repeat with i from 1 to n
+                            try
+                                set m to item i of ms
+                                set end of out to ((id of m) as string) & fs & ((date received of m as «class isot») as string) & fs & (sender of m) & fs & (subject of m) & fs & ((read status of m) as string) & fs & (name of mb) & fs & acct
+                            end try
+                        end repeat
+                    end if
+                on error e
+                    set end of out to \(AppleScriptText.literal(accountErrorTag)) & fs & acct & fs & e
                 end try
-                if mb is not missing value then
-                    set ms to (messages of mb whose subject contains \(q) or sender contains \(q))
-                    set n to count of ms
-                    if n > \(limit) then set n to \(limit)
-                    repeat with i from 1 to n
-                        set m to item i of ms
-                        set end of out to ((id of m) as string) & fs & ((date received of m as «class isot») as string) & fs & (sender of m) & fs & (subject of m) & fs & ((read status of m) as string) & fs & (name of mb) & fs & acct
-                    end repeat
-                end if
             end repeat
         end tell
         end timeout
@@ -144,7 +162,15 @@ public enum AppleMailScripts {
             end repeat
             set AppleScript's text item delimiters to ", "
             set toLine to tos as string
-            return (subject of m) & fs & (sender of m) & fs & toLine & fs & ((date received of m as «class isot») as string) & fs & (content of m)
+            -- Mail downloads a body the first time it is asked for: an
+            -- empty one is fetched, not missing (2026-10-23).
+            set msgText to content of m
+            repeat 3 times
+                if (length of msgText) > 1 then exit repeat
+                delay 1
+                set msgText to content of m
+            end repeat
+            return (subject of m) & fs & (sender of m) & fs & toLine & fs & ((date received of m as «class isot») as string) & fs & msgText
         end tell
         end timeout
         """
@@ -166,9 +192,24 @@ public enum AppleMailScripts {
         """
     }
 
+    /// Accounts that could not be read, with Mail's reason.
+    public static func parseAccountErrors(_ text: String) -> [(account: String, reason: String)] {
+        AppleScriptText.records(text).compactMap { f in
+            guard f.count >= 3, f[0] == accountErrorTag else { return nil }
+            return (f[1], f[2...].joined(separator: " "))
+        }
+    }
+
+    /// A line for the model naming the accounts that failed; empty when none.
+    static func accountErrorNote(_ text: String) -> String {
+        let errors = parseAccountErrors(text)
+        guard !errors.isEmpty else { return "" }
+        return "\nCould not read: " + errors.map { "\($0.account) (\($0.reason))" }.joined(separator: "; ")
+    }
+
     public static func parseMessages(_ text: String) -> [MailMessage] {
         AppleScriptText.records(text).compactMap { f in
-            guard f.count >= 7 else { return nil }
+            guard f.count >= 7, f[0] != accountErrorTag else { return nil }
             return MailMessage(id: f[0], date: AppleScriptText.date(fromISO: f[1]), sender: f[2], subject: f[3],
                                isRead: f[4] == "true", mailbox: f[5], account: f[6])
         }
@@ -205,14 +246,18 @@ public struct MailInboxTool: AgentTool {
         let messages = Array(AppleMailScripts.parseMessages(text)
             .filter { ($0.date ?? .distantPast) >= cutoff && (!unread || !$0.isRead) }
             .prefix(limit))
+        let failed = AppleMailScripts.accountErrorNote(text)
         guard !messages.isEmpty else {
+            if !failed.isEmpty {
+                return .success(toolCallId: "", toolName: name, result: "No \(unread ? "unread " : "")messages read in the last \(hours) hours." + failed)
+            }
             if (try? await runner.run(AppleMailScripts.accountCount())) == "0" {
                 return .success(toolCallId: "", toolName: name, result: "The Mail app has no accounts set up on this Mac, so there is no inbox to read. The user can add one in Mail ▸ Settings ▸ Accounts.")
             }
             return .success(toolCallId: "", toolName: name, result: "No \(unread ? "unread " : "")messages in the last \(hours) hours.")
         }
         return .success(toolCallId: "", toolName: name,
-                        result: "\(messages.count) message(s), newest first:\n" + messages.map(\.line).joined(separator: "\n"))
+                        result: "\(messages.count) message(s), newest first:\n" + messages.map(\.line).joined(separator: "\n") + failed)
     }
 }
 
@@ -235,8 +280,9 @@ public struct MailSearchTool: AgentTool {
         let limit = min(max(intArg(parameters["limit"]) ?? 20, 1), 100)
         let text = try await runner.run(AppleMailScripts.search(query: query, limit: limit))
         let messages = AppleMailScripts.parseMessages(text)
-        guard !messages.isEmpty else { return .success(toolCallId: "", toolName: name, result: "No inbox messages match \"\(query)\".") }
-        return .success(toolCallId: "", toolName: name, result: messages.map(\.line).joined(separator: "\n"))
+        let failed = AppleMailScripts.accountErrorNote(text)
+        guard !messages.isEmpty else { return .success(toolCallId: "", toolName: name, result: "No inbox messages match \"\(query)\"." + failed) }
+        return .success(toolCallId: "", toolName: name, result: messages.map(\.line).joined(separator: "\n") + failed)
     }
 }
 
