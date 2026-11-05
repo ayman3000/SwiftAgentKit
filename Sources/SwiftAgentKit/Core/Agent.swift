@@ -1092,6 +1092,7 @@ public actor Agent {
         let task: AgentMessage = images.isEmpty ? .user(query) : .user(query, images: images)
         runTaskID = task.id
         conversation.append(task)
+        conversation.pin(task.id)   // the task outlives any trim; nudges don't
 
         // Get registered tools, then the system prompt (before skill injection).
         let registeredToolsEarly = await tools.allTools()

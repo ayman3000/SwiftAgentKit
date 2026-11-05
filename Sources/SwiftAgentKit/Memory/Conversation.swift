@@ -148,6 +148,19 @@ public class Conversation: @unchecked Sendable {
         return (removed, messages.count)
     }
 
+    /// The run's task message, set by the agent when a run starts: never
+    /// evicted by a trim. Without it the pin fell on the most recent user
+    /// message — which, mid-run, is the agent's own nudge ("give your answer
+    /// now", a repair hint) — and the real task went first (2026-11-05).
+    private var pinnedMessageID: UUID?
+
+    /// Pin `id` (the run's task) against trimming; nil unpins.
+    public func pin(_ id: UUID?) {
+        lock.lock()
+        defer { lock.unlock() }
+        pinnedMessageID = id
+    }
+
     /// Clear all messages.
     public func clear() {
         lock.lock()
@@ -237,7 +250,8 @@ public class Conversation: @unchecked Sendable {
         // unpinned oldest-first eviction removed it first and the model lost
         // its goal mid-run ("I don't see an explicit task request from you").
         // Older user turns in a multi-turn history remain evictable.
-        let pinnedIdx = messages.lastIndex(where: { $0.role == .user })
+        let pinnedIdx = pinnedMessageID.flatMap { id in messages.firstIndex { $0.id == id } }
+            ?? messages.lastIndex(where: { $0.role == .user })
         guard let idx = messages.indices.first(where: {
             messages[$0].role != .system && $0 != pinnedIdx
         }) else {
