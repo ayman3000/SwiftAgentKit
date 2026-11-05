@@ -333,6 +333,44 @@ struct HistoryTrimTests {
         #expect(Agent.overflowUnits(stored, task: task.id) == [[2, 3]])
     }
 
+    /// The plain trim (no ContextManager — the planner's path) pinned the most
+    /// recent user message, so a mid-run nudge took the pin and the real task
+    /// was evicted first (2026-11-05: the planner said "this conversation
+    /// doesn't contain the task").
+    @Test func thePlainTrimKeepsThePinnedTaskOverANudge() {
+        let conversation = Conversation(contextWindow: 100_000, maxMessages: 4)
+        let task = AgentMessage.user("THE TASK")
+        conversation.append(.system("S"))
+        conversation.append(task)
+        conversation.pin(task.id)
+        for n in 1...3 {
+            conversation.append(Self.call("c\(n)"))
+            conversation.append(Self.result("c\(n)"))
+        }
+        conversation.append(.user("You have been reasoning for a long time. Give your answer now."))
+        _ = conversation.trim(byTokens: false)
+        let kept = conversation.allMessages()
+        #expect(kept.contains { $0.id == task.id })
+    }
+
+    /// End to end without a ContextManager and with a small window: every
+    /// request still carries the task.
+    @Test func withoutAContextManagerEveryRequestCarriesTheTask() async throws {
+        let steps = 8
+        let provider = ScriptedProvider(turns: (1...steps).map {
+            [LLMToolCall(id: "p\($0)", name: "make_output", arguments: #"{"n":\#($0)}"#)]
+        } + [[]])
+        let agent = Agent(config: AgentConfig(provider: provider, model: "mock", systemPrompt: "BASE",
+                                              maxTurns: steps + 2, contextWindow: 4_096,
+                                              tools: [OutputTool(size: 700)],
+                                              loopDetection: LoopDetectionConfig(stopThreshold: 100),
+                                              progressNudgeFractions: []))
+        _ = try await agent.run("plan the task")
+        for request in provider.captured {
+            #expect(request.messages.contains { $0.role == .user && $0.content == "plan the task" })
+        }
+    }
+
     /// End to end: every step repeats the same call, so the loop detector
     /// appends a nudge after the results on most calls. The net cuts, and
     /// still every request carries the task and the step being answered.
