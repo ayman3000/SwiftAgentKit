@@ -1,5 +1,5 @@
 //
-//  01-SimpleChat.swift
+//  04-SimpleChat.swift
 //  SwiftAgentKit Examples
 //
 //  Pattern: Single-shot
@@ -9,6 +9,7 @@
 //  Requires: Ollama running locally (ollama serve) with a model installed.
 //
 
+import Foundation
 import SwiftAgentKit
 import LLMProviderKit
 import LLMProviderKitOllama
@@ -18,7 +19,7 @@ import LLMProviderKitOllama
 // ──────────────────────────────────────────────
 
 func simpleTextResponse() async throws {
-    let provider = OllamaProvider(configuration: .local(model: "llama3.2"))
+    let provider = OllamaProvider(configuration: OllamaProvider.local(model: "llama3.2"))
 
     let agent = Agent(config: AgentConfig(
         provider: provider,
@@ -35,7 +36,7 @@ func simpleTextResponse() async throws {
 // ──────────────────────────────────────────────
 
 func structuredOutput() async throws {
-    let provider = OllamaProvider(configuration: .local(model: "llama3.2"))
+    let provider = OllamaProvider(configuration: OllamaProvider.local(model: "llama3.2"))
 
     let agent = Agent(config: AgentConfig(
         provider: provider,
@@ -70,7 +71,7 @@ func structuredOutput() async throws {
 // ──────────────────────────────────────────────
 
 func streamingResponse() async throws {
-    let provider = OllamaProvider(configuration: .local(model: "llama3.2"))
+    let provider = OllamaProvider(configuration: OllamaProvider.local(model: "llama3.2"))
 
     let agent = Agent(config: AgentConfig(
         provider: provider,
@@ -89,7 +90,7 @@ func streamingResponse() async throws {
 // Run all
 // ──────────────────────────────────────────────
 
-Task {
+func simpleChatExample() async throws {
     print("=== Simple Text Response ===")
     try await simpleTextResponse()
 

@@ -1,8 +1,7 @@
 <p align="center">
   <h1 align="center">SwiftAgentKit</h1>
   <p align="center"><strong>Build AI agents in native Swift.</strong></p>
-  <p align="center">Tools · Memory · Planning · Sessions · Callbacks · Events · Multi-provider</p>
-  <p align="center">Powered by <a href="https://github.com/ayman3000/LLMProviderKit">LLMProviderKit</a></p>
+  <p align="center">Give a model your Swift functions as tools, and SwiftAgentKit runs the loop:<br/>the model asks, your code acts, and the model sees the result.</p>
 </p>
 
 <p align="center">
@@ -12,757 +11,547 @@
   <img src="https://img.shields.io/badge/release-0.4.0--alpha-yellow" alt="Alpha">
 </p>
 
-<h2 align="center">Watch SwiftAgentKit in action</h2>
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#the-essentials">Essentials</a> ·
+  <a href="#going-further">Going further</a> ·
+  <a href="#examples">Examples</a> ·
+  <a href="#built-with-swiftagentkit">Built with it</a>
+</p>
 
 <p align="center">
   <a href="https://github.com/ayman3000/SwiftAgentKit/raw/main/Media/SwiftAgentKitExplainer.mp4">
     <img src="https://raw.githubusercontent.com/ayman3000/SwiftAgentKit/main/Media/SwiftAgentKitPreview.gif" width="800" alt="Animated preview of the SwiftAgentKit technical overview">
   </a>
+  <br/>
+  <a href="https://github.com/ayman3000/SwiftAgentKit/raw/main/Media/SwiftAgentKitExplainer.mp4"><strong>▶ Watch the 74-second overview</strong></a>
 </p>
 
-<p align="center">
-  <a href="https://github.com/ayman3000/SwiftAgentKit/raw/main/Media/SwiftAgentKitExplainer.mp4"><strong>▶ CLICK TO WATCH THE FULL 74-SECOND VIDEO</strong></a>
-</p>
-
 ---
-
-A modern AI agent framework for Swift. Native tool calling, conversation memory, planning, state, callbacks, session persistence, and a ReAct-style loop — all protocol-oriented, all Swift, zero UI dependencies. Designed for macOS/iOS apps, CLI agents, and local-first Ollama workflows. Works with **Ollama**, **OpenAI**, **Google Gemini**, and **Anthropic** through [LLMProviderKit](https://github.com/ayman3000/LLMProviderKit).
-
----
-
-## Table of Contents
-
-- [30-Second Example](#30-second-example)
-- [Features](#features)
-- [Architecture](#architecture)
-- [Quick Start](#quick-start)
-- [Examples](#examples)
-- [MCP Server Integration](#mcp-server-integration)
-- [Native macOS App Automation](#native-macos-app-automation-swiftagentkitmac)
-- [iOS Simulator Automation](#ios-simulator-automation-swiftagentkitsimulator)
-- [@Tool Macro (Optional)](#tool-macro-optional)
-- [Design Principles](#design-principles)
-- [Alpha Status](#alpha-status)
-- [Contributing](#contributing)
-- [License](#license)
-
----
-
-## 30-Second Example
 
 ```swift
-import SwiftAgentKit
-import LLMProviderKit
-import LLMProviderKitOllama
-
-// 1. Pick any provider
-let provider = OllamaProvider(configuration: .local(model: "llama3.2"))
-
-// 2. Define a tool — any Swift struct conforming to AgentTool
-struct CurrentTimeTool: AgentTool {
-    let name = "current_time"
-    let description = "Return the current date and time."
-    let parameters = ToolParameters.empty
-
-    func execute(context: ToolContext) async throws -> AgentToolResult {
-        .success(toolCallId: context.callId, toolName: name,
-                 result: Date().formatted(date: .complete, time: .standard))
-    }
-}
-
-// 3. Create an agent — pass tools inline at init time
 let agent = Agent(config: AgentConfig(
-    provider: provider,
+    provider: OllamaProvider(configuration: OllamaProvider.local(model: "llama3.2")),
     systemPrompt: "You are a helpful assistant. Use tools when needed.",
-    maxTurns: 6,
     tools: [CurrentTimeTool()]
 ))
 
-// 4. Run — the model decides to call the tool, Swift executes it, results go back
-let response = try await agent.run("What time is it? Use the tool.")
-print(response)
+print(try await agent.run("What time is it?"))
+// The model calls current_time, your Swift code runs, and the model answers from the result.
 ```
 
-That's a real agent — a tool-using loop where the model acts through your Swift code.
+## Why SwiftAgentKit
+
+- **Native Swift.** Actors, async/await and Swift 6 concurrency throughout. This is not a wrapper around a Python framework.
+- **Local or cloud.** Run fully offline on **Ollama**, or switch to **Anthropic**, **OpenAI**, **Gemini** or **OpenRouter** by changing one line.
+- **Use only what you need.** The core library depends on Foundation and [LLMProviderKit](https://github.com/ayman3000/LLMProviderKit), nothing else. Ready-made tools, MCP, Mac automation and Simulator automation are separate, opt-in products.
+- **Built for real apps.** It powers [Naseem](https://naseemformac.com), a Mac AI agent. Hooks, events and cancellation are there for building a real UI.
 
 ---
 
-## Features
+## Quick start
 
-| Feature | Description |
-|---|---|
-| 🔧 **Tool system** | Define Swift tools with JSON-Schema parameters. Models call them natively. Sequential dispatch by default (opt-in parallel) + dedup. |
-| ✨ **@Tool macro** | Optional `@Tool` macro converts Swift functions to `AgentTool` structs — less boilerplate. |
-| 🧠 **Conversation memory** | Token-aware history that trims to fit the context window automatically. |
-| 🧠 **Persistent memory store** | Markdown-based long-term memory the agent can read and write across sessions. |
-| 🎯 **Goal tracking** | Track user requests as persistent goals with status and progress. |
-| 📋 **Planning** | Optional planning step before execution for complex multi-step tasks. |
-| 🔄 **Repair retry** | Nudges the model when tools fail instead of accepting false success. |
-| 📊 **Plan continuation** | Nudges the model if it stops before completing a plan. |
-| 🗂️ **Agent state** | Cross-turn key-value store with `{key}` prompt templating. |
-| 📡 **Lifecycle callbacks** | 8 intercept-able hooks: beforeAgent, afterAgent, beforeModel, afterModel, beforeTool, afterTool, onModelError, onToolError. |
-| 📡 **Event stream** | Observe starts, LLM calls, tool calls, tool results, retries, finish summaries. |
-| 💾 **Session persistence** | Save/restore conversations via `SessionStore` protocol + `FileSessionStore`. |
-| 📝 **Structured output** | Tolerant JSON extraction from imperfect model responses. |
-| 🎯 **Progressive disclosure skills** | Inject domain instructions only when query keywords match — keeps prompts small for local models. |
-| 🌊 **Streaming** | Token-by-token streaming for non-tool responses. |
-| 🖥️ **Local LLMs** | Full Ollama support — run agents entirely offline. |
-| ☁️ **Cloud providers** | OpenAI, Gemini, Anthropic — swap providers, keep everything else. |
-| ⚡ **Async/await** | Native Swift concurrency throughout. No completion handlers. |
-| 🔒 **Cancellation** | Cooperative cancellation between turns. |
+### 1. Add the package
 
-### Provider support
-
-| Provider | Tool calling | Streaming | Model discovery |
-|---|---|---|---|
-| **Ollama** | ✅ Native `tools` | ✅ | ✅ `GET /api/tags` |
-| **OpenAI** | ✅ Native `tools` + `tool_choice` | ✅ | ✅ `GET /v1/models` |
-| **Gemini** | ✅ `functionDeclarations` | ✅ | ✅ `GET /v1beta/models` |
-| **Anthropic** | ✅ `tool_use` content blocks | ✅ | ✅ Curated list |
-
----
-
-## Architecture
-
-### Two-layer stack
-
-```mermaid
-graph TD
-    APP["Your Swift App<br/>SwiftUI / AppKit / CLI / Server"]
-    SAK["SwiftAgentKit<br/>Agent loop · Tools · Memory · State<br/>Planning · Callbacks · Events · Sessions"]
-    LPK["LLMProviderKit<br/>Provider protocol · Request/Response · Streaming"]
-    OLLAMA["Ollama<br/>Local"]
-    OPENAI["OpenAI<br/>Cloud"]
-    GEMINI["Gemini<br/>Cloud"]
-    ANTHROPIC["Anthropic<br/>Cloud"]
-
-    APP --> SAK
-    SAK --> LPK
-    LPK --> OLLAMA
-    LPK --> OPENAI
-    LPK --> GEMINI
-    LPK --> ANTHROPIC
-
-    style APP fill:#4A90D9,stroke:#2C5F8A,stroke-width:2px,color:#fff
-    style SAK fill:#9B59B6,stroke:#6C3483,stroke-width:3px,color:#fff
-    style LPK fill:#E67E22,stroke:#A04500,stroke-width:2px,color:#fff
-    style OLLAMA fill:#27AE60,stroke:#1E8449,stroke-width:1px,color:#fff
-    style OPENAI fill:#27AE60,stroke:#1E8449,stroke-width:1px,color:#fff
-    style GEMINI fill:#27AE60,stroke:#1E8449,stroke-width:1px,color:#fff
-    style ANTHROPIC fill:#27AE60,stroke:#1E8449,stroke-width:1px,color:#fff
-```
-
-SwiftAgentKit does **not** implement provider networking itself. It depends on `LLMProviderKit`'s `LLMProvider` protocol, so the same agent can run on local or cloud models.
-
-### Agent loop
-
-On each `run()` call the agent appends the user message, optionally generates a plan, then enters a ReAct loop: it sends the conversation + tool definitions to the model, parses any tool calls, executes them in Swift (sequential by default, deduplicated, ID-stamped; set `parallelToolCalls` to run a turn's calls concurrently), feeds results back, and repeats until the model returns a final answer or `maxTurns` is reached. Callbacks and events fire at every stage; repair-retry and plan-continuation nudge the model back on track when needed.
-
-### Package layout
+In Xcode, choose **File ▸ Add Package Dependencies…** and add both:
 
 ```
-Sources/SwiftAgentKit/
-├── Core/
-│   ├── Agent.swift              # AgentConfig + main Agent runtime
-│   ├── AgentMessage.swift       # Messages, tool calls, tool results
-│   ├── AgentState.swift         # Cross-turn key-value state + {key} templating
-│   ├── AgentCallbacks.swift     # 8 intercept-able lifecycle hooks
-│   ├── AgentSkill.swift         # Progressive-disclosure skills
-│   ├── AgentEvent.swift         # Event stream + run summaries
-│   ├── AgentError.swift         # Typed errors
-│   └── AgentLLMResponse.swift   # Provider response bridge
-├── Tools/
-│   ├── AgentTool.swift          # Tool protocol + JSON-Schema params
-│   ├── ToolContext.swift        # Rich context (state, call info, actions)
-│   └── ToolDispatcher.swift     # Sequential/parallel dispatch, dedup, confirmation
-├── Memory/
-│   ├── Conversation.swift       # Token-aware conversation history
-│   ├── SessionStore.swift      # Session persistence protocol + file store
-│   ├── AgentMemoryStore.swift   # Long-term memory store protocol + file-backed impl
-│   └── RememberTool.swift       # Built-in tool for agents to persist memory
-├── Planning/
-│   ├── AgentPlan.swift          # Plan model + LLMPlanner
-│   ├── AgentGoal.swift          # Goal model + goal store persistence
-│   └── RepairRetryPolicy.swift  # Repair-retry + plan continuation
-├── StructuredOutput/
-│   └── StructuredOutput.swift   # Tolerant JSON extraction
-├── Logging/
-│   └── AgentLogger.swift        # Lightweight logger
-Sources/SwiftAgentKitMCP/
-├── MCPClientConfig.swift        # stdio/HTTP connection config
-├── MCPToolBridge.swift          # MCP Tool → AgentTool bridge
-└── MCPManager.swift             # Connection lifecycle + tool discovery
+https://github.com/ayman3000/SwiftAgentKit
+https://github.com/ayman3000/LLMProviderKit
 ```
 
----
-
-## Quick Start
-
-### Installation
-
-**Xcode:** File ▸ Add Package Dependencies → add `https://github.com/ayman3000/SwiftAgentKit` and `https://github.com/ayman3000/LLMProviderKit`
-
-**Package.swift:**
+Or, in `Package.swift`:
 
 ```swift
-.dependencies: [
-    .package(url: "https://github.com/ayman3000/SwiftAgentKit.git", from: "0.3.0-alpha.52"),
-    .package(url: "https://github.com/ayman3000/LLMProviderKit.git", from: "0.1.0-alpha.14"),
+dependencies: [
+    .package(url: "https://github.com/ayman3000/SwiftAgentKit.git", from: "0.4.0-alpha.133"),
+    .package(url: "https://github.com/ayman3000/LLMProviderKit.git", from: "0.1.0-alpha.43"),
 ],
 targets: [
     .target(name: "YourApp", dependencies: [
         .product(name: "SwiftAgentKit", package: "SwiftAgentKit"),
         .product(name: "LLMProviderKit", package: "LLMProviderKit"),
-        .product(name: "LLMProviderKitOllama", package: "LLMProviderKit"),
-        // Add the providers you need:
-        // .product(name: "LLMProviderKitOpenAI", package: "LLMProviderKit"),
-        // .product(name: "LLMProviderKitGemini", package: "LLMProviderKit"),
-        // .product(name: "LLMProviderKitAnthropic", package: "LLMProviderKit"),
+        .product(name: "LLMProviderKitOllama", package: "LLMProviderKit"),   // or Anthropic, OpenAI, Gemini, OpenRouter
     ])
 ]
 ```
 
-### First agent
+### 2. Write a tool
+
+A tool is a Swift type that conforms to `AgentTool`. It has a name, a description the model reads, a JSON Schema for its parameters, and an `execute` method.
 
 ```swift
 import SwiftAgentKit
-import LLMProviderKit
-import LLMProviderKitOllama
 
-let provider = OllamaProvider(configuration: .local(model: "llama3.2"))
-
-let agent = Agent(config: AgentConfig(
-    provider: provider,
-    systemPrompt: "You are a helpful Swift assistant.",
-    maxTurns: 1
-))
-
-let answer = try await agent.run("Explain async/await in one sentence.")
-print(answer)
-```
-
-### First tool
-
-```swift
-struct EchoTool: AgentTool {
-    let name = "echo"
-    let description = "Echo a message back."
-    let parameters = ToolParameters(
-        properties: ["message": ToolParameterProperty(type: "string", description: "Message to echo")],
-        required: ["message"]
-    )
-
-    func execute(context: ToolContext) async throws -> AgentToolResult {
-        let msg = context.parameters["message"] as? String ?? ""
-        return .success(toolCallId: context.callId, toolName: name, result: "Echo: \(msg)")
-    }
-}
-
-let agent = Agent(config: AgentConfig(
-    provider: provider,
-    maxTurns: 6,
-    tools: [EchoTool()]
-))
-let response = try await agent.run("Echo the message 'Hello from SwiftAgentKit!'")
-```
-
----
-
-## Examples
-
-### Tool calling
-
-```swift
 struct CurrentTimeTool: AgentTool {
     let name = "current_time"
     let description = "Return the current date and time."
     let parameters = ToolParameters.empty
+    var isReadOnly: Bool { true }
 
     func execute(context: ToolContext) async throws -> AgentToolResult {
         .success(toolCallId: context.callId, toolName: name,
                  result: Date().formatted(date: .complete, time: .standard))
     }
 }
-
-let agent = Agent(config: AgentConfig(
-    provider: provider,
-    systemPrompt: "You are a helpful assistant. Use tools when needed.",
-    maxTurns: 6
-))
-await agent.register(CurrentTimeTool())
-
-let response = try await agent.run("What time is it? Use the tool.")
 ```
 
-### Multiple tools
-
-Tool calls in a turn run **sequentially by default**, in the order the model issued them — models routinely emit order-dependent batches (write a file then read it, several patches to one file). If your tools are safe to interleave, opt in with `AgentConfig(parallelToolCalls: true)` and a turn's calls run concurrently (deduplicated, order of results preserved).
+### 3. Run an agent
 
 ```swift
-struct CalculatorTool: AgentTool {
-    let name = "calculator"
-    let description = "Calculate a basic arithmetic expression."
+import SwiftAgentKit
+import LLMProviderKitOllama
+
+let agent = Agent(config: AgentConfig(
+    provider: OllamaProvider(configuration: OllamaProvider.local(model: "llama3.2")),
+    systemPrompt: "You are a helpful assistant. Use tools when needed.",
+    maxTurns: 6,
+    tools: [CurrentTimeTool()]
+))
+
+let answer = try await agent.run("What time is it?")
+print(answer)
+```
+
+This is a complete agent. `run` sends the conversation and tool definitions to the model, runs the tool calls it gets back, returns the results to the model, and repeats until the model gives a final answer or `maxTurns` is reached.
+
+> **Need a model?** Run `ollama pull llama3.2` and you're ready, with no API key.
+
+---
+
+## The essentials
+
+### Tools with parameters
+
+Read arguments from `context.parameters`. When something goes wrong that the model can fix, such as a missing or invalid argument, return `.error(…)`. The model reads the message and tries again.
+
+```swift
+struct WeatherTool: AgentTool {
+    let name = "get_weather"
+    let description = "Get the current weather for a city."
     let parameters = ToolParameters(
-        properties: ["expression": ToolParameterProperty(type: "string", description: "e.g. 38 * 17")],
-        required: ["expression"]
+        properties: ["city": ToolParameterProperty(type: "string", description: "City name, e.g. Cairo")],
+        required: ["city"]
     )
+    var isReadOnly: Bool { true }
 
     func execute(context: ToolContext) async throws -> AgentToolResult {
-        let expr = context.parameters["expression"] as? String ?? ""
-        // Replace with a real safe parser in production
-        if expr.trimmingCharacters(in: .whitespaces) == "38 * 17" {
-            return .success(toolCallId: context.callId, toolName: name, result: "646")
+        guard let city = context.parameters["city"] as? String, !city.isEmpty else {
+            return .error(toolCallId: context.callId, toolName: name, message: "`city` is required.")
         }
-        return .error(toolCallId: context.callId, toolName: name, message: "Unsupported expression.")
+        return .success(toolCallId: context.callId, toolName: name, result: "Sunny, 24°C in \(city)")
     }
 }
-
-await agent.registerAll([CurrentTimeTool(), EchoTool(), CalculatorTool()])
-let result = try await agent.run("Get the time, echo 'hello', then calculate 38 * 17.")
 ```
 
-When the model requests multiple tools in one turn, SwiftAgentKit executes them sequentially in the order the model issued them (concurrently when `parallelToolCalls` is enabled) and preserves order when feeding results back.
+| Tool property | Default | Use it when |
+|---|---|---|
+| `isReadOnly` | `false` | the tool only reads. Read-only calls can run in parallel, and are retried once after a temporary failure. |
+| `requiresConfirmation` | `false` | the tool can cause damage, such as deleting files or running shell commands. The agent asks `onToolConfirmation` before running it. |
+| `inputExamples` | `[]` | the model needs to see the exact format of an argument, such as a date or an ID. |
 
-### Persistent memory
+Register tools when you create the agent (`tools: [...]`), or later with `await agent.register(tool)`.
 
-SwiftAgentKit supports long-term, cross-session memory. The app chooses where memory lives — the library never hardcodes a folder name.
+### Switch providers
+
+The agent code stays the same. Only the provider changes:
 
 ```swift
-import Foundation
-import SwiftAgentKit
+import LLMProviderKitAnthropic
+import LLMProviderKitOpenAI
+import LLMProviderKitGemini
 
-// App names the folder; SwiftAgentKit provides a convenience helper
-let store = FileAgentMemoryStore.defaultStore(named: "myapp")
-
-// Or use any explicit directory URL
-// let store = FileAgentMemoryStore(directory: fileURL)
-
-let agent = Agent(config: AgentConfig(
-    provider: provider,
-    systemPrompt: "You are a helpful assistant. Remember user facts across sessions.",
-    maxTurns: 6
-))
-
-// Attaching a memory store:
-// 1. Injects the memory context block into the system prompt
-// 2. Auto-registers the built-in `remember` tool
-try await agent.setMemoryStore(store)
+let local  = OllamaProvider(configuration: OllamaProvider.local(model: "llama3.2"))
+let claude = AnthropicProvider(configuration: AnthropicProvider.anthropic(apiKey: key, model: "claude-sonnet-5-5"))
+let gpt    = OpenAIProvider(configuration: OpenAIProvider.openAI(apiKey: key, model: "gpt-5"))
+let gemini = GeminiProvider(configuration: GeminiProvider.gemini(apiKey: key, model: "gemini-2.5-pro"))
 ```
 
-The file-backed store uses a markdown layout similar to production agent patterns:
+| Provider | Tool calling | Streaming | Model list |
+|---|---|---|---|
+| **Ollama** (local) | ✅ | ✅ | ✅ |
+| **Anthropic** | ✅ | ✅ | ✅ |
+| **OpenAI** | ✅ | ✅ | ✅ |
+| **Gemini** | ✅ | ✅ | ✅ |
+| **OpenRouter** | ✅ | ✅ | ✅ |
 
-```
-~/.myapp/
-├── AGENT.md          # Agent identity / instructions
-├── USER.md           # User profile
-├── MEMORY.md         # Index / summary of facts
-└── memory/
-    ├── fact-001.md   # Individual fact
-    └── fact-002.md
-```
-
-### Goal tracking
-
-Track user requests as persistent goals. Enable tracking on any `run(_:)` call and the agent saves the goal with final status and a summary.
+### Stream the answer
 
 ```swift
-let goalStore = FileAgentGoalStore(directory: someDirectoryURL)
-try await agent.setGoalStore(goalStore)
-
-let answer = try await agent.run("Analyze this project and write a README summary.", trackGoal: true)
-
-// Later, inspect or resume goals
-let goals = try await goalStore.loadAll()
-for goal in goals {
-    print(goal.status, goal.query, goal.summary ?? "")
-}
-```
-
-Goals carry status (`pending`, `inProgress`, `completed`, `failed`, `abandoned`), a progress percentage derived from the active plan, and a final summary once the run finishes.
-
-### Streaming
-
-```swift
-// Simple non-tool responses — token by token
-for try await chunk in agent.runStreaming("Tell me a short story about Swift actors.") {
-    print(chunk, terminator: "")
-}
-
-// Tool-using agents — same API: the loop runs, tools execute, text streams
-for try await chunk in agent.runStreaming("Use tools, then summarize.") {
+for try await chunk in agent.runStreaming("Explain Swift actors in three sentences.") {
     print(chunk, terminator: "")
 }
 ```
 
-> `runStreaming` shares the exact ReAct lifecycle used by `run(_:)` — planning, tools, repair-retry, callbacks. Tool-calling turns are re-issued non-streaming internally (tool calls need complete model responses), so don't rely on token-by-token visibility during tool execution. `stream(_:)` is a deprecated alias of `runStreaming(_:)`; earlier releases gave it a reduced path that dropped tool calls.
+`runStreaming` runs the same loop as `run`, including tools, planning and callbacks. While a tool call is in progress you won't see text tokens; the answer text streams as it arrives. To stop a run, call `agent.requestCancel()`, or cancel the task that's reading the stream.
 
-### Event monitoring
+### Watch what happens
+
+Events let you show progress, build a debug panel or keep an audit log:
 
 ```swift
 agent.onEvent { event in
     switch event {
-    case .started(let query):
-        print("Started:", query)
-    case .llmCallStarted(let turn):
-        print("LLM call — turn \(turn)")
     case .toolCallsReceived(let calls):
-        print("Tools:", calls.map(\.name).joined(separator: ", "))
+        print("→", calls.map(\.name).joined(separator: ", "))
     case .toolExecutionFinished(let call, let result):
-        print("✓ \(call.name): \(result.isError ? "ERROR" : "OK")")
+        print(result.isError ? "✗" : "✓", call.name)
     case .finished(let summary):
-        print("Done: \(summary.totalTurns) turns, \(summary.toolsExecuted) tools, \(String(format: "%.1f", summary.elapsed))s")
-    default: break
+        print("Done in \(summary.totalTurns) turns, \(summary.toolsExecuted) tool calls")
+    default:
+        break
     }
 }
 ```
 
-Perfect for debug panels, progress UIs, and audit logs.
+### Add guardrails
 
-### Callbacks + guardrails
+Callbacks run at each stage of the loop. A callback can observe what happens, or change or block it.
 
 ```swift
 var callbacks = AgentCallbacks()
 
-// Block destructive requests
-callbacks.beforeAgent = { query, state in
-    query.lowercased().contains("delete everything")
-        ? "I can't perform destructive actions without confirmation."
-        : nil
+// Ask the user before any tool marked requiresConfirmation runs.
+callbacks.onToolConfirmation = { call, _ in
+    await askUser("Allow \(call.name)?")
 }
 
-// Block dangerous tools
-callbacks.beforeTool = { call, context in
+// Block a tool outright.
+callbacks.beforeTool = { call, _ in
     call.name == "delete_file"
         ? .error(toolCallId: call.id, toolName: call.name, message: "Blocked by policy.")
         : nil
 }
 
-// Post-process responses
-callbacks.afterAgent = { response, state in
+// Change the final answer before it's returned.
+callbacks.afterAgent = { response, _ in
     response.trimmingCharacters(in: .whitespacesAndNewlines)
 }
 
 try await agent.setCallbacks(callbacks)
 ```
 
-### Planning
+The full set of callbacks: `beforeAgent`, `afterAgent`, `beforeModel`, `afterModel`, `beforeTool`, `afterTool`, `onModelError`, `onToolError` and `onToolConfirmation`.
+
+---
+
+## Going further
+
+Each of these is opt-in. Click a section to expand it.
+
+<details>
+<summary><strong>🧰 Ready-made tools</strong>: files, shell, Python, web, PDF, Office</summary>
+
+<br/>
+
+Add the `SwiftAgentKitTools` product:
+
+```swift
+import SwiftAgentKitTools
+
+let policy = FileToolPolicy(allowedRoots: [projectURL])   // keep file tools inside one folder
+
+let agent = Agent(config: AgentConfig(
+    provider: provider,
+    tools: [
+        FileReadTool(policy: policy),
+        FileWriteTool(policy: policy),
+        EditFileTool(policy: policy),
+        ListDirTool(policy: policy),
+        SearchFilesTool(policy: policy),
+        FetchURLTool(),
+    ]
+))
+```
+
+| Group | Tools |
+|---|---|
+| Files | `FileReadTool`, `FileWriteTool`, `EditFileTool`, `PatchFileTool`, `ListDirTool`, `SearchFilesTool` |
+| Code | `ShellTool`, `PythonTool` |
+| Web | `FetchURLTool` |
+| Documents | `PDFInfoTool`, `PDFExtractTextTool`, `PDFMergeTool`, `PDFSplitTool`, `OfficeExtractTextTool`, `DocumentDigestTool` |
+| Slack | `SlackChannelsTool`, `SlackHistoryTool`, `SlackSearchTool`, `SlackPostTool`, … |
+
+Built-in safety features:
+
+- `FileToolPolicy` resolves `~`, `..` and symlinks before it checks whether a path is allowed.
+- The shell and Python tools stop the command and everything it started when it times out.
+- `import_skill` refuses private and loopback URLs.
+
+</details>
+
+<details>
+<summary><strong>🧠 Memory</strong>: facts that carry over between sessions</summary>
+
+<br/>
+
+```swift
+let store = FileAgentMemoryStore.defaultStore(named: "myapp")   // ~/.myapp/
+try await agent.setMemoryStore(store)
+```
+
+Attaching a store adds what the agent remembers to the system prompt, and registers a `remember` tool so the agent can save new facts. Everything is stored as readable Markdown:
+
+```
+~/.myapp/
+├── AGENT.md      who the agent is
+├── USER.md       what it knows about the user
+├── MEMORY.md     index of facts
+└── memory/       one file per fact
+```
+
+</details>
+
+<details>
+<summary><strong>🎯 Skills</strong>: instructions loaded only when a task needs them</summary>
+
+<br/>
+
+A skill is a Markdown file with instructions for one kind of task. The agent sees only each skill's name and a one-line description. It loads a skill's full instructions only when the task needs it, which keeps prompts small, especially for local models.
+
+```swift
+try await agent.setSkillStore(FileAgentSkillStore.defaultStore(named: "myapp"))
+```
+
+This registers `use_skill`, for loading a skill, and `learn_skill`, for saving a new one.
+
+</details>
+
+<details>
+<summary><strong>💾 Sessions</strong>: save a conversation and restore it later</summary>
+
+<br/>
+
+```swift
+let sessions = FileSessionStore(directory: sessionsURL)
+
+try await agent.saveSession(store: sessions, sessionId: "chat-42")
+// …later, possibly after the app relaunches:
+let restored = try await agent.loadSession(store: sessions, sessionId: "chat-42")
+```
+
+</details>
+
+<details>
+<summary><strong>📋 Planning and goals</strong>: for multi-step tasks</summary>
+
+<br/>
 
 ```swift
 let agent = Agent(config: AgentConfig(
     provider: provider,
-    systemPrompt: "You are a systematic implementation assistant.",
+    systemPrompt: "You are a careful implementation assistant.",
     maxTurns: 12,
-    enablePlanning: true,
-    enablePlanContinuation: true,
-    enableRepairRetry: true
+    enablePlanning: true,          // write a plan before acting
+    enableRepairRetry: true,       // tell the model when a tool failed, instead of accepting "done"
+    enablePlanContinuation: true   // tell the model when it stops before finishing the plan
 ))
 
-await agent.registerAll([ReadFileTool(), WriteFileTool(), ListFilesTool()])
-let result = try await agent.run("Inspect this project and write a README summary.")
+try await agent.setGoalStore(FileAgentGoalStore(directory: goalsURL))
+let answer = try await agent.run("Inspect this project and write a README summary.", trackGoal: true)
 ```
 
-Planning is optional. Keep it off for simple tasks; enable it for multi-step workflows.
+Keep planning off for simple questions and turn it on for multi-step work. Tracked goals record their status, progress and a final summary.
 
----
+</details>
 
-## MCP Server Integration
+<details>
+<summary><strong>🔌 MCP servers</strong>: use any Model Context Protocol server's tools</summary>
 
-SwiftAgentKit can connect to any [Model Context Protocol](https://modelcontextprotocol.io) server and use its tools as native `AgentTool`s. This gives your agents instant access to the growing MCP ecosystem — filesystem, GitHub, databases, browser automation, and more — without writing tools in Swift.
+<br/>
 
-MCP support is an **optional product** (`SwiftAgentKitMCP`) so it doesn't add weight to the core library.
-
-### Installation
-
-Add `SwiftAgentKitMCP` to your dependencies:
+Add the `SwiftAgentKitMCP` product:
 
 ```swift
-.dependencies: [
-    .package(url: "https://github.com/ayman3000/SwiftAgentKit.git", from: "0.3.0-alpha.52"),
-    .package(url: "https://github.com/ayman3000/LLMProviderKit.git", from: "0.1.0-alpha.14"),
-],
-targets: [
-    .target(name: "YourApp", dependencies: [
-        .product(name: "SwiftAgentKit", package: "SwiftAgentKit"),
-        .product(name: "SwiftAgentKitMCP", package: "SwiftAgentKit"),
-        .product(name: "LLMProviderKitOllama", package: "LLMProviderKit"),
-    ])
-]
-```
-
-### Usage
-
-```swift
-import SwiftAgentKit
 import SwiftAgentKitMCP
-import LLMProviderKitOllama
 
-let agent = Agent(config: AgentConfig(
-    provider: OllamaProvider(configuration: OllamaProvider.local(model: "llama3.2")),
-    systemPrompt: "You are a helpful assistant with filesystem tools.",
-    maxTurns: 10
-))
-
-// Connect to MCP servers — tools are auto-discovered and bridged
 let mcp = MCPManager()
-try await mcp.connect(.stdio(command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]))
-try await mcp.connect(.http(endpoint: URL(string: "http://localhost:8080")!))
+_ = try await mcp.connect(.stdio(command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]))
+_ = try await mcp.connect(.http(endpoint: URL(string: "http://localhost:8080")!))
 
-// Bridge all MCP tools into the agent
 for tool in try await mcp.bridgedTools() {
     await agent.register(tool)
 }
-
-// Run — the agent can now use filesystem tools
-let response = try await agent.run("List the files in /tmp and summarize what's there.")
-print(response)
-
-// Clean up when done
-await mcp.disconnectAll()
 ```
 
-### What's supported
+Supported: stdio and HTTP servers, tools and resources, and several servers at once. Not yet supported: MCP prompts, sampling and elicitation. SwiftAgentKit is a client only; it doesn't host servers.
 
-- **Stdio transport** — connect to local MCP servers via subprocess
-- **HTTP transport** — connect to remote MCP servers
-- **Tool discovery** — `listTools()` → `AgentTool` bridge (name, description, schema, execution)
-- **Resource discovery** — `listResources()` → `MCPResourceInfo`, `readResource(uri:)`, `resourcesContextBlock()`
-- **Multi-server** — connect to multiple MCP servers simultaneously; all tools and resources merge
+</details>
 
-### What's not yet supported
+<details>
+<summary><strong>🖥️ Mac app automation</strong>: control native apps through Accessibility (macOS)</summary>
 
-- MCP prompts, completions, sampling, elicitation — tools and resources only for now
-- MCP server hosting (SwiftAgentKit is a client, not a server)
+<br/>
 
----
-
-## Native macOS App Automation (SwiftAgentKitMac)
-
-`SwiftAgentKitMac` is a **macOS-only** optional product that gives your agent a set of tools for driving native macOS applications via the Accessibility API — snapshot the UI tree, click elements, type text, press key combos, wait for UI changes, launch apps, and list running processes.
-
-### Installation
-
-Add `SwiftAgentKitMac` to your target dependencies:
+Add the `SwiftAgentKitMac` product:
 
 ```swift
-.target(name: "YourApp", dependencies: [
-    .product(name: "SwiftAgentKit", package: "SwiftAgentKit"),
-    .product(name: "SwiftAgentKitMac", package: "SwiftAgentKit"),
-])
-```
-
-### One-call registration
-
-```swift
-import SwiftAgentKit
 import SwiftAgentKitMac
 
-// The allowlist provider returns the set of bundle IDs the current conversation
-// is permitted to drive. The toggle, allowlist, and confirmation UX all live
-// in your app — SwiftAgentKitMac enforces the boundary but does not own it.
-let client = AXClient()
 let tools = makeMacTools(
-    allowlistProvider: { conversationAllowlist },
-    client: client
+    allowlistProvider: { allowedBundleIDs },   // the apps this conversation may control
+    client: AXClient()
 )
 await agent.registerAll(tools)
 ```
 
-### What the agent can do
+Tools: `mac_apps`, `mac_ui` (read an app's UI tree), `mac_click`, `mac_type`, `mac_key`, `mac_wait`, `mac_launch` and `mac_scroll`. `mac_screenshot` is optional.
 
-| Tool | Description |
-|---|---|
-| `mac_apps` | List running macOS applications (name + bundle ID) |
-| `mac_ui` | Snapshot the Accessibility tree of a running app |
-| `mac_click` | Click an element by ref, title, or identifier |
-| `mac_type` | Type text into the focused element or a targeted element |
-| `mac_key` | Press a key combo (e.g. `cmd+s`, `return`, `tab`) |
-| `mac_wait` | Wait event-driven until an element appears or disappears |
-| `mac_launch` | Launch an app by bundle ID |
+Three safety checks, all controlled by your app:
 
-### Three-brake safety model
+1. Mac control is off until your app turns it on.
+2. Each conversation has its own list of apps it may control.
+3. Your app can require the user to confirm every click, keypress or text entry.
 
-Every mac_* tool passes through three independent safety gates before touching the Accessibility driver:
+Your app needs Accessibility permission (**System Settings → Privacy & Security → Accessibility**). Check it with `AXPermission.isTrusted()`.
 
-- **Off-by-default toggle** — the consumer app controls whether mac automation is enabled at all; a disabled toggle blocks all tools before any AX call.
-- **Per-conversation allowlist** — each conversation maintains a set of permitted bundle IDs; a tool call for any app not in the set is denied with a model-facing error asking the user to approve it.
-- **Per-action confirmation** — the consuming app can require explicit user confirmation before any destructive action (click, type, key) is dispatched.
+</details>
 
-The toggle, allowlist, and confirmation UX all live in the consuming application. `SwiftAgentKitMac` enforces the boundary but does not own the policy.
+<details>
+<summary><strong>📱 iOS Simulator automation</strong>: build, launch, tap, swipe and screenshot (macOS)</summary>
 
-### Accessibility permission
+<br/>
 
-macOS requires Accessibility access before any AX API call can succeed. The test runner (Terminal, your app's process) must be listed under **System Settings → Privacy & Security → Accessibility**. `AXPermission.isTrusted()` returns `false` and all AX tools fail with a model-facing error until this grant is present.
+Add the `SwiftAgentKitSimulator` product:
 
 ```swift
-// Check trust status (nonisolated, safe to call from anywhere)
-guard AXPermission.isTrusted() else { /* prompt or inform the user */ }
-
-// Optionally prompt the user via the system dialog
-AXPermission.promptForTrust()
-```
-
-### Live end-to-end test
-
-The live test requires AX granted to the `swift test` runner **and** two environment variables:
-
-```bash
-SAK_LIVE_TESTS=1 SAK_MAC_TESTS=1 swift test --filter MacLiveTests
-```
-
-The test launches TextEdit, waits for the app's AX tree to appear, types into the focused text area, and takes a final snapshot asserting the AX tree is reachable. If Accessibility is not granted to the shell running `swift test`, the test XCTSkips automatically — no false pass.
-
-### Testing / known limitation
-
-The live test fully exercises snapshot/type/verify from a properly code-signed host (e.g. Naseem.app). Under `swift test` (ad-hoc signed) on macOS 26, the Accessibility server returns self-referential results for the AX root, hiding window content — the live test falls back to asserting the menu bar is captured, confirming real AX data is being read. Full window-content end-to-end verification is validated in the signed Naseem app.
-
----
-
-## iOS Simulator Automation (SwiftAgentKitSimulator)
-
-`SwiftAgentKitSimulator` is a **macOS-only** optional product that gives your agent a set of tools for driving real iOS simulators — launch apps, inspect UI trees, tap elements, type text, install builds, and capture screenshots — all through an XCUITest-backed driver that runs inside the simulator.
-
-### Installation
-
-Add `SwiftAgentKitSimulator` to your target dependencies:
-
-```swift
-.target(name: "YourApp", dependencies: [
-    .product(name: "SwiftAgentKit", package: "SwiftAgentKit"),
-    .product(name: "SwiftAgentKitSimulator", package: "SwiftAgentKit"),
-])
-```
-
-### One-call registration
-
-```swift
-import SwiftAgentKit
 import SwiftAgentKitSimulator
 
-// Register all simulator tools with the agent in one call.
-// manager handles driver build + launch on first use.
-let manager = SimDriverManager()
-let session = SimSession()
-let client = await SimClient(manager: manager, udid: udid, runtime: runtime)
-await agent.registerAll(makeSimulatorTools(session: session, client: client))
+let client = await SimClient(manager: SimDriverManager(), udid: udid, runtime: runtime)
+await agent.registerAll(makeSimulatorTools(session: SimSession(), client: client))
 ```
 
-The first time the driver is used for a given Xcode / runtime pair it builds the XCUITest harness (~30–60 s); subsequent runs reuse the cached build.
+Tools include `sim_list`, `sim_boot`, `sim_build_install`, `sim_launch`, `sim_ui`, `sim_tap`, `sim_type`, `sim_swipe`, `sim_wait`, `sim_alert`, `sim_screenshot` and `sim_logs`. The first run builds a small XCUITest driver, which takes 30–60 seconds. Later runs reuse it.
 
-### What the agent can do
+</details>
 
-| Tool | Description |
-|---|---|
-| `sim_list` | List all available iOS simulators with their UDID, name, runtime, and boot state |
-| `sim_boot` | Boot an iOS simulator by UDID or name; sets the active device for subsequent sim_* calls |
-| `sim_launch` | Launch an app by bundle ID in the currently booted simulator |
-| `sim_terminate` | Terminate a running app in the simulator |
-| `sim_ui` | Read the current UI of the iOS simulator app as an accessibility tree with element refs and labels |
-| `sim_tap` | Tap (or long-press) an element in the simulator by ref/label/identifier |
-| `sim_type` | Type text into the focused field or a target element in the simulator |
-| `sim_swipe` | Swipe in a direction (up/down/left/right) on the simulator screen or a specific element |
-| `sim_press` | Press a hardware button on the simulator (currently supports home) |
-| `sim_wait` | Wait event-driven until an element exists or disappears, then return the fresh UI tree |
-| `sim_alert` | Accept or dismiss the currently visible system alert in the simulator |
-| `sim_screenshot` | Capture a PNG screenshot of the simulator screen |
-| `sim_build_install` | Build an Xcode project or workspace and install the resulting app on the simulator |
-| `sim_logs` | Stream simulator app logs to a temp file (non-blocking) or stop a previous stream |
+<details>
+<summary><strong>✨ The <code>@Tool</code> macro</strong>: turn a function into a tool</summary>
 
-### Live end-to-end test
-
-The live test is gated behind two environment variables so it never runs in CI without an attached simulator:
-
-```bash
-SAK_LIVE_TESTS=1 SAK_SIM_TESTS=1 swift test --filter SimLiveTests
-```
-
-The test launches the iOS Settings app, waits for the General row, taps it, waits for the About row, and asserts that a screenshot is a valid PNG (> 10 KB). First run includes the driver build.
-
----
-
-## @Tool Macro (Optional)
-
-Use the `@Tool` macro to convert any Swift function into an `AgentTool` with less boilerplate:
+<br/>
 
 ```swift
-import SwiftAgentKit
-
 struct MyTools {
     @Tool("Return the current date and time.")
     func currentTime() async throws -> String {
         Date().formatted(date: .complete, time: .standard)
     }
-
-    @Tool("Calculate a basic arithmetic expression.")
-    func calculator(expression: String) async throws -> String {
-        "646"
-    }
 }
 
-let tools = MyTools()
-let agent = Agent(config: AgentConfig(
-    provider: provider,
-    maxTurns: 6,
-    tools: [tools.currentTimeTool(), tools.calculatorTool()]
-))
+await agent.register(MyTools().currentTimeTool())
 ```
 
-The macro generates an `AgentTool`-conforming struct with a snake_case name, JSON-Schema parameters from the function signature (String, Int, Double, Bool), result wrapping with `context.callId`, and a `funcNameTool()` factory that captures `self`.
+The macro builds the tool's name (`current_time`) and parameter schema from the function. It supports `String`, `Int`, `Double` and `Bool` parameters, which are always required. For arrays, nested objects or enums, write an `AgentTool` by hand.
 
-Current alpha limitations: parameters are generated as required; only primitive types are supported (use manual `AgentTool` for arrays, nested objects, or enums); grouped `- Parameters:` DocC blocks aren't fully parsed yet. The `AgentTool` protocol remains the primary API — the macro is optional.
+</details>
+
+<details>
+<summary><strong>🧪 Replay</strong>: deterministic tests without a live model</summary>
+
+<br/>
+
+`SwiftAgentKitReplay` records an agent's traffic with the model once, then plays it back in your tests, so they run fast, offline and give the same result every time.
+
+</details>
 
 ---
 
-## Design Principles
+## Examples
 
-1. **Native Swift first.** Built for Swift developers who want agents in their apps — not a port or a wrapper. Protocol-oriented, async/await throughout, zero UI dependencies.
-2. **Minimal dependencies.** The core agent runtime uses Foundation + LLMProviderKit only. SwiftSyntax is pulled in solely for the `@Tool` macro target, and the MCP Swift SDK only by the optional MCP target — import only the products you need. Local-first capable with Ollama as a first-class provider.
-3. **Composable.** Use what you need — tools without planning, memory without sessions, state without skills. Every feature is independent.
-4. **Provider-agnostic.** Swap Ollama for OpenAI, Gemini, or Anthropic; the agent code doesn't change. Everything (`AgentTool`, `LLMProvider`, `SessionStore`, `AgentPlanner`) is a protocol.
+Ten runnable examples, one feature each. They build with the package, so they stay in step with the API.
+
+```bash
+swift run Runner        # list them
+swift run Runner 02     # run one
+```
+
+| # | Example | Shows |
+|---|---|---|
+| 01 | [HelloAgent](Examples/01-HelloAgent.swift) | the smallest agent |
+| 02 | [ToolCalling](Examples/02-ToolCalling.swift) | a Swift tool the model decides to call |
+| 03 | [MCPIntegration](Examples/03-MCPIntegration.swift) | tools from an MCP server |
+| 04 | [SimpleChat](Examples/04-SimpleChat.swift) | plain text, JSON output and streaming |
+| 05 | [CodingQA](Examples/05-CodingQA.swift) | a multi-turn chat with history |
+| 06 | [FileAgent](Examples/06-FileAgent.swift) | an agent exploring files |
+| 07 | [ProjectScaffolder](Examples/07-ProjectScaffolder.swift) | plan first, then act |
+| 08 | [StatefulAgent](Examples/08-StatefulAgent.swift) | state, events, saving sessions |
+| 09 | [Guardrails](Examples/09-Guardrails.swift) | blocking tools and redacting output |
+| 10 | [Skills](Examples/10-Skills.swift) | skills loaded on demand |
+
+Most examples use Ollama with `llama3.2`. See [Examples/README.md](Examples/README.md) for details.
 
 ---
 
-## Alpha Status
+## Built with SwiftAgentKit
 
-**Breaking changes:**
-- **0.4.0:** `Agent` is now an actor. Configure via construction or `try await agent.set…(…)` (idle-only); `register`/`setAutonomousMode` remain callable any time. Streaming APIs are unchanged.
-- `lastPromptTokens` is now actor-isolated; read it with `await agent.lastPromptTokens`.
-- `config` is immutable after construction (`let`), and `setToolContext(_:)` requires a freshly built (region-disconnected) dictionary under Swift 6.
+| | |
+|---|---|
+| **[Naseem](https://naseemformac.com)** | A native AI agent for the Mac. It works in your projects, files and apps, with memory, skills, sub-agents, Mac app control and the iOS Simulator. |
+| **[sak](https://github.com/ayman3000/sak)** | A coding agent for the terminal, in a few hundred lines. It has five providers, `/model` and `/provider` commands, approval prompts, and a script mode with piped input, `--json` output and exit codes. The best place to see the whole library at work. |
 
-**Known alpha limitations:**
-- Public APIs may change before beta
-- Provider behavior varies by model quality — some models ignore tools even when available
-- `stream(_:)` is deprecated (alias of `runStreaming(_:)`); `runStreaming(_:)` does not stream intermediate tool-loop tokens
-- One `Agent` instance is intended for one active `run(_:)` at a time
-- The `@Tool` macro is best for primitive required parameters; use manual `AgentTool` definitions for complex schemas
+Building something with SwiftAgentKit? [Open an issue](https://github.com/ayman3000/SwiftAgentKit/issues) and we'll add it here.
 
-Feedback from real Swift apps is very welcome.
+---
 
-**Build and test:**
+## How it fits together
+
+```mermaid
+graph TD
+    APP["Your app<br/>SwiftUI · AppKit · CLI · Server"]
+    SAK["SwiftAgentKit<br/>agent loop · tools · memory · skills<br/>planning · callbacks · events · sessions"]
+    EXT["Optional products<br/>Tools · MCP · Mac · Simulator · Replay"]
+    LPK["LLMProviderKit<br/>one protocol for every model provider"]
+    P["Ollama · Anthropic · OpenAI · Gemini · OpenRouter"]
+
+    APP --> SAK
+    APP -.-> EXT
+    EXT --> SAK
+    SAK --> LPK
+    LPK --> P
+
+    style APP fill:#4A90D9,stroke:#2C5F8A,color:#fff
+    style SAK fill:#9B59B6,stroke:#6C3483,stroke-width:3px,color:#fff
+    style EXT fill:#8E7CC3,stroke:#5B4A94,color:#fff
+    style LPK fill:#E67E22,stroke:#A04500,color:#fff
+    style P fill:#27AE60,stroke:#1E8449,color:#fff
+```
+
+| Product | What it adds |
+|---|---|
+| `SwiftAgentKit` | The agent runtime: the loop, the tool protocol, memory, planning, skills, sub-agents and context management |
+| `SwiftAgentKitTools` | Ready-made tools for files, shell, Python, web, PDF, Office and Slack |
+| `SwiftAgentKitMCP` | An MCP client (stdio and HTTP) |
+| `SwiftAgentKitMac` | Mac app control through Accessibility, plus Mail, Notes, Calendar and Contacts |
+| `SwiftAgentKitSimulator` | iOS Simulator control |
+| `SwiftAgentKitReplay` | Record and replay model traffic for tests |
+
+---
+
+## Status
+
+SwiftAgentKit is in **alpha**. The API may still change before beta.
+
+- **Breaking change in 0.4.0:** `Agent` is now an actor. Configure it when you create it, or with `try await agent.set…(…)` while it's idle.
+- One `Agent` handles one `run` at a time.
+- How well tools work depends on the model. Small models sometimes ignore a tool even when it's available.
+
+See [CHANGELOG.md](CHANGELOG.md) for every release.
+
+### Build and test
 
 ```bash
 swift build
 swift test
 ```
 
-358 tests (115 XCTest + 243 Swift Testing) across the core loop, tools, context management, replay, and MCP — no network calls.
-
-**Tool security** (SwiftAgentKitTools):
-
-- `import_skill` requires confirmation and refuses URLs that are — or resolve to — private, loopback, or link-local addresses (SSRF guard); redirects are re-validated and downloads are memory-bounded.
-- Filesystem tools accept an optional `FileToolPolicy(allowedRoots:)` that canonicalizes paths (tilde, `..`, symlinks) before checking containment — opt-in; without a policy they remain unrestricted.
-- `run_shell` and `run_python` both run commands in their own process group and SIGKILL the whole group on timeout, so orphaned children can't hang a run.
+The test suite has more than 870 tests across the loop, tools, context management, MCP and replay. None of them use the network.
 
 ---
 
 ## Contributing
 
-Issues, pull requests, and feedback are all welcome.
-
-- 🐛 [Open an issue](https://github.com/ayman3000/SwiftAgentKit/issues)
-- 🔀 [Submit a pull request](https://github.com/ayman3000/SwiftAgentKit/pulls)
-
----
+Issues, ideas and pull requests are welcome: [open an issue](https://github.com/ayman3000/SwiftAgentKit/issues) or [send a PR](https://github.com/ayman3000/SwiftAgentKit/pulls).
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).

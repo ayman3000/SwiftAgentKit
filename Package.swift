@@ -142,7 +142,8 @@ let package = Package(
             dependencies: ["SwiftAgentKitMac", "SwiftAgentKit"]
         ),
 
-        // Examples runner — `swift run Runner 01`, `swift run Runner 02`, etc.
+        // Examples runner — `swift run Runner 01` … `swift run Runner 10`.
+        // Builds every file in Examples/, so an example can't silently rot.
         .executableTarget(
             name: "Runner",
             dependencies: [
@@ -151,7 +152,8 @@ let package = Package(
                 .product(name: "LLMProviderKit", package: "LLMProviderKit"),
                 .product(name: "LLMProviderKitOllama", package: "LLMProviderKit"),
             ],
-            path: "Examples/Runner"
+            path: "Examples",
+            exclude: ["README.md"]
         ),
     ]
 )
