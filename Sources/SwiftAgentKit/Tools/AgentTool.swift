@@ -21,7 +21,7 @@ import Foundation
 /// Conform to this protocol to define a tool. The agent loop will:
 /// 1. Include the tool's schema in the LLM request (if the provider supports tool definitions)
 /// 2. Parse tool calls from the LLM response
-/// 3. Dispatch the call to `execute(parameters:)`
+/// 3. Dispatch the call to `execute(context:)` (which defaults to `execute(parameters:)`)
 /// 4. Feed the result back to the model as a tool message
 ///
 /// Example:
@@ -29,17 +29,26 @@ import Foundation
 /// struct ReadFileTool: AgentTool {
 ///     let name = "read_file"
 ///     let description = "Read the contents of a file at the given path."
-///     let parameters = ToolParameters(type: "object", properties: [
+///     let parameters = ToolParameters(properties: [
 ///         "path": ToolParameterProperty(type: "string", description: "Absolute file path")
 ///     ], required: ["path"])
+///     var isReadOnly: Bool { true }
 ///
-///     func execute(parameters: [String: Any]) async throws -> AgentToolResult {
-///         let path = parameters["path"] as! String
-///         let content = try String(contentsOfFile: path)
-///         return .success(toolCallId: "", toolName: name, result: content)
+///     func execute(context: ToolContext) async throws -> AgentToolResult {
+///         guard let path = context.parameters["path"] as? String else {
+///             return .error(toolCallId: context.callId, toolName: name, message: "`path` is required.")
+///         }
+///         let content = try String(contentsOfFile: path, encoding: .utf8)
+///         return .success(toolCallId: context.callId, toolName: name, result: content)
 ///     }
 /// }
 /// ```
+///
+/// Implement `execute(context:)` (call id, agent state, actions) or the
+/// simpler `execute(parameters:)` — one of the two. Return `.error(…)` for a
+/// problem the model can fix, like a bad argument: it reads the message and
+/// tries again. A thrown error also reaches the model as an error result,
+/// after `AgentCallbacks.onToolError` and the transient-retry check.
 ///
 public protocol AgentTool: Sendable {
 
@@ -129,6 +138,16 @@ public protocol AgentTool: Sendable {
 public extension AgentTool {
     func execute(context: ToolContext) async throws -> AgentToolResult {
         try await execute(parameters: context.parameters)
+    }
+
+    /// Default for tools that implement only `execute(context:)` — the
+    /// style the README uses. A tool implementing neither entry point gets
+    /// this error result instead of a compile error (one of the two must be
+    /// implemented; this default never calls `execute(context:)`, so there
+    /// is no recursion).
+    func execute(parameters: [String: Any]) async throws -> AgentToolResult {
+        .error(toolCallId: "", toolName: name,
+               message: "Tool '\(name)' implements neither execute(context:) nor execute(parameters:).")
     }
 }
 

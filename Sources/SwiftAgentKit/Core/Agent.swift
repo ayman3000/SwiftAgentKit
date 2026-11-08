@@ -2132,6 +2132,9 @@ public actor Agent {
     ///   work. The APPROVAL GATE is unaffected: it runs on `callbacks`, not on
     ///   the observer, so a routine is still never a blank cheque.
     public func runToolCall(_ call: AgentToolCall, silent: Bool = false) async -> AgentToolResult {
+        // Tools passed in AgentConfig register asynchronously; a call made
+        // right after init must not find the tool "not registered".
+        await awaitPendingRegistrations()
         let results = await dispatchToolCalls([call], turn: 0, query: "", actions: ToolActions(), silent: silent)
         return results.first ?? .error(toolCallId: call.id, toolName: call.name,
                                        message: "\(call.name) produced no result.")

@@ -9,7 +9,7 @@ import LLMProviderKit
 import LLMProviderKitOllama
 
 // A simple tool the agent can call
-struct CurrentTimeTool: AgentTool {
+private struct CurrentTimeTool: AgentTool {
     let name = "current_time"
     let description = "Return the current date and time."
     let parameters = ToolParameters.empty

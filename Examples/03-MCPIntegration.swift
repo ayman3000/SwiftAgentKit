@@ -38,7 +38,7 @@ func mcpIntegration() async throws {
         systemPrompt: "You are a helpful assistant with filesystem tools. Use them to answer questions.",
         maxTurns: 8
     ))
-    for tool in tools { agent.register(tool) }
+    for tool in tools { await agent.register(tool) }
 
     // 4. Monitor events
     agent.onEvent { event in

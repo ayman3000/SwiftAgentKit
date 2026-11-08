@@ -1,5 +1,5 @@
 //
-//  03-FileAgent.swift
+//  06-FileAgent.swift
 //  SwiftAgentKit Examples
 //
 //  Pattern: ReAct with tools
@@ -10,6 +10,7 @@
 //  and summarizes what it finds — all autonomously.
 //
 
+import Foundation
 import SwiftAgentKit
 import LLMProviderKit
 import LLMProviderKitOllama
@@ -18,7 +19,7 @@ import LLMProviderKitOllama
 // Tools
 // ──────────────────────────────────────────────
 
-struct ListFilesTool: AgentTool {
+private struct ListFilesTool: AgentTool {
     let name = "list_files"
     let description = "List files and folders in a directory."
     let parameters = ToolParameters(
@@ -42,7 +43,7 @@ struct ListFilesTool: AgentTool {
     }
 }
 
-struct ReadFileTool: AgentTool {
+private struct ReadFileTool: AgentTool {
     let name = "read_file"
     let description = "Read the contents of a text file."
     let parameters = ToolParameters(
@@ -63,7 +64,7 @@ struct ReadFileTool: AgentTool {
     }
 }
 
-struct CountFilesTool: AgentTool {
+private struct CountFilesTool: AgentTool {
     let name = "count_files"
     let description = "Count the number of files in a directory (recursive)."
     let parameters = ToolParameters(
@@ -88,7 +89,7 @@ struct CountFilesTool: AgentTool {
 // ──────────────────────────────────────────────
 
 func fileAgentExample() async throws {
-    let provider = OllamaProvider(configuration: .local(model: "llama3.2"))
+    let provider = OllamaProvider(configuration: OllamaProvider.local(model: "llama3.2"))
 
     let agent = Agent(config: AgentConfig(
         provider: provider,
@@ -102,9 +103,9 @@ func fileAgentExample() async throws {
     ))
 
     // Register tools
-    agent.register(ListFilesTool())
-    agent.register(ReadFileTool())
-    agent.register(CountFilesTool())
+    await agent.register(ListFilesTool())
+    await agent.register(ReadFileTool())
+    await agent.register(CountFilesTool())
 
     // Observe what the agent is doing in real time
     agent.onEvent { event in
@@ -133,10 +134,3 @@ func fileAgentExample() async throws {
     print("\n📋 Summary:\n\(summary)")
 }
 
-// ──────────────────────────────────────────────
-// Run
-// ──────────────────────────────────────────────
-
-Task {
-    try await fileAgentExample()
-}

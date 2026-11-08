@@ -1,5 +1,5 @@
 //
-//  04-ProjectScaffolder.swift
+//  07-ProjectScaffolder.swift
 //  SwiftAgentKit Examples
 //
 //  Pattern: Planner + ReAct
@@ -7,6 +7,7 @@
 //         plan continuation when the model tries to stop early
 //
 
+import Foundation
 import SwiftAgentKit
 import LLMProviderKit
 import LLMProviderKitOllama
@@ -15,7 +16,7 @@ import LLMProviderKitOllama
 // Tools
 // ──────────────────────────────────────────────
 
-struct CreateFolderTool: AgentTool {
+private struct CreateFolderTool: AgentTool {
     let name = "create_folder"
     let description = "Create a directory at the given path."
     let parameters = ToolParameters(
@@ -30,7 +31,7 @@ struct CreateFolderTool: AgentTool {
     }
 }
 
-struct CreateFileTool: AgentTool {
+private struct CreateFileTool: AgentTool {
     let name = "create_file"
     let description = "Create a file with the given content."
     let parameters = ToolParameters(
@@ -55,7 +56,7 @@ struct CreateFileTool: AgentTool {
 // ──────────────────────────────────────────────
 
 func projectScaffolderExample() async throws {
-    let provider = OllamaProvider(configuration: .local(model: "llama3.2"))
+    let provider = OllamaProvider(configuration: OllamaProvider.local(model: "llama3.2"))
 
     let agent = Agent(config: AgentConfig(
         provider: provider,
@@ -66,8 +67,8 @@ func projectScaffolderExample() async throws {
         enablePlanContinuation: true   // nudge the model if it stops before the plan is done
     ))
 
-    agent.register(CreateFolderTool())
-    agent.register(CreateFileTool())
+    await agent.register(CreateFolderTool())
+    await agent.register(CreateFileTool())
 
     // Track plan progress
     agent.onEvent { event in
@@ -83,7 +84,7 @@ func projectScaffolderExample() async throws {
             print()
 
         case .toolExecutionStarted(let call):
-            print("🔧 \(call.name)(\(call.parameters.values.first ?? ""))")
+            print("🔧 \(call.name)(\(call.parameters.values.first.map { "\($0.value)" } ?? ""))")
 
         case .toolExecutionFinished(_, let result):
             print("  → \(result.result)")
@@ -118,10 +119,3 @@ func projectScaffolderExample() async throws {
     print("\n📋 Result:\n\(result)")
 }
 
-// ──────────────────────────────────────────────
-// Run
-// ──────────────────────────────────────────────
-
-Task {
-    try await projectScaffolderExample()
-}

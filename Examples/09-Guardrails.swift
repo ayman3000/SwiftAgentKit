@@ -1,5 +1,5 @@
 //
-//  06-Guardrails.swift
+//  09-Guardrails.swift
 //  SwiftAgentKit Examples
 //
 //  Pattern: ReAct + Lifecycle Callbacks
@@ -11,6 +11,7 @@
 //  inappropriate requests.
 //
 
+import Foundation
 import SwiftAgentKit
 import LLMProviderKit
 import LLMProviderKitOllama
@@ -19,7 +20,7 @@ import LLMProviderKitOllama
 // Tools
 // ──────────────────────────────────────────────
 
-struct RunCommandTool: AgentTool {
+private struct RunCommandTool: AgentTool {
     let name = "run_command"
     let description = "Run a shell command and return its output."
     let parameters = ToolParameters(
@@ -132,7 +133,7 @@ func buildGuardrails() -> AgentCallbacks {
 // ──────────────────────────────────────────────
 
 func guardrailsExample() async throws {
-    let provider = OllamaProvider(configuration: .local(model: "llama3.2"))
+    let provider = OllamaProvider(configuration: OllamaProvider.local(model: "llama3.2"))
 
     let agent = Agent(config: AgentConfig(
         provider: provider,
@@ -141,8 +142,8 @@ func guardrailsExample() async throws {
         enableRepairRetry: true
     ))
 
-    agent.register(RunCommandTool())
-    agent.callbacks = buildGuardrails()
+    await agent.register(RunCommandTool())
+    try await agent.setCallbacks(buildGuardrails())
 
     agent.onEvent { event in
         switch event {
@@ -172,10 +173,3 @@ func guardrailsExample() async throws {
     // - The afterAgent callback redacts any sensitive patterns in the final response
 }
 
-// ──────────────────────────────────────────────
-// Run
-// ──────────────────────────────────────────────
-
-Task {
-    try await guardrailsExample()
-}

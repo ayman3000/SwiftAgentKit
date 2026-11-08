@@ -160,38 +160,33 @@ On each `run()` call the agent appends the user message, optionally generates a 
 
 ### Package layout
 
+The package ships six libraries. Take only what you need — `SwiftAgentKit` alone has no tools that touch your Mac.
+
+| Product | What's in it |
+|---|---|
+| `SwiftAgentKit` | the agent runtime: loop, tools protocol, memory, planning, skills, sub-agents, context management |
+| `SwiftAgentKitTools` | ready-made tools: files (read/write/edit/patch), shell, Python, fetch URL, PDF + OCR, Office, Slack |
+| `SwiftAgentKitMCP` | connect MCP servers (stdio or HTTP) and use their tools |
+| `SwiftAgentKitMac` | drive Mac apps through Accessibility; Mail, Notes, Calendar, Contacts |
+| `SwiftAgentKitSimulator` | drive the iOS Simulator: build, launch, tap, swipe, screenshot |
+| `SwiftAgentKitReplay` | record and replay model traffic for deterministic tests |
+
 ```
 Sources/SwiftAgentKit/
-├── Core/
-│   ├── Agent.swift              # AgentConfig + main Agent runtime
-│   ├── AgentMessage.swift       # Messages, tool calls, tool results
-│   ├── AgentState.swift         # Cross-turn key-value state + {key} templating
-│   ├── AgentCallbacks.swift     # 8 intercept-able lifecycle hooks
-│   ├── AgentSkill.swift         # Progressive-disclosure skills
-│   ├── AgentEvent.swift         # Event stream + run summaries
-│   ├── AgentError.swift         # Typed errors
-│   └── AgentLLMResponse.swift   # Provider response bridge
-├── Tools/
-│   ├── AgentTool.swift          # Tool protocol + JSON-Schema params
-│   ├── ToolContext.swift        # Rich context (state, call info, actions)
-│   └── ToolDispatcher.swift     # Sequential/parallel dispatch, dedup, confirmation
-├── Memory/
-│   ├── Conversation.swift       # Token-aware conversation history
-│   ├── SessionStore.swift      # Session persistence protocol + file store
-│   ├── AgentMemoryStore.swift   # Long-term memory store protocol + file-backed impl
-│   └── RememberTool.swift       # Built-in tool for agents to persist memory
-├── Planning/
-│   ├── AgentPlan.swift          # Plan model + LLMPlanner
-│   ├── AgentGoal.swift          # Goal model + goal store persistence
-│   └── RepairRetryPolicy.swift  # Repair-retry + plan continuation
-├── StructuredOutput/
-│   └── StructuredOutput.swift   # Tolerant JSON extraction
-├── Logging/
-│   └── AgentLogger.swift        # Lightweight logger
-Sources/SwiftAgentKitMCP/
-├── MCPClientConfig.swift        # stdio/HTTP connection config
-├── MCPToolBridge.swift          # MCP Tool → AgentTool bridge
-└── MCPManager.swift             # Connection lifecycle + tool discovery
+├── Core/            Agent + AgentConfig, messages, events, callbacks, errors, skills,
+│                    loop detection, stall policy, frozen run context
+├── Tools/           AgentTool protocol, ToolContext, dispatcher, retries, deferred tool
+│                    groups, built-in remember / use_skill / learn_skill tools
+├── Context/         ContextManager (ContextSift), compaction, artifact store + tools
+├── Memory/          Conversation, sessions, long-term memory store, memory documents/inbox
+├── Planning/        plans, goals, repair-retry and plan continuation
+├── Skills/          file-backed skill store
+├── SubAgents/       delegate_task and the sub-agent spawner
+├── Routines/        recurring tasks
+├── StructuredOutput/ tolerant JSON extraction
+└── Logging/         AgentLogger
+Sources/SwiftAgentKitTools/      Sources/SwiftAgentKitMCP/      Sources/SwiftAgentKitMac/
+Sources/SwiftAgentKitSimulator/  Sources/SwiftAgentKitReplay/   Sources/SwiftAgentKitMacros/ (@Tool)
 ```
 
 ---
@@ -206,8 +201,8 @@ Sources/SwiftAgentKitMCP/
 
 ```swift
 .dependencies: [
-    .package(url: "https://github.com/ayman3000/SwiftAgentKit.git", from: "0.3.0-alpha.52"),
-    .package(url: "https://github.com/ayman3000/LLMProviderKit.git", from: "0.1.0-alpha.14"),
+    .package(url: "https://github.com/ayman3000/SwiftAgentKit.git", from: "0.4.0-alpha.133"),
+    .package(url: "https://github.com/ayman3000/LLMProviderKit.git", from: "0.1.0-alpha.43"),
 ],
 targets: [
     .target(name: "YourApp", dependencies: [
@@ -218,6 +213,9 @@ targets: [
         // .product(name: "LLMProviderKitOpenAI", package: "LLMProviderKit"),
         // .product(name: "LLMProviderKitGemini", package: "LLMProviderKit"),
         // .product(name: "LLMProviderKitAnthropic", package: "LLMProviderKit"),
+        // .product(name: "LLMProviderKitOpenRouter", package: "LLMProviderKit"),
+        // Optional: ready-made tools
+        // .product(name: "SwiftAgentKitTools", package: "SwiftAgentKit"),
     ])
 ]
 ```
@@ -269,6 +267,10 @@ let response = try await agent.run("Echo the message 'Hello from SwiftAgentKit!'
 ---
 
 ## Examples
+
+Ten runnable examples live in [`Examples/`](Examples/) — `swift run Runner` lists them, `swift run Runner 02` runs one. They're built with the package, so they stay in step with the API.
+
+For a complete app, see **[sak](https://github.com/ayman3000/sak)**: a terminal coding agent in a few hundred lines — providers, slash commands, approvals, piped input and JSON output for CI.
 
 ### Tool calling
 
@@ -477,8 +479,8 @@ Add `SwiftAgentKitMCP` to your dependencies:
 
 ```swift
 .dependencies: [
-    .package(url: "https://github.com/ayman3000/SwiftAgentKit.git", from: "0.3.0-alpha.52"),
-    .package(url: "https://github.com/ayman3000/LLMProviderKit.git", from: "0.1.0-alpha.14"),
+    .package(url: "https://github.com/ayman3000/SwiftAgentKit.git", from: "0.4.0-alpha.133"),
+    .package(url: "https://github.com/ayman3000/LLMProviderKit.git", from: "0.1.0-alpha.43"),
 ],
 targets: [
     .target(name: "YourApp", dependencies: [

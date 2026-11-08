@@ -1,5 +1,5 @@
 //
-//  02-CodingQA.swift
+//  05-CodingQA.swift
 //  SwiftAgentKit Examples
 //
 //  Pattern: Multi-turn chat
@@ -9,12 +9,13 @@
 //  that reference earlier context ("show me an example of both").
 //
 
+import Foundation
 import SwiftAgentKit
 import LLMProviderKit
 import LLMProviderKitOllama
 
 func codingQAAssistant() async throws {
-    let provider = OllamaProvider(configuration: .local(model: "llama3.2"))
+    let provider = OllamaProvider(configuration: OllamaProvider.local(model: "llama3.2"))
 
     let agent = Agent(config: AgentConfig(
         provider: provider,
@@ -47,10 +48,3 @@ func codingQAAssistant() async throws {
     // - Per-turn fitting: trims to 80% of context window before each LLM call
 }
 
-// ──────────────────────────────────────────────
-// Run
-// ──────────────────────────────────────────────
-
-Task {
-    try await codingQAAssistant()
-}

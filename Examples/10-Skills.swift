@@ -1,5 +1,5 @@
 //
-//  07-Skills.swift
+//  10-Skills.swift
 //  SwiftAgentKit Examples
 //
 //  Pattern: ReAct + Progressive Disclosure Skills
@@ -11,6 +11,7 @@
 //  system prompt, skills are injected only when the query matches.
 //
 
+import Foundation
 import SwiftAgentKit
 import LLMProviderKit
 import LLMProviderKitOllama
@@ -19,7 +20,7 @@ import LLMProviderKitOllama
 // Tools (shared across all skills)
 // ──────────────────────────────────────────────
 
-struct ReadFileTool: AgentTool {
+private struct ReadFileTool: AgentTool {
     let name = "read_file"
     let description = "Read the contents of a file."
     let parameters = ToolParameters(
@@ -33,7 +34,7 @@ struct ReadFileTool: AgentTool {
     }
 }
 
-struct WriteFileTool: AgentTool {
+private struct WriteFileTool: AgentTool {
     let name = "write_file"
     let description = "Write content to a file."
     let parameters = ToolParameters(
@@ -57,7 +58,7 @@ struct WriteFileTool: AgentTool {
 // ──────────────────────────────────────────────
 
 func skillsExample() async throws {
-    let provider = OllamaProvider(configuration: .local(model: "llama3.2"))
+    let provider = OllamaProvider(configuration: OllamaProvider.local(model: "llama3.2"))
 
     let agent = Agent(config: AgentConfig(
         provider: provider,
@@ -66,13 +67,13 @@ func skillsExample() async throws {
         enableRepairRetry: true
     ))
 
-    agent.register(ReadFileTool())
-    agent.register(WriteFileTool())
+    await agent.register(ReadFileTool())
+    await agent.register(WriteFileTool())
 
     // ── Register Skills ──
 
     // Skill 1: SwiftUI expertise — activated when the user mentions SwiftUI
-    agent.registerSkill(AgentSkill(
+    await agent.registerSkill(AgentSkill(
         name: "swiftui",
         triggerKeywords: ["swiftui", "view", "swift ui", "navigationstack", "list", "form"],
         instructions: """
@@ -86,7 +87,7 @@ func skillsExample() async throws {
     ))
 
     // Skill 2: Testing expertise — activated when the user mentions tests
-    agent.registerSkill(AgentSkill(
+    await agent.registerSkill(AgentSkill(
         name: "testing",
         triggerKeywords: ["test", "xctest", "swift testing", "@test", "unit test", "mock"],
         instructions: """
@@ -100,7 +101,7 @@ func skillsExample() async throws {
     ))
 
     // Skill 3: Scaffolding — activated when the user wants to create a new project
-    agent.registerSkill(AgentSkill(
+    await agent.registerSkill(AgentSkill(
         name: "scaffolding",
         triggerKeywords: ["scaffold", "new project", "create app", "set up project", "bootstrap"],
         instructions: """
@@ -169,10 +170,3 @@ func skillsExample() async throws {
     // With progressive disclosure, only relevant expertise is loaded.
 }
 
-// ──────────────────────────────────────────────
-// Run
-// ──────────────────────────────────────────────
-
-Task {
-    try await skillsExample()
-}

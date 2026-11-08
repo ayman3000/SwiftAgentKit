@@ -1,5 +1,5 @@
 //
-//  05-StatefulAgent.swift
+//  08-StatefulAgent.swift
 //  SwiftAgentKit Examples
 //
 //  Pattern: ReAct + Agent State
@@ -12,6 +12,7 @@
 //  3. Files a support ticket (uses state for user info)
 //
 
+import Foundation
 import SwiftAgentKit
 import LLMProviderKit
 import LLMProviderKitOllama
@@ -20,7 +21,7 @@ import LLMProviderKitOllama
 // Stateful Tools
 // ──────────────────────────────────────────────
 
-struct LookupAccountTool: AgentTool {
+private struct LookupAccountTool: AgentTool {
     let name = "lookup_account"
     let description = "Look up a customer account by email address."
     let parameters = ToolParameters(
@@ -60,7 +61,7 @@ struct LookupAccountTool: AgentTool {
     }
 }
 
-struct CheckOrdersTool: AgentTool {
+private struct CheckOrdersTool: AgentTool {
     let name = "check_orders"
     let description = "Check order history for the current customer."
     let parameters = ToolParameters.empty  // no parameters — reads from state
@@ -91,7 +92,7 @@ struct CheckOrdersTool: AgentTool {
     }
 }
 
-struct FileTicketTool: AgentTool {
+private struct FileTicketTool: AgentTool {
     let name = "file_ticket"
     let description = "File a support ticket for the current customer."
     let parameters = ToolParameters(
@@ -136,7 +137,7 @@ struct FileTicketTool: AgentTool {
 // ──────────────────────────────────────────────
 
 func statefulAgentExample() async throws {
-    let provider = OllamaProvider(configuration: .local(model: "llama3.2"))
+    let provider = OllamaProvider(configuration: OllamaProvider.local(model: "llama3.2"))
 
     let agent = Agent(config: AgentConfig(
         provider: provider,
@@ -153,9 +154,9 @@ func statefulAgentExample() async throws {
     // Pre-set the email in state so the agent knows who to look up
     agent.state.setValue("alex@example.com", forKey: "user:email")
 
-    agent.register(LookupAccountTool())
-    agent.register(CheckOrdersTool())
-    agent.register(FileTicketTool())
+    await agent.register(LookupAccountTool())
+    await agent.register(CheckOrdersTool())
+    await agent.register(FileTicketTool())
 
     agent.onEvent { event in
         switch event {
@@ -181,10 +182,3 @@ func statefulAgentExample() async throws {
     print("\n📋 Result:\n\(result)")
 }
 
-// ──────────────────────────────────────────────
-// Run
-// ──────────────────────────────────────────────
-
-Task {
-    try await statefulAgentExample()
-}
