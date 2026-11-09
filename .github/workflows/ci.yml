@@ -24,3 +24,31 @@ jobs:
         run: swift build
       - name: Test
         run: swift test
+
+  # sak (github.com/ayman3000/sak) is 1,400 lines straight on the public API —
+  # the same API a third-party user sees. If this commit breaks it, the
+  # break shows here before it reaches Naseem.
+  downstream-sak:
+    name: "Downstream: sak builds and tests against this commit"
+    runs-on: macos-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: SwiftAgentKit
+      - uses: actions/checkout@v4
+        with:
+          repository: ayman3000/sak
+          path: sak
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - name: Point sak at this SwiftAgentKit
+        working-directory: sak
+        run: swift package edit SwiftAgentKit --path ../SwiftAgentKit
+      - name: Build sak
+        working-directory: sak
+        run: swift build
+      - name: Test sak
+        working-directory: sak
+        run: swift test
