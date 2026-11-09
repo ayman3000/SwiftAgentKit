@@ -29,7 +29,7 @@ jobs:
   # the same API a third-party user sees. If this commit breaks it, the
   # break shows here before it reaches Naseem.
   downstream-sak:
-    name: Downstream: sak builds and tests against this commit
+    name: "Downstream: sak builds and tests against this commit"
     runs-on: macos-latest
     needs: test
     steps:
